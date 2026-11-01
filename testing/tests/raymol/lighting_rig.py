@@ -50,6 +50,8 @@ SPEC_FIELDS = [
     ('air', 'dust_speed', 'float', 1.0, 0.0, 10.0),
     ('air', 'scatter', 'float', 0.55, -0.9, 0.9),
     ('air', 'seed', 'int', 0, 0, 1000000),
+    ('air', 'dust_glow', 'float', 1.0, 0.0, 4.0),
+    ('air', 'dust_opacity', 'float', 0.0, 0.0, 1.0),
     ('light', 'name', 'name', None, None, None),
     ('light', 'anchor', 'camera|pinned', 'camera', None, None),
     ('light', 'orbit', 'angle', 0.0, -180.0, 180.0),
@@ -68,12 +70,14 @@ SPEC_FIELDS = [
     ('light', 'falloff', 'float', 2.0, 0.0, 2.0),
     ('light', 'shadow', 'bool', False, None, None),
     ('light', 'outline', 'bool', False, None, None),
+    ('light', 'size', 'float', 0.0, 0.0, 1.0),
 ]
 
 RIG_KEYS = ['version', 'enabled', 'centre', 'size', 'ambient', 'classic',
             'air', 'lights']
 AIR_DEFAULTS = {'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35,
-                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0}
+                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0,
+                'dust_glow': 1.0, 'dust_opacity': 0.0}
 LIGHT_KEYS = [f[1] for f in SPEC_FIELDS if f[0] == 'light']
 
 
@@ -94,26 +98,27 @@ FULL_RIG = {
     'ambient': 0.2,
     'classic': 0.3,
     'air': {'haze': 0.3, 'dust': 0.45, 'dust_size': 0.4, 'dust_speed': 2.5,
-            'scatter': -0.35, 'seed': 42},
+            'scatter': -0.35, 'seed': 42, 'dust_glow': 2.4,
+            'dust_opacity': 0.6},
     'lights': [
         {'name': 'key', 'anchor': 'camera', 'orbit': -45.1, 'pitch': 35.2,
          'radius': 3.3, 'position': [0.1, 0.2, 0.3], 'aim': 'centre',
          'aim_point': [0.0, 0.0, 0.0], 'aim_selection': '', 'beam': 55.5,
          'softness': 0.55, 'color': [1.0, 0.9, 0.8], 'warmth': 4500.0,
          'intensity': 1.15, 'highlight': 0.7, 'falloff': 1.5,
-         'shadow': True, 'outline': False},
+         'shadow': True, 'outline': False, 'size': 0.35},
         {'name': 'Fill_2', 'anchor': 'camera', 'orbit': 179.9, 'pitch': -89.9,
          'radius': 0.5, 'position': [0.0, 0.0, 0.0], 'aim': 'point',
          'aim_point': [5.5, -6.6, 7.7], 'aim_selection': 'organic and chain A',
          'beam': 1.0, 'softness': 0.0, 'color': [0.1, 0.2, 0.3],
          'warmth': 15000.0, 'intensity': 0.0, 'highlight': 0.0,
-         'falloff': 0.0, 'shadow': False, 'outline': True},
+         'falloff': 0.0, 'shadow': False, 'outline': True, 'size': 0.0},
         {'name': '_rim', 'anchor': 'pinned', 'orbit': -179.9, 'pitch': 90.0,
          'radius': 8.0, 'position': [-11.1, 22.2, -33.3], 'aim': 'point',
          'aim_point': [0.4, 0.5, 0.6], 'aim_selection': 'resn NAP',
          'beam': 170.0, 'softness': 1.0, 'color': [0.0, 1.0, 1.0],
          'warmth': 1500.0, 'intensity': 4.0, 'highlight': 1.0,
-         'falloff': 2.0, 'shadow': True, 'outline': True},
+         'falloff': 2.0, 'shadow': True, 'outline': True, 'size': 0.8},
     ],
 }
 
@@ -127,7 +132,7 @@ LIGHT_SET_VALUES = [
     (1, 'orbit', 12.5), (1, 'pitch', 33.0), (1, 'radius', 6.5),
     (1, 'beam', 80.0), (1, 'softness', 0.9), (1, 'warmth', 9000.0),
     (1, 'intensity', 2.5), (1, 'highlight', 0.25), (1, 'falloff', 1.25),
-    (1, 'shadow', 1), (1, 'outline', 0), (1, 'color', [0.9, 0.5, 0.1]),
+    (1, 'shadow', 1), (1, 'outline', 0), (1, 'size', 0.5), (1, 'color', [0.9, 0.5, 0.1]),
     (1, 'aim_point', [1.5, 2.5, 3.5]), (1, 'aim', 0), (1, 'aim', 1),
     (1, 'anchor', 1), (1, 'pitch', -15.0), (1, 'anchor', 0),
     (2, 'orbit', 45.0), (2, 'position', [7.0, 8.0, 9.0]),
@@ -235,7 +240,7 @@ class TestLightRig(testing.PyMOLTestCase):
                 value = 'point'
             elif kind == 'vec3':
                 value = [0.1, 0.7, 0.3] if lo is not None else [-1.1, 2.2, 3.3]
-            elif name == 'size':
+            elif scope == 'rig' and name == 'size':
                 value = 12.1
             else:
                 value = round(lo + (hi - lo) * 0.37, 6)
@@ -307,6 +312,7 @@ class TestLightRig(testing.PyMOLTestCase):
             ({'lights': [light, {'anchor': 'pin'}]}, ['light 1', "'anchor' must be 'camera' or 'pinned'"]),
             ({'lights': [{'aim': 'center'}]}, ["'aim' must be 'centre' or 'point'"]),
             ({'ambient': float('nan')}, ["'ambient' must be finite"]),
+            ({'lights': [{'size': float('nan')}]}, ["light 0", "'size' must be finite"]),
             ({'lights': [{'orbit': float('inf')}]}, ["'orbit' must be finite"]),
             ({'lights': [{'color': [1.0, float('-inf'), 0.0]}]}, ["'color' must be finite"]),
             ({'air': {'haze': float('nan')}}, ['air', "'haze' must be finite"]),
@@ -541,6 +547,28 @@ class TestLightRig(testing.PyMOLTestCase):
         cmd.set_lights({'lights': [{}]})
         self.assertEqual(cmd.get_lights(), before)
 
+    def testCaptureIgnoresMoveGizmo(self):
+        """The Move gizmo CGO is an overlay and must not count towards the rig
+        frame, neither during initial capture nor on recenter (#669)."""
+        self.load()
+        cmd.load_cgo([cgo.SPHERE, 100.0, 100.0, 100.0, 4.0],
+                     '_move_gizmo', zoom=0)
+        cmd.set_lights({'lights': [{}]})
+        centre, size = self.frame_of('(enabled and not solvent)')
+        self.assertFrame(cmd.get_lights(), centre, size)
+
+        cmd.translate([10.0, 0.0, 0.0], 'm', camera=0)
+        lighting._lights_recenter()
+        centre, size = self.frame_of('(enabled and not solvent)')
+        self.assertFrame(cmd.get_lights(), centre, size)
+
+        # Control: an ordinary CGO at the same far place DOES move the frame.
+        cmd.delete('_move_gizmo')
+        cmd.load_cgo([cgo.SPHERE, 100.0, 100.0, 100.0, 4.0],
+                     'far', zoom=0)
+        lighting._lights_recenter()
+        self.assertNotEqual(cmd.get_lights()['centre'], centre)
+
     def testFrameNotMovedByViewChanges(self):
         self.load()
         cmd.set_lights({'lights': [{}]})
@@ -759,7 +787,8 @@ class TestLightRig(testing.PyMOLTestCase):
             ('beam', 0.0, 1.0), ('beam', 200.0, 170.0),
             ('softness', 2.0, 1.0), ('warmth', 100.0, 1500.0),
             ('intensity', 9.0, 4.0), ('highlight', -1.0, 0.0),
-            ('falloff', 3.0, 2.0), ('color', [2.0, -1.0, 0.5], [1.0, 0.0, 0.5]),
+            ('falloff', 3.0, 2.0), ('size', 2.0, 1.0), ('size', -0.5, 0.0),
+            ('color', [2.0, -1.0, 0.5], [1.0, 0.0, 0.5]),
         ]
         for field, value, want in cases:
             lighting._light_set(0, field, value)
@@ -1044,3 +1073,33 @@ class TestLightRig(testing.PyMOLTestCase):
         finally:
             p1.stop()
             p2.stop()
+
+    def testLightSize(self):
+        """Issue #741: light field `size`."""
+        self.load()
+        fields = lighting._light_fields()
+        light_fields = [f for f in fields if f[0] == 'light']
+        self.assertEqual(light_fields[-1], ('light', 'size', 'float', 0.0, 0.0, 1.0))
+        # get_lights has size 0.0 per light by default
+        cmd.set_lights({'lights': [{'name': 'key'}]})
+        self.assertEqual(cmd.get_lights()['lights'][0]['size'], 0.0)
+        self.assertIs(type(cmd.get_lights()['lights'][0]['size']), float)
+        # set_lights with size 0.5 round-trips
+        cmd.set_lights({'lights': [{'name': 'key', 'size': 0.5}]})
+        self.assertEqual(cmd.get_lights()['lights'][0]['size'], 0.5)
+        # out of range or NaN rejected by set_lights with a message naming the light and size
+        message = self.assertRaisesNaming({'lights': [{'name': 'key', 'size': float('nan')}]},
+                                          "light 0 ('key')", "'size' must be finite")
+        self.assertIn('key', message)
+        self.assertIn('size', message)
+        message = self.assertRaisesNaming({'lights': [{'name': 'key', 'size': 'notanumber'}]},
+                                          "light 0 ('key')", "'size' must be a number")
+        self.assertIn('key', message)
+        self.assertIn('size', message)
+        # _light_set(0, 'size', 2.0) clamps to 1
+        lighting._light_set(0, 'size', 2.0)
+        self.assertEqual(lighting._light_get(0, 'size'), 1.0)
+        self.assertEqual(cmd.get_lights()['lights'][0]['size'], 1.0)
+        # the rig's own size is unaffected
+        self.assertNotEqual(cmd.get_lights()['size'], 1.0)
+

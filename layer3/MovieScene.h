@@ -13,6 +13,7 @@
 #include "SceneView.h"
 #include "Image.h"
 
+#include <cstdint>
 #include <vector>
 #include <string>
 
@@ -97,6 +98,11 @@ public:
 
   /// A png buffer storing a thumbnail of the scene
   pymol::Image thumbnail;
+  /// The queued thumbnail render allowed to write `thumbnail`: each store
+  /// gives its render a fresh ticket, and the render lands only if the scene
+  /// under its name still holds it. Moves with the scene on rename; not saved
+  /// in sessions, so a loaded scene (0) matches no render.
+  std::uint64_t thumbnail_ticket = 0;
   constexpr static int THUMBNAIL_WIDTH = 220;
   constexpr static int THUMBNAIL_HEIGHT = 124;
 

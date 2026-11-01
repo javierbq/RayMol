@@ -32,11 +32,16 @@ expect macOS macOS PyMOLViewer_macOS
 expect iOS   iOS   ""
 expect iOS   ""    PyMOLViewer_iOS
 expect iOS   iOS   PyMOLViewer_iOS
+expect iOS   ""    LightsUITests_iOS
+expect iOS   iOS   LightsUITests_iOS
+expect iOS   ""    UITests_iOS
+expect iOS   iOS   UITests_iOS
 # Neither signal: the historic iOS-only behaviour, so the working pipeline is
 # never broken by Apple leaving these unset in post-clone.
 expect iOS   ""    ""
 # Disagreement and unknown values are hard errors, never a guess.
 expect ERROR macOS PyMOLViewer_iOS
+expect ERROR macOS LightsUITests_iOS
 expect ERROR iOS   PyMOLViewer_macOS
 expect ERROR tvOS  ""
 expect ERROR ""    SomeOtherScheme

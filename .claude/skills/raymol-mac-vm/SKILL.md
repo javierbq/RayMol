@@ -107,7 +107,7 @@ D=(python3 "$SK/raymol-vm-mcp.py" --vm-ip "$IP")
 "${D[@]}" cmd "fetch 1ubq, async=0"
 "${D[@]}" cmd "hide everything; show cartoon; spectrum count, rainbow; bg_color white"
 "${D[@]}" state                       # loaded objects, selections, camera (JSON)
-"${D[@]}" capture /tmp/ubq.png        # ray-traced PNG -> host file; then Read it
+"${D[@]}" capture /tmp/ubq.png        # Metal-rendered PNG -> host file; then Read it
 "${D[@]}" py "print(cmd.get_chains('1ubq'))"
 "${D[@]}" search "hiv protease" --limit 5
 ```

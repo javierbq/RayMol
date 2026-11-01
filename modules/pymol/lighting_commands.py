@@ -80,7 +80,6 @@ _CAPTURED = ("is captured from the molecules; 'lights recenter' captures "
 SET_ELSEWHERE = {
     'enabled': "is set by 'lights on' and 'lights off'",
     'centre': _CAPTURED,
-    'size': _CAPTURED,
     'version': 'is not a field (get_lights reports the format version)',
     'aim_point': 'is set by aim= (centre, a point x/y/z or a selection) and '
                  'the placement helpers',
@@ -430,6 +429,10 @@ def _field_error(where, name, value, table, context):
             return _error(where, '%s is a light field: apply the preset, '
                           'then edit a light (lights <name>, %s=%s)' % (
                               name, name, _shown(value)))
+        if name == 'size':
+            return _error(where, "size is a light field: lights <light>, "
+                          "size=%s (the rig's size %s)" % (
+                              _shown(value), _CAPTURED))
         return _error(where, 'which light? %s is a light field: '
                       'lights <name>, %s=%s or lights add, <name>, %s=%s' % (
                           name, name, _shown(value), name, _shown(value)))
@@ -1054,6 +1057,7 @@ def _apply_light(where, rig, index, spec, change, _self, label):
 # target= keeps the light's anchor.
 
 _FIT_MARGIN = 1.15      # beam fit: the cone covers the patch with 15 % spare
+_HIGHLIGHT_MIN_BEAM = 20.0  # click=/highlight=: never collapse below this (#723)
 _TARGET_PAD = 1.5       # target=: the selection's radius plus this (A)
 _PATCH = 10.0           # click= and highlight=: the patch radius (A)
 _NEAR = 1.5             # highlight=: the hit within vdW + this of an atom (A)
@@ -1130,6 +1134,28 @@ def _viewport_aspect(_self):
     return float(width) / float(height)
 
 
+# The aspect a pick falls back to while the viewport has no size yet (#746):
+# a startup script (the app's PYMOL_AUTOCMD first pass, a .pymolrc) runs
+# before the window's first layout, when get_viewport reports 0 x 1.
+_FALLBACK_SIZE = (640, 480)
+
+
+def _pick_aspect(_self):
+    '''(aspect, size): the viewport's width / height and None, or, while
+    it has no size yet, the aspect of the size PyMOL is configured to open
+    its window at (pymol.invocation.options win_x x win_y, else 640 x 480)
+    and that (w, h).'''
+    aspect = _viewport_aspect(_self)
+    if aspect is not None:
+        return aspect, None
+    from pymol import invocation
+    opts = getattr(invocation, 'options', None)
+    w, h = (getattr(opts, 'win_x', 0), getattr(opts, 'win_y', 0))
+    if not (isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0):
+        w, h = _FALLBACK_SIZE
+    return float(w) / float(h), (w, h)
+
+
 def _project(cam, point, ortho, aspect):
     '''(ndc_x, ndc_y, depth) of a world point, as the renderer projects it
     (metal_pick.camera; the orthoscopic half-height is the pick's
@@ -1157,9 +1183,7 @@ def _pick_selection(where, typed, sele, cam, ortho, _self):
                      'its own view); use click=x/y' % typed)
     atoms = _selection_model(where, typed.split('=', 1)[0], sele, _self)
     centre = _centroid([a.coord for a in atoms])
-    aspect = _viewport_aspect(_self)
-    if aspect is None:
-        raise _error(where, '%s: the viewport has no size' % typed)
+    aspect, size = _pick_aspect(_self)
     x, y, depth = _project(cam, centre, ortho, aspect)
     if x is None:
         raise _error(where, '%s: the selection is behind the camera' % typed)
@@ -1178,7 +1202,7 @@ def _pick_selection(where, typed, sele, cam, ortho, _self):
         raise _error(where, "%s: the pick hit the %s of '%s' in front of "
                      "the selection; show the selection (e.g. as sticks) or "
                      "use click=x/y" % (typed, hit.rep, hit.object))
-    return hit
+    return hit, size
 
 
 def _current_radius(rig, light):
@@ -1190,9 +1214,9 @@ def _current_radius(rig, light):
     return light['radius']
 
 
-def _beam_fit(index, reach, _self):
+def _beam_fit(index, reach, _self, floor=1.0):
     '''A post-step: the beam that covers a patch of radius `reach` (A) at
-    the light's aim distance, clamped into 1 to 170 degrees.'''
+    the light's aim distance, clamped into floor to 170 degrees.'''
     def step():
         eye = lighting._lights_eye(_self=_self)
         distance = eye['lights'][index]['aim_distance']
@@ -1201,7 +1225,7 @@ def _beam_fit(index, reach, _self):
                                                 distance))
         else:
             beam = 170.0
-        beam = min(170.0, max(1.0, beam))
+        beam = min(170.0, max(floor, beam))
         lighting._light_set(index, 'beam', beam, _self=_self)
     return step
 
@@ -1272,7 +1296,11 @@ def _apply_helpers(where, rig, index, spec, change, _self, label):
         role, sele = 'click', ''
         typed = spec.typed(role)
         x, y = helpers['click']
-        hit = metal_pick.surface_at(x, y, _self=_self)
+        aspect, size = _pick_aspect(_self)
+        if size is not None:
+            hit = metal_pick.surface_at(x, y, aspect=aspect, _self=_self)
+        else:
+            hit = metal_pick.surface_at(x, y, _self=_self)
         if hit is None:
             raise _error(where, 'nothing drawn as %s under %s' % (
                 _SURFACE_WORDS, typed))
@@ -1280,7 +1308,7 @@ def _apply_helpers(where, rig, index, spec, change, _self, label):
         role = 'highlight=<sele>'
         sele = helpers['highlight']
         typed = spec.typed(role)
-        hit = _pick_selection(where, typed, sele, cam, ortho, _self)
+        hit, size = _pick_selection(where, typed, sele, cam, ortho, _self)
 
     point = [float(c) for c in hit.point]
     normal = _unit(hit.normal) or _towards_camera(cam, point, ortho)
@@ -1292,11 +1320,17 @@ def _apply_helpers(where, rig, index, spec, change, _self, label):
     light['aim_selection'] = sele
     change.notes.append(" %s: %s picked the %s of '%s' at %s" % (
         where, typed, hit.rep, hit.object, _xyz(point)))
+    if size is not None:
+        w, h = size
+        change.notes.append(
+            " %s: %s: the viewport has no size yet, so the pick used the "
+            "aspect of a %dx%d window" % (where, typed, w, h))
     change.steps.append((label, spec.given[role], _place_step(
         where, index, typed, point, direction, radius, spec.pin, change,
         _self)))
     if fit:
-        change.steps.append((label, 'beam', _beam_fit(index, _PATCH, _self)))
+        change.steps.append((label, 'beam', _beam_fit(index, _PATCH, _self,
+                                                      floor=_HIGHLIGHT_MIN_BEAM)))
 
 
 def _light_report(change, index, header, _self, returns_name):
@@ -1437,8 +1471,8 @@ def _light_lines(light, eye, size):
         aim = 'aim centre'
     return [
         '   %s%s: %s, %s' % (name, tag, place, aim),
-        '      beam %s, softness %s, color %s, warmth %s, intensity %s' % (
-            _g(light['beam']), _g(light['softness']),
+        '      beam %s, softness %s, size %s, color %s, warmth %s, intensity %s' % (
+            _g(light['beam']), _g(light['softness']), _g(light['size']),
             '/'.join(_g(c) for c in light['color']), _g(light['warmth']),
             _g(light['intensity'])),
         '      highlight %s, falloff %s, shadow %s, outline %s' % (
@@ -1524,7 +1558,10 @@ KEYWORDS
               a name it takes the first unused of key, fill, rim, light4,
               light5, light6 (name= works too). A rig holds at most 6
               lights. The first light captures the frame and turns the
-              rig on; adding to a rig that is off leaves it off.
+              rig on; adding to a rig that is off leaves it off. The new
+              light casts a shadow (shadow=1) while fewer than 3 lights
+              do; after that it casts none and says so. shadow= given to
+              "add" wins either way.
     remove    remove a light: lights remove, name
     presets   list the presets
     recenter  capture the rig's centre and size again from what is shown
@@ -1566,6 +1603,9 @@ LIGHT FIELDS
     beam             degrees, full cone, 1 to 170, default 45; it stays
                      fixed when radius changes
     softness (soft)  fraction of the cone that fades out, 0 to 1, default 0.4
+    size             light source radius in scene sizes, 0 to 1, default 0
+                     (sharp). Softens shadows only in ray-traced Mac renders
+                     (metal_raytrace 1).
     color (colour)   sRGB, each channel 0 to 1, default white: a PyMOL
                      colour name, 0xRRGGBB or r/g/b. color=warm, neutral
                      or cool set white with warmth 3200, 6500 or 9000 K.
@@ -1585,7 +1625,9 @@ LIGHT FIELDS
     falloff          exponent, 0 to 2, default 2: brightness goes as (aim
                      distance / distance)^falloff; 2 is inverse square, 0
                      is none
-    shadow           boolean, default 0. At most 3 lights cast shadows.
+    shadow           boolean, default 0, but "lights add" gives a new light
+                     1 while fewer than 3 lights cast shadows. At most 3
+                     lights cast shadows.
     outline (cue)    boolean, default 0: draw the beam's outline on the
                      geometry
     aim              centre or center (default), a world point x/y/z or
@@ -1636,8 +1678,8 @@ RIG FIELDS
     With no rig, "lights ambient=..." (like "atmosphere ...") creates an
     empty rig that is off and holds the value.
 
-    The air (haze, dust, dust_size, dust_speed, scatter, seed) is set with
-    "atmosphere".
+    The air (haze, dust, dust_size, dust_speed, scatter, seed, dust_glow,
+    dust_opacity) is set with "atmosphere".
 
 PLACEMENT
 
@@ -1669,10 +1711,11 @@ PLACEMENT
     When the picked point is on or beyond that radius, the radius is
     raised to put the light half a size past it, with a note; past 8 that
     is an error ("lights recenter" first). The beam is fitted to a 10 A
-    patch around the point (for target=, to the selection) unless beam= is
-    given. One helper at a time (rim goes with highlight or click); orbit,
-    pitch and position cannot be given with highlight or click, and aim
-    cannot be given with any helper.
+    patch around the point, never below 20 degrees so a far light keeps a
+    usable beam (for target=, to the selection, with no such floor) unless
+    beam= is given. One helper at a time (rim goes with highlight or
+    click); orbit, pitch and position cannot be given with highlight or
+    click, and aim cannot be given with any helper.
 
 EXAMPLES
 
@@ -1895,6 +1938,16 @@ def _kw_add(old, table, light, fields, _self):
         rig['lights'].append(new_light)
     change = _Change(rig)
     index = len(rig['lights']) - 1
+    if 'shadow' not in spec.values:
+        # A new light casts a shadow by default while the rig has room for
+        # one (#799); an explicit shadow= (either way) is left alone.
+        casting = [l['name'] for l in lights_now if l['shadow']]
+        if len(casting) < MAX_SHADOWS:
+            new_light['shadow'] = True
+        else:
+            change.notes.append(
+                " lights: the new light casts no shadow: at most %d lights "
+                "do (%s already do)" % (MAX_SHADOWS, ', '.join(casting)))
     _apply_light(where, rig, index, spec, change, _self, name or 'add')
 
     def header(added, rig_now):
@@ -2067,6 +2120,11 @@ FIELDS
     scatter     -0.9 to 0.9, default 0.55: forward scattering (g); above 0
                 the air glows more where a beam points towards the camera
     seed        whole number, 0 to 1000000, default 0: the dust pattern
+    dust_glow   0 to 4, default 1: how brightly a mote glows in a beam;
+                1 is the usual look, 0 hides the glints
+    dust_opacity  0 to 1, default 0: how solid a mote is; 0 is see-through
+                glints that only add light, above 0 a mote also hides what
+                is behind it (an unlit mote is a faint dark speck)
 
     With no rig, "atmosphere field=..." creates a rig that is off and has
     no lights: the air shows once a preset or "lights add" turns it on.
@@ -2076,6 +2134,7 @@ FIELDS
 EXAMPLES
 
     atmosphere haze=0.3, dust=0.5, dust_size=0.4, dust_speed=1
+    atmosphere dust_glow=2, dust_opacity=0.5
     atmosphere seed=7
     atmosphere off
 
@@ -2100,8 +2159,13 @@ NOTES
     Settings: metal_light_air_resolution (0 the platform default, half on
     the Mac and on iOS; 1 full; 2 half), metal_light_air_time (below 0
     the dust follows its clock; 0 or more pins it, in seconds, for
-    repeatable renders) and metal_light_air_shadow_filter (0 the default,
-    1 one shadow tap per haze step, 2 the 3x3 lookup).
+    repeatable renders), metal_light_air_phase (seconds added to movie
+    dust time so speed changes don't jump), metal_light_air_shadow_filter
+    (0 the default, 1 one shadow tap per haze step, 2 the 3x3 lookup) and
+    metal_light_air_alpha (0 the default; 1 lets the air count toward
+    alpha in a transparent-background export, so haze and dust over empty
+    background are kept instead of cut out). With metal_light_air_alpha 1,
+    opaque motes count toward alpha in a transparent export.
 
 PYMOL API
 

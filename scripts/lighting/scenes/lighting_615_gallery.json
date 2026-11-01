@@ -1,5 +1,5 @@
 {
-  "comment": "#615 L2/L3 gallery (the done-when): every material x six studio setups, the prototype's composition (scripts/studio_lights/material_gallery.py on proto/studio-lights): 1rx1 at 960x540, a grey85 surface carrying the row's surface_material over a skyblue cartoon and the NADPH sticks (util.cbay), material_env 1 (studio), depth_cue 0, metal_shadows 1, on the harness's black background (an rt0 export clears with the previous frame's background, so a scene bg_rgb would not be repeatable). A literal view: the harness's L1 view turned y -25 (no orient). Columns: c0 softbox and c1 three_point (#612's presets, applied with the lights command and read back with cmd.get_lights; written out where the command is missing); c2 spot + haze + dust, c3 red/blue + dust and c4 backlit + haze (the prototype's setups as rig dicts with their air; metal_light_air_time pinned at 2.0 through a guarded setter, so the dust is repeatable); c5 colour: softbox on a spectrum-coloured surface (surface_color unset, spectrum b rainbow), where metallic's highlights take each hue and plastic's stay white. Every rig is framed on m (explicit centre and size) and installed through the cmd._l615_rig shim of cmd.set_lights (hasattr guard). Tags g<NN>_<material>__c<k>_<setup>: render.py --sheet DIR --cols 6 lays the sheet out one material per row. #627 may reuse this file for the docs gallery.",
+  "comment": "#615 L2/L3 gallery (the done-when): every material x six studio setups, the prototype's composition (scripts/studio_lights/material_gallery.py on proto/studio-lights): 1rx1 at 960x540, a grey85 surface carrying the row's surface_material over a skyblue cartoon and the NADPH sticks (util.cbay), material_env 1 (studio), depth_cue 0, metal_shadows 1, on the harness's black background (an rt0 export clears with the previous frame's background, so a scene bg_rgb would not be repeatable). A literal view: the harness's L1 view turned y -25 (no orient). Columns: c0 softbox and c1 three_point (#612's presets, applied with the lights command and read back with cmd.get_lights; written out where the command is missing); c2 spot + haze + dust, c3 red/blue + dust and c4 backlit + haze (the prototype's setups as rig dicts with their air; metal_light_air_time pinned at 2.0 through a guarded setter, so the dust is repeatable); c5 colour: softbox on a spectrum-coloured surface (surface_color unset, spectrum b rainbow), where metallic's highlights take each hue and plastic's stay white. Every rig is framed on m (explicit centre and size) and installed through the cmd._l615_rig after_rig line. Tags g<NN>_<material>__c<k>_<setup>: render.py --sheet DIR --cols 6 lays the sheet out one material per row. #627 may reuse this file for the docs gallery.",
   "base": null,
   "rig": "on",
   "size": [960, 540],
@@ -19,8 +19,6 @@
     "_l615_mn, _l615_mx = cmd.get_extent('m')",
     "_l615_c = [(a + b) / 2.0 for a, b in zip(_l615_mn, _l615_mx)]",
     "_l615_s = _l615_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l615_mn, _l615_mx))) / 2.0",
-    "if not hasattr(cmd, '_l615_set'): cmd._l615_set = cmd.set_lights",
-    "cmd.set_lights = lambda rig, _c=cmd: _c._l615_set(rig if getattr(_c, '_l615_rig', None) is None else (_c._l615_rig(rig) if callable(_c._l615_rig) else _c._l615_rig))",
     "_l615_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
     "_l615_opt('metal_light_air_time', 2.0)",
     "_l615_air = lambda **kw: dict({'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35, 'dust_speed': 1.0, 'scatter': 0.55, 'seed': 7}, **kw)",
@@ -33,6 +31,9 @@
     "_l615_blue = {'name': 'blue', 'orbit': 100.0, 'pitch': -25.0, 'radius': 3.0, 'beam': 28.0, 'softness': 0.4, 'color': [0.15, 0.4, 1.0], 'intensity': 2.4, 'highlight': 0.7}",
     "_l615_back = {'name': 'back', 'orbit': 165.0, 'pitch': 18.0, 'radius': 3.0, 'beam': 50.0, 'softness': 0.5, 'warmth': 6500.0, 'intensity': 2.2, 'highlight': 1.0, 'shadow': True}",
     "_l615_front = {'name': 'front', 'orbit': 0.0, 'pitch': 0.0, 'beam': 100.0, 'softness': 1.0, 'warmth': 4000.0, 'intensity': 0.18, 'highlight': 0.2}"
+  ],
+  "after_rig": [
+    "if getattr(cmd, '_l615_rig', None) is not None: cmd.set_lights(cmd._l615_rig(_lh_rig) if callable(cmd._l615_rig) else cmd._l615_rig)"
   ],
   "scenes": [
     {"tag": "g00_default__c0_softbox", "rt": 0, "lines": ["cmd._l615_rig = _l615_frame(_l615_preset('softbox'))"]},

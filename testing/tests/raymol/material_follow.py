@@ -4,8 +4,8 @@ A stick or sphere layer with no material of its own -- `stick_material` /
 `sphere_material` unset on the object and `default` globally -- draws with the
 CARTOON's material and Custom knobs while the object shows a cartoon. Giving the
 layer a material, `default` included, makes it independent; hiding the cartoon
-releases it. Surfaces never follow. The per-rep degradations stay keyed on the
-rep that draws: a glass cartoon's spheres still degrade to `default`.
+releases it. Surfaces never follow. A glass cartoon's sticks and spheres draw
+glass, ball-and-stick included (#635, #834).
 
 And a Look is a base coat on ATOMS, so "by element" (util.cnc) recolours the
 heteroatoms on top of it.
@@ -69,8 +69,8 @@ class TestSideChainsFollowTheCartoon(testing.PyMOLTestCase):
 
     def testABuiltRepReportsWhatTheDrawPathUses(self):
         """Once a rep is built, the accessor answers through the DRAW path's
-        cached resolve (MaterialDrawParamsCached, as CGOGL calls it), which
-        has to follow the cartoon the same way."""
+        MaterialDrawParams, as CGOGL calls it, which has to follow the cartoon
+        the same way."""
         cartoon = params('p', CARTOON)
         cmd.set('stick_material_tint', 0.1, 'p')     # its own, ignored
         cmd.refresh()
@@ -129,13 +129,16 @@ class TestSideChainsFollowTheCartoon(testing.PyMOLTestCase):
     def testOnlyMolecules(self):
         self.assertEqual(_cmd.get_rep_material(cmd._COb, '', STICKS, -1, 1), STICKS)
 
-    def testDegradationsStayKeyedOnTheRepThatDraws(self):
-        """Glass on sphere impostors floats as near-invisible discs, so spheres
-        following a glass cartoon still draw `default`."""
+    def testBallAndStickFollowingAGlassCartoonDrawsGlass(self):
+        """Spheres and sticks (ball-and-stick included) following a glass
+        cartoon draw glass (#635, #834)."""
         cmd.set('cartoon_material', 'glass', 'p')
         self.assertEqual(params('p', CARTOON)[0], 3)   # glass family
         self.assertEqual(params('p', STICKS)[0], 3)
-        self.assertEqual(params('p', SPHERES)[0], 0)
+        self.assertEqual(params('p', SPHERES)[0], 3)
+        cmd.set('stick_ball', 1, 'p')
+        self.assertEqual(params('p', STICKS)[0], 3)
+        self.assertEqual(params('p', CARTOON)[0], 3)
 
     def testEverythingDefaultStaysDefault(self):
         cmd.unset('cartoon_material', 'p')

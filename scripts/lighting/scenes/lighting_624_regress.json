@@ -1,5 +1,5 @@
 {
- "comment": "#624 L1b, the regression against master (plans/624.md 10.2; gate.sh baseline-scenes, then render.py --compare, max 0 on every image): with the knee chosen (metal_light_hdr 2), with the setting set and no rig or a rig that is off, and across toggles, a render is master's bit for bit. knee_<rep>_rt<n>: a 2-light rig (a warm spot at intensity 2 and a fill, highlights on) at metal_light_hdr 2 on cartoon, surface, sticks, spheres, the bezier tube (lighting_613's CGO), the 50% transparent surface (oit50), the glass surface, metallic spheres (rt1: the RT rig composite with reflections) and cartoon with organic sticks under a shadowed spot (shadow); knee_air: haze 0.3 and dust 0.5 at full resolution (rt0, rt1) and half (airhalf); knee_tonemap: metal_exposure 0.7 and metal_tonemap 1 with the rig on. norig_hdr1 (rig none, the setting 1), norig_hdrjunk (7), rigoff_hdr1 (the harness's --rig off path), norig_tonemap (#13's exposure 0.7 and ACES with no rig, the setting 1). toggle_surface: each run installs the rig at HDR and forces a frame (cmd.png, 320x180, the system temp dir), then the harness turns the rig off. flip_knee: each run forces a frame at metal_light_hdr 1 with the rig on, then sets 2 before the export. metal_light_hdr is set only through _l624_opt (it exists from #624 part 2), so master renders this file natively; every other line runs on master. Same cmd.set_lights shim as lighting_624.json (rigs with an explicit centre and size, the extent of m). metal_light_air_time is pinned at 2.0. FROZEN: master's renders are keyed on this file's sha. Checked in CI by testing/tests/raymol/lighting_hdr_check.py.",
+ "comment": "#624 L1b, the regression against master (plans/624.md 10.2; gate.sh baseline-scenes, then render.py --compare, max 0 on every image): with the knee chosen (metal_light_hdr 2), with the setting set and no rig or a rig that is off, and across toggles, a render is master's bit for bit. knee_<rep>_rt<n>: a 2-light rig (a warm spot at intensity 2 and a fill, highlights on) at metal_light_hdr 2 on cartoon, surface, sticks, spheres, the bezier tube (lighting_613's CGO), the 50% transparent surface (oit50), the glass surface, metallic spheres (rt1: the RT rig composite with reflections) and cartoon with organic sticks under a shadowed spot (shadow); knee_air: haze 0.3 and dust 0.5 at full resolution (rt0, rt1) and half (airhalf); knee_tonemap: metal_exposure 0.7 and metal_tonemap 1 with the rig on. norig_hdr1 (rig none, the setting 1), norig_hdrjunk (7), rigoff_hdr1 (the harness's --rig off path), norig_tonemap (#13's exposure 0.7 and ACES with no rig, the setting 1). toggle_surface: each run installs the rig at HDR and forces a frame (cmd.png, 320x180, the system temp dir), then the harness turns the rig off. flip_knee: each run forces a frame at metal_light_hdr 1 with the rig on, then sets 2 before the export. metal_light_hdr is set only through _l624_opt (it exists from #624 part 2), so master renders this file natively; every other line runs on master. Same after_rig line as lighting_624.json (rigs with an explicit centre and size, the extent of m). metal_light_air_time is pinned at 2.0. FROZEN: master's renders are keyed on this file's sha. Checked in CI by testing/tests/raymol/lighting_hdr_check.py.",
  "base": null,
  "rig": "on",
  "size": [
@@ -14,8 +14,6 @@
   "_l624_c = [(a + b) / 2.0 for a, b in zip(_l624_mn, _l624_mx)]",
   "_l624_s = _l624_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l624_mn, _l624_mx))) / 2.0",
   "_l624_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
-  "if not hasattr(cmd, '_l624_set'): cmd._l624_set = cmd.set_lights",
-  "cmd.set_lights = lambda rig, _c=cmd: _c._l624_set(rig if getattr(_c, '_l624_rig', None) is None else (_c._l624_rig(rig) if callable(_c._l624_rig) else _c._l624_rig))",
   "_l624_spot = {'name': 'spot', 'orbit': -50.0, 'pitch': 45.0, 'radius': 3.0, 'beam': 40.0, 'softness': 0.45, 'color': [1.0, 0.8, 0.55], 'intensity': 2.0, 'highlight': 0.6, 'shadow': False}",
   "_l624_fill = {'name': 'fill', 'orbit': 60.0, 'pitch': 0.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.8, 'intensity': 0.6, 'highlight': 0.3}",
   "_l624_air = lambda **kw: dict({'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35, 'dust_speed': 1.0, 'scatter': 0.55, 'seed': 7}, **kw)",
@@ -24,6 +22,9 @@
   "_l624_frame = lambda tag: cmd.png(_l624_os.path.join(_l624_tmp.gettempdir(), 'l624_regress_%s.png' % tag), width=320, height=180, ray=0, quiet=1)",
   "_l624_tube = lambda: (cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l624_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0), cmd.set('cartoon_tube_radius', 1.5))",
   "cmd.set('metal_light_air_time', 2.0)"
+ ],
+ "after_rig": [
+  "if getattr(cmd, '_l624_rig', None) is not None: cmd.set_lights(cmd._l624_rig(_lh_rig) if callable(cmd._l624_rig) else cmd._l624_rig)"
  ],
  "scenes": [
   {
@@ -285,7 +286,7 @@
    "lines": [
     "_l624_opt('metal_light_hdr', 1)",
     "cmd._l624_rig = None",
-    "cmd._l624_set(_l624_2l())",
+    "cmd.set_lights(_l624_2l())",
     "_l624_frame('toggle_surface_rt0')",
     "cmd._l624_rig = None"
    ],
@@ -298,7 +299,7 @@
    "lines": [
     "_l624_opt('metal_light_hdr', 1)",
     "cmd._l624_rig = None",
-    "cmd._l624_set(_l624_2l())",
+    "cmd.set_lights(_l624_2l())",
     "_l624_frame('toggle_surface_rt1')",
     "cmd._l624_rig = None"
    ],
@@ -310,7 +311,7 @@
    "lines": [
     "_l624_opt('metal_light_hdr', 1)",
     "cmd._l624_rig = _l624_2l()",
-    "cmd._l624_set(_l624_2l())",
+    "cmd.set_lights(_l624_2l())",
     "_l624_frame('flip_knee_rt0')",
     "_l624_opt('metal_light_hdr', 2)"
    ],

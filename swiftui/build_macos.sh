@@ -30,7 +30,28 @@ if [ -z "$NUMPY_INC" ]; then
     echo "         Run scripts/bundle_numpy_macos.sh, then rebuild with CLEAN=1."
 fi
 
+# Static libpng + freetype (deps_macos/install): the core compiles against their
+# headers and the app links the archives, so no Homebrew dylib ever ships.
+# No-op when already staged; every macOS build path runs through here.
+bash "$PYMOL_ROOT/scripts/build_macos_deps.sh"
+
+# Fingerprint the core sources BEFORE compiling, and stamp it after (#400): the
+# Xcode pre-build phase (scripts/check_core_fresh.sh) fails the app build when
+# the sources no longer match this stamp. A source edited mid-build then reads
+# as stale, never as fresh.
+CORE_FP="$(bash "$PYMOL_ROOT/scripts/check_core_fresh.sh" fingerprint 2>/dev/null || true)"
+
 CLEAN="${CLEAN:-0}"
+# A changed setting default is exactly what an incremental build can silently
+# miss (header comment above), and the stamp written below would then vouch for
+# the stale table. So when layer1/SettingInfo.h differs from what the previous
+# stamp recorded - or an existing core has no stamp to compare with (the first
+# build after this check landed) - rebuild clean instead of trusting the
+# incremental build.
+if [ "$(bash "$PYMOL_ROOT/scripts/check_core_fresh.sh" settings-hash "$BUILD_DIR" 2>/dev/null || true)" = "changed" ]; then
+    echo "== layer1/SettingInfo.h changed or the core was never stamped: forcing CLEAN=1 =="
+    CLEAN=1
+fi
 case "$CLEAN" in
   1|true|yes|on) echo "== Clean core build (rm -rf $BUILD_DIR) =="; rm -rf "$BUILD_DIR" ;;
   *)             echo "== Incremental core build (set CLEAN=1 if a setting default changed) ==" ;;
@@ -44,11 +65,14 @@ cmake "$PYMOL_ROOT/appkit" \
     -DPYMOL_PYTHON_INCLUDE_DIR="$PY/include/python3.13" \
     -DPYMOL_PYTHON_NUMPY_INCLUDE_DIR="$NUMPY_INC" \
     -DPYMOL_EXTERNAL_PREFIX="$PYMOL_EXTERNAL_PREFIX" \
+    -DPYMOL_MACOS_DEPS="$PYMOL_ROOT/deps_macos/install" \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
     -DCMAKE_BUILD_TYPE=Release
 
 cmake --build . --target pymol_core -j"${NCPU}"
+
+bash "$PYMOL_ROOT/scripts/check_core_fresh.sh" stamp "$BUILD_DIR" "$CORE_FP"
 
 echo ""
 echo "=== Done: ${BUILD_DIR}/libpymol_core.a ==="

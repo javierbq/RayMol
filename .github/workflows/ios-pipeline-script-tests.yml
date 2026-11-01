@@ -7,6 +7,10 @@ name: iOS pipeline script tests
 # and, since the macOS beta workflow joined it, the macOS side of the same hook:
 #   scripts/ci_platform.sh             scripts/apply_mas_restrictions.sh
 #   scripts/assert_macos_build_inputs.sh
+# and the self-hosted beta pipeline (beta-selfhosted.yml) on puma:
+#   scripts/selfhosted_beta.sh         scripts/asc_next_build_number.py
+#   scripts/xcode_cloud_beta_workflows.py  scripts/asc_wait_build_valid.py
+#   scripts/selfhosted_runner_job_guard.sh
 # (every scripts/tests/run_*_test.sh is discovered by glob — see below)
 #
 # WHY THIS WORKFLOW EXISTS. These suites are the only automated check on that

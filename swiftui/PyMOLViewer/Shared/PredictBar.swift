@@ -14,17 +14,29 @@ struct PredictBar: View {
         VStack(spacing: 0) {
             statusRow
             if let w = controller.pendingSizeWarning { sizeWarningRow(w) }
-            mainRow
+            fitOrScroll { mainRow }
             if controller.useMSA && selectedSupportsMSA && !controller.chains.isEmpty {
                 Divider().opacity(0.3)
-                msaRow
+                fitOrScroll { msaRow }
             }
-            if showAdvanced { Divider().opacity(0.3); advancedRow }
+            if showAdvanced { Divider().opacity(0.3); fitOrScroll { advancedRow } }
         }
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
         .onChange(of: controller.inputText) { controller.inputChanged() }
         .modifier(PublicMSAWarning(controller: controller))
+    }
+
+    // #914: the bar spans the viewport column, which a narrow window can shrink
+    // to PanelLayout.macViewportMinWidth (371pt) — well under what these rows
+    // need (the main row alone is ~570pt). A row that fits lays out as before;
+    // one that doesn't scrolls sideways instead of overflowing the column.
+    private func fitOrScroll<Row: View>(@ViewBuilder _ row: () -> Row) -> some View {
+        let r = row()
+        return ViewThatFits(in: .horizontal) {
+            r
+            ScrollView(.horizontal) { r }
+        }
     }
 
     private var selectedSupportsMSA: Bool {

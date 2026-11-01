@@ -31,8 +31,10 @@ PYMOL_BUILD_IOS_DEVICE = $(SRCROOT)/../build_ios_device
 
 // --- Library search paths (platform-conditional) ---
 // macOS: the NO_OPENGL+Metal core (build_macos_swiftui) + embedded standalone
-// Python 3.13; /opt/homebrew/lib only supplies freetype/png at LINK time.
-LIBRARY_SEARCH_PATHS[sdk=macosx*] = $(PYMOL_BUILD_MACOS) $(SRCROOT)/../deps_macos/python-standalone/python/lib $(PYMOL_EXTERNAL_PREFIX)/lib
+// Python 3.13. The package-manager lib dir is deliberately NOT on this path:
+// freetype/png are static archives linked by path (PYMOL_MACOS_DEPS below), so
+// nothing from Homebrew can be picked up as a dylib and end up in the app.
+LIBRARY_SEARCH_PATHS[sdk=macosx*] = $(PYMOL_BUILD_MACOS) $(SRCROOT)/../deps_macos/python-standalone/python/lib
 LIBRARY_SEARCH_PATHS[sdk=iphoneos*] = $(PYMOL_BUILD_IOS_DEVICE)
 LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*] = $(PYMOL_BUILD_IOS)
 
@@ -48,7 +50,11 @@ PYMOL_PYTHON_INC[sdk=macosx*] = -I$(SRCROOT)/../deps_macos/python-standalone/pyt
 PYMOL_PYTHON_INC[sdk=iphoneos*] = -I$(SRCROOT)/../deps_ios/Python.xcframework/ios-arm64/Python.framework/Headers
 PYMOL_PYTHON_INC[sdk=iphonesimulator*] = -I$(SRCROOT)/../deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers
 
-PYMOL_INCLUDE_FLAGS = $(PYMOL_INCLUDE_FLAGS_COMMON) $(PYMOL_PYTHON_INC)
+// macOS png/freetype headers from the static build the app links, placed AHEAD
+// of the package-manager include dir (which also carries png.h/freetype2).
+PYMOL_DEPS_INC[sdk=macosx*] = -I$(PYMOL_MACOS_DEPS)/include -I$(PYMOL_MACOS_DEPS)/include/freetype2
+
+PYMOL_INCLUDE_FLAGS = $(PYMOL_DEPS_INC) $(PYMOL_INCLUDE_FLAGS_COMMON) $(PYMOL_PYTHON_INC)
 
 // Generated shader headers (platform-conditional build dir)
 PYMOL_GENERATED_FLAGS[sdk=macosx*] = -I$(PYMOL_BUILD_MACOS)/generated
@@ -66,6 +72,8 @@ PYMOL_NOGL_FLAGS[sdk=iphonesimulator*] = -D_PYMOL_NO_OPENGL -D_PYMOL_IOS
 OTHER_CPLUSPLUSFLAGS = $(inherited) $(PYMOL_INCLUDE_FLAGS) $(PYMOL_GENERATED_FLAGS) $(PYMOL_NOGL_FLAGS)
 
 // --- Linker flags ---
+// macOS static libpng + freetype (scripts/build_macos_deps.sh, run by build_macos.sh)
+PYMOL_MACOS_DEPS = $(SRCROOT)/../deps_macos/install
 // iOS cross-compiled dependencies
 // PYMOL_IOS_DEPS = iphonesimulator libs (platform 7); _DEVICE = iphoneos (platform 2)
 PYMOL_IOS_DEPS = $(SRCROOT)/../deps_ios/install
@@ -89,11 +97,12 @@ METALFX_LDFLAGS = -framework MetalFX
 METALFX_LDFLAGS[sdk=iphonesimulator*] =
 PYMOL_CORE_LDFLAGS = -lpymol_core -framework Metal -framework MetalKit -framework CoreVideo $(METALFX_LDFLAGS)
 
-// macOS: full dependency set. libomp.a is linked STATICALLY (by absolute path,
-// so the linker uses the archive, not the .dylib) to resolve the OpenMP symbols
-// from pymol_core's parallel surface sampling — no dylib to bundle/sign, so the
-// App Store build stays self-contained.
-PYMOL_PLATFORM_LDFLAGS[sdk=macosx*] = -lfreetype -lpng16 -lz -lpython3.13 $(PYMOL_LIBOMP_STATIC)
+// macOS: full dependency set. freetype, libpng and libomp are all linked
+// STATICALLY by absolute path (so the linker uses the archive, never a .dylib):
+// the app ships no third-party dylibs besides its own embedded Python. Linking
+// Homebrew's freetype dylib instead is what shipped a 1.12.2 beta that crashed
+// at launch on a missing libbrotlicommon.
+PYMOL_PLATFORM_LDFLAGS[sdk=macosx*] = $(PYMOL_MACOS_DEPS)/lib/libfreetype.a $(PYMOL_MACOS_DEPS)/lib/libpng16.a -lz -lpython3.13 $(PYMOL_LIBOMP_STATIC)
 // iOS: cross-compiled dependencies + Python dylib linked by path
 PYMOL_PLATFORM_LDFLAGS[sdk=iphoneos*] = -lfreetype -lpng16 -lz $(PYMOL_PYTHON_DYLIB)
 PYMOL_PLATFORM_LDFLAGS[sdk=iphonesimulator*] = -lfreetype -lpng16 -lz $(PYMOL_PYTHON_DYLIB)

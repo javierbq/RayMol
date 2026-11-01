@@ -38,9 +38,9 @@ scene movies carry on the interior frames of each transition
 
 Per-light shadow maps (#616): ``_light_frame`` also returns the frame's
 studio shadow plan, and ``_light_shadow_frustum``, ``_light_shadow_map_size``,
-``_light_shadow_tile``, ``_light_shadow_casters``, ``_gpu_time_summary``,
-``_gpu_time_replay`` and ``_gpu_frame_stats`` reach the same C++ as the
-renderer.
+``_light_soft_radius``, ``_light_shadow_tile``, ``_light_shadow_casters``,
+``_gpu_time_summary``, ``_gpu_time_replay`` and ``_gpu_frame_stats`` reach the
+same C++ as the renderer.
 
 The air (#618): ``_light_air_frame`` returns the air block a frame packs
 (haze and dust, in eye space and rig sizes), and ``_light_air_clock``,
@@ -69,16 +69,19 @@ PYMOL API
     {'version': 1, 'enabled': bool,
      'centre': [x, y, z] or None, 'size': float or None,
      'ambient': float, 'classic': float,
-     'air': {'haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed'},
+     'air': {'haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed',
+             'dust_glow', 'dust_opacity'},
      'lights': [{'name', 'anchor', 'orbit', 'pitch', 'radius', 'position',
                  'aim', 'aim_point', 'aim_selection', 'beam', 'softness',
-                 'color', 'warmth', 'intensity', 'highlight', 'falloff',
-                 'shadow', 'outline'}, ...]}
+                 'size', 'color', 'warmth', 'intensity', 'highlight',
+                 'falloff', 'shadow', 'outline'}, ...]}
 
     'centre' and 'size' are the rig frame (world Angstrom): the box
     midpoint and half-diagonal of the enabled objects, captured when the
     first light is added and again only on re-centre. A light's 'radius' is
-    in multiples of 'size'.
+    in multiples of 'size'. A light's 'size' is its source radius in scene sizes,
+    0 to 1, default 0 (sharp); it softens shadows in ray-traced Mac renders
+    (metal_raytrace 1).
 
 SEE ALSO
 
@@ -215,7 +218,7 @@ def _light_frame(matrix=None, grid=None, *, _self=cmd):
                      'lights': [{'name', 'position', 'shadow_slot',
                                  'direction', 'cos_outer', 'radiance',
                                  'cos_inner', 'highlight', 'falloff',
-                                 'falloff_ref', 'outline'}, ...]},
+                                 'falloff_ref', 'outline', 'soft_radius'}, ...]},
      'shadows': None or {'count', 'size', 'tiles', 'first_slot',
                          'slots': [{'slot', 'light', 'name', 'view',
                                     'proj', 'view_proj', 'tan_half_fov',
@@ -239,7 +242,8 @@ def _light_frame(matrix=None, grid=None, *, _self=cmd):
 
     Studio shadows are on ('studio_shadows') when the rig is on,
     metal_shadows is on and a light has `shadow`; the whole-pixel shadow is
-    then off. 'shadows' is the plan: the first three shadowed lights with
+    then off. 'soft_radius' is the light's traced soft-shadow radius in
+    eye/world Å (#741). 'shadows' is the plan: the first three shadowed lights with
     casters in front of them get map slots 0, 1, 2 ('shadow_slot', -1
     otherwise, and head[3] the count), with frusta fitted to the casters
     without overlays (_light_shadow_casters).'''
@@ -255,22 +259,24 @@ def _light_air_frame(matrix=None, offscreen=None, wall=None, grid=None, *,
                      _self=cmd):
     '''One frame's air block as the Metal renderer receives it (#618), or
     None when the frame draws no air: no rig, a rig that is off, haze and
-    dust both 0, nothing to light (overlays alone do not count), grid mode,
-    or the rig behind the camera. `matrix` is as for _light_frame;
-    `offscreen` None reads the renderer's flag (False without one), else the
-    frame is taken as offscreen (an export) or live; `wall` None reads the
-    live clock, else the live clock's seconds; `grid` None for the scene's
-    grid, or (n_col, n_row, first_slot) for an active grid. Reads only.
+    dust both 0, nothing to light (overlays alone do not count), or the rig
+    behind the camera. `matrix` is as for _light_frame; `offscreen` None
+    reads the renderer's flag (False without one), else the frame is taken
+    as offscreen (an export) or live; `wall` None reads the live clock,
+    else the live clock's seconds; `grid` None for the scene's grid, or
+    (n_col, n_row, first_slot) for an active grid (shaping the shadow plan,
+    #686). Reads only.
 
-    {'block': [20 floats], 'haze_density', 'dust_occupancy', 'scatter',
+    {'block': [24 floats], 'haze_density', 'dust_occupancy', 'scatter',
      'seed_offset', 'near', 'far', 'focus', 'cell', 'time', 'mote_radius',
-     'defocus', 'shadow_filter', 'scale'}
+     'defocus', 'shadow_filter', 'scale', 'dust_glow', 'dust_opacity'}
 
-    'block' is the 80-byte block the GPU reads (layer1/LightAirBlock.h has
+    'block' is the 96-byte block the GPU reads (layer1/LightAirBlock.h has
     the offsets): medium (haze density per A, dust occupancy, scatter g,
     seed offset), range (near, far, focus depth, dust cell), motion (dust
     time, mote radius, defocus gain, haze shadow filter), view (scale, then
-    the renderer's ortho flag) and proj (the renderer's). The rest is decoded
+    the renderer's ortho flag), proj (the renderer's) and mote (dust glow,
+    dust opacity). The rest is decoded
     from it.'''
     if matrix is not None:
         matrix = [float(v) for v in matrix]
@@ -298,11 +304,12 @@ def _light_air_clock(pinned=-1.0, offscreen=False, playing=False, frames=1,
             int(frames), int(frame), float(fps), float(wall))
 
 
-def _light_air_time(clock, speed, *, _self=cmd):
-    '''The dust time (#618): fmod(max(clock, 0) * max(speed, 0), 20000);
-    never negative.'''
+def _light_air_time(clock, speed, phase=0.0, *, _self=cmd):
+    '''The dust time (#618, #687): fmod(max(clock, 0) * max(speed, 0) + phase,
+    20000); never negative; 0 for a non-finite or non-positive result. Phase is
+    added only when finite.'''
     with _self.lockcm:
-        return _self._cmd.light_air_time(_self._COb, float(clock), float(speed))
+        return _self._cmd.light_air_time(_self._COb, float(clock), float(speed), float(phase))
 
 
 def _light_air_resolution(setting, mobile=False, *, _self=cmd):
@@ -326,7 +333,8 @@ def _light_air_shadow_filter(setting, mobile=False, *, _self=cmd):
 def _light_air_animating(*, _self=cmd):
     '''True when the dust moves on its own and the live view must redraw
     for it (#618): the rig is on with dust and dust_speed above 0, the dust
-    clock is not pinned, no movie plays, no grid, and something is shown.
+    clock is not pinned, no movie plays and something is shown (a grid
+    animates too, #686).
     What the app's redraw policy asks.'''
     with _self.lockcm:
         return _self._cmd.light_air_animating(_self._COb)
@@ -354,6 +362,16 @@ def _light_shadow_map_size(setting, mobile=False, *, _self=cmd):
     with _self.lockcm:
         return _self._cmd.light_shadow_map_size(
             _self._COb, int(setting), bool(mobile))
+
+
+def _light_soft_radius(size, rig_size, shadow=True, mobile=False, *, _self=cmd):
+    '''The traced soft-shadow radius of a light with `size` under a rig of
+    `rig_size` (#741): size * rig_size (Å) when `shadow` is on, size > 0, the
+    product is finite and positive, and `mobile` is False; else 0 (the light
+    keeps its shadow map).'''
+    with _self.lockcm:
+        return _self._cmd.light_soft_radius(
+            _self._COb, float(size), float(rig_size), bool(shadow), bool(mobile))
 
 
 def _light_shadow_tile(cell, tiles, size, *, _self=cmd):
@@ -433,6 +451,30 @@ def _rig_from_session(lst, *, _self=cmd):
     with _self.lockcm:
         rig, warnings = _self._cmd.light_rig_from_session(_self._COb, lst)
     return rig, list(warnings)
+
+
+def _blend_lights(a, b, e, *, _self=cmd):
+    '''Blend rigs `a` and `b` at eased position `e` (#661): returns the blended
+    rig dict through _cmd.blend_light_rigs (core pymol::LightRigBlend). Never
+    touches the live rig.'''
+    with _self.lockcm:
+        return _self._cmd.blend_light_rigs(_self._COb, a, b, float(e))
+
+
+def _lights_recall(rig, force=False, *, _self=cmd):
+    '''Recall a scene's rig (#661): when a camera animation is running or
+    force=True, and both rigs are on, blends the rig in the core with the
+    camera frames; otherwise replaces the rig at once.'''
+    with _self.lockcm:
+        return _self._cmd.lights_recall(_self._COb, rig, int(bool(force)))
+
+
+def _lights_recall_step(cur, n, *, _self=cmd):
+    '''Test hook (#661): advance a pending recall blend to camera element
+    `cur` of `n` elements. Returns True while blending, False when finished
+    or nothing is pending.'''
+    with _self.lockcm:
+        return bool(_self._cmd.lights_recall_step(_self._COb, int(cur), int(n)))
 
 
 def _lights_blend(a='', b='', t='', *, _self=cmd):

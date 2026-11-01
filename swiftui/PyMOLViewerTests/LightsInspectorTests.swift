@@ -68,9 +68,10 @@ final class LightInspectorFormatTests: XCTestCase {
             .warmth: ("3800 K", "3800 kelvin"),
             .beam: ("40°", "40 degrees"),
             .softness: ("0.50", "0.50"),
+            .size: ("0.25", "0.25"),
         ]
         let values: [LightParameter: Double] = [.orbit: -45, .pitch: 35, .radius: 3, .intensity: 1.8,
-                                                .warmth: 3800, .beam: 40, .softness: 0.5]
+                                                .warmth: 3800, .beam: 40, .softness: 0.5, .size: 0.25]
         for p in LightParameter.allCases {
             XCTAssertEqual(LightInspectorFormat.text(p, values[p]!, frameSize: 14), expected[p]!.0, "\(p)")
             XCTAssertEqual(LightInspectorFormat.spoken(p, values[p]!, frameSize: 14), expected[p]!.1, "\(p)")
@@ -262,15 +263,16 @@ final class LightsInspectorStateTests: XCTestCase {
         store.lights[1].warmth = 3800
         store.lights[1].beam = 40
         store.lights[1].softness = 0.5
+        store.lights[1].size = 0.25
         controller.begin()
         controller.select(name: "fill")
         let state = try XCTUnwrap(LightsInspectorState(controller))
         XCTAssertEqual(state.name, "fill")
         XCTAssertEqual(state.index, 1)
         XCTAssertEqual(state.rows.map(\.parameter), LightParameter.allCases)
-        XCTAssertEqual(state.rows.map(\.value), [-45, 35, 3, 1.8, 3800, 40, 0.5])
+        XCTAssertEqual(state.rows.map(\.value), [-45, 35, 3, 1.8, 3800, 40, 0.5, 0.25])
         XCTAssertEqual(state.rows.map(\.text),
-                       ["−45°", "+35°", "3.0× · 30 Å", "1.80", "3800 K", "40°", "0.50"])
+                       ["−45°", "+35°", "3.0× · 30 Å", "1.80", "3800 K", "40°", "0.50", "0.25"])
         XCTAssertFalse(state.isPinned)
         XCTAssertEqual(state.pinValue, "Off")
     }
@@ -371,7 +373,7 @@ final class LightsInspectorStateTests: XCTestCase {
         XCTAssertEqual(state.containerLabel, "Light inspector, key")
         XCTAssertEqual(state.summary,
                        "key slot=0 pin=0 shadow=0 on=1 orbit=-45.0 pitch=35.0 radius=3.00 intensity=1.80"
-                       + " warmth=3800 beam=40.0 softness=0.50 color=0.000,1.000,1.000 swatch=Cyan"
+                       + " warmth=3800 beam=40.0 softness=0.50 size=0.00 color=0.000,1.000,1.000 swatch=Cyan"
                        + " edit=1 revert=0")
         XCTAssertEqual(state.summary, try XCTUnwrap(LightsInspectorState(controller)).summary, "stable")
     }
@@ -439,6 +441,40 @@ final class LightsInspectorStateTests: XCTestCase {
         store.enabled = false
         controller.refresh()
         XCTAssertTrue(try hint(false))
+    }
+
+    func testTheNoCastersHint() throws {
+        store.setRig(["key", "fill"])
+        store.lights[0].shadow = true
+        controller.begin()
+        controller.eyeDemand = .everyFrame
+        store.shadowSlots = [-1, -1]
+        controller.frameRendered()
+        let state1 = try XCTUnwrap(LightsInspectorState(controller, sceneShadowsOn: true))
+        XCTAssertTrue(state1.showsNoCastersHint)
+        XCTAssertTrue(state1.summary.hasSuffix(" hint=no_casters"), state1.summary)
+
+        // With slot 0 after another frameRendered it is false.
+        store.shadowSlots = [0, -1]
+        controller.frameRendered()
+        let state2 = try XCTUnwrap(LightsInspectorState(controller, sceneShadowsOn: true))
+        XCTAssertFalse(state2.showsNoCastersHint)
+        XCTAssertFalse(state2.summary.contains("hint=no_casters"), state2.summary)
+
+        // With sceneShadowsOn: false it is false (and showsShadowsHint true).
+        store.shadowSlots = [-1, -1]
+        controller.frameRendered()
+        let state3 = try XCTUnwrap(LightsInspectorState(controller, sceneShadowsOn: false))
+        XCTAssertFalse(state3.showsNoCastersHint)
+        XCTAssertTrue(state3.showsShadowsHint)
+        XCTAssertTrue(state3.summary.hasSuffix(" hint=shadows_off"), state3.summary)
+    }
+
+    func testSizeNotesExist() {
+        XCTAssertFalse(LightsInspectorState.sizeHelp.isEmpty)
+        XCTAssertFalse(LightsInspectorState.sizeMobileNote.isEmpty)
+        XCTAssertTrue(LightsInspectorState.sizeHelp.contains("Size"))
+        XCTAssertTrue(LightsInspectorState.sizeMobileNote.contains("iPhone"))
     }
 }
 
@@ -533,7 +569,8 @@ final class LightsAutoEditTests: XCTestCase {
         XCTAssertEqual(store.air.dustSpeed, 2.5)
         XCTAssertEqual(store.air.scatter, -0.25)
         XCTAssertEqual(AtmosphereCardState(controller)?.summary,
-                       "on=1 haze=0.28 dust=0.50 dust_size=0.35 dust_speed=2.50 scatter=-0.25 rig=1"
+                       "on=1 haze=0.28 dust=0.50 dust_size=0.35 dust_speed=2.50 scatter=-0.25"
+                       + " dust_glow=1.00 dust_opacity=0.00 rig=1"
                        + " hint=none edit=1 memory=0")
 
         entries = LightsAutoEdit.apply(LightsAutoEdit.parse("airon:0;airon:0;dust:0.4").tokens, to: controller)
@@ -605,7 +642,7 @@ final class LightsInspectorAccessibilityTests: XCTestCase {
         XCTAssertEqual(LightsInspectorState.fieldLabel(.orbit), "Orbit in degrees")
         XCTAssertEqual(LightsInspectorState.fieldLabel(.pitch), "Pitch in degrees")
         XCTAssertEqual(state.rows.map(\.parameter.label),
-                       ["Orbit", "Pitch", "Radius", "Intensity", "Warmth", "Beam", "Softness"])
+                       ["Orbit", "Pitch", "Radius", "Intensity", "Warmth", "Beam", "Softness", "Size"])
         XCTAssertEqual(state.row(.orbit)?.spoken, "-45 degrees")
         XCTAssertEqual(state.row(.pitch)?.spoken, "35 degrees")
         XCTAssertEqual(state.row(.radius)?.spoken, "3.0 scene sizes, 30 angstroms")
@@ -745,7 +782,7 @@ final class LightsInspectorSnapshotTests: XCTestCase {
     private struct Shot {
         var name: String
         var dark = false
-        var width: CGFloat = LightsInspector.width + 24
+        var width: CGFloat = LightsInspectorMetrics.width + 24
         var height: CGFloat = 520
         var collapsed = false
         var withBar = false
@@ -891,7 +928,9 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         if shot.withBar {
             root = AnyView(
                 VStack(alignment: .trailing, spacing: 8) {
-                    LightsBar(controller: controller, style: style, onDone: {})
+                    // The macOS bar (#889): the light menu and the Atmosphere button.
+                    LightsBar(controller: controller, style: style, atmospherePopover: true, lightMenu: true,
+                              onDone: {})
                     LightsSideColumn(controller: controller, style: style,
                                      inspectorStartsCollapsed: shot.collapsed,
                                      sceneShadowsOn: shot.sceneShadowsOn)
@@ -974,5 +1013,275 @@ final class LightsInspectorSnapshotTests: XCTestCase {
             }
         }
         return true
+    }
+}
+
+// MARK: - The angle steppers' touch targets (#720)
+
+final class LightAngleStepperMetricsTests: XCTestCase {
+    func testTouchButtonsAre44PointAndFitTheCard() {
+        XCTAssertEqual(InspectorMetrics.touchStepperWidth(minimum: 44), 88, "two 44 pt buttons")
+        XCTAssertEqual(InspectorMetrics.touchStepperWidth(minimum: 0), 0, "macOS: the system stepper")
+        XCTAssertLessThanOrEqual(InspectorMetrics.angleRowMinimumWidth(minimum: 44) + 1,
+                                 LightsInspector.width - 24, "the row fits the 284 pt card")
+        XCTAssertEqual(InspectorMetrics.touchStepperWidth(minimum: LightsTouch.minimumTarget),
+                       2 * LightsTouch.minimumTarget)
+    }
+}
+
+// MARK: - No casters hint (#673)
+
+final class LightsNoCastersHintTests: XCTestCase {
+    func testExactHintText() {
+        XCTAssertEqual(LightsInspectorState.noCastersHint, "No casters in this light's beam")
+    }
+
+    func testPureDecisionTruthTable() {
+        // True only for (isShadowed: true, rigOn: true, sceneShadowsOn: true, shadowSlot: -1).
+        XCTAssertTrue(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: true, sceneShadowsOn: true, shadowSlot: -1))
+
+        // False for slot 0/1/2.
+        for slot in [0, 1, 2] {
+            XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+                isShadowed: true, rigOn: true, sceneShadowsOn: true, shadowSlot: slot),
+                "slot \(slot) should not show hint")
+        }
+
+        // False for slot nil.
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: true, sceneShadowsOn: true, shadowSlot: nil))
+
+        // False for sceneShadowsOn false or nil.
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: true, sceneShadowsOn: false, shadowSlot: -1))
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: true, sceneShadowsOn: nil, shadowSlot: -1))
+
+        // False for rigOn false.
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: false, sceneShadowsOn: true, shadowSlot: -1))
+
+        // False for isShadowed false.
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: false, rigOn: true, sceneShadowsOn: true, shadowSlot: -1))
+    }
+}
+
+// MARK: - Exposure row (#733)
+
+/// The inspector's rig-level Exposure row edits the SAME setting as
+/// Effects > Exposure: same entry, range and command text.
+final class LightsExposureRowTests: XCTestCase {
+    func testControlWritesTheEffectsSettingAndCommand() {
+        var ran: [String] = []
+        let control = LightsExposureControl.scene(values: ["metal_exposure": 0.6], run: { ran.append($0) })
+        let effects = SceneCatalog.exposure
+        XCTAssertEqual(effects.setting, "metal_exposure")
+        XCTAssertEqual(control.value, 0.6)
+        XCTAssertEqual(control.range, effects.min...effects.max)
+        XCTAssertEqual(control.decimals, effects.decimals)
+        control.set(0.75)
+        control.set(1.2)
+        // Exactly what the Effects slider runs for those values.
+        XCTAssertEqual(ran, ["set metal_exposure, 0.7500", "set metal_exposure, 1.2000"])
+        XCTAssertEqual(ran, [0.75, 1.2].map { SceneCatalog.setCommand(effects, $0) })
+    }
+
+    func testRangeAndDefault() {
+        let control = LightsExposureControl.scene(values: [:], run: { _ in })
+        XCTAssertEqual(control.value, 1.0, "unpolled: neutral")
+        XCTAssertEqual(control.range, 0.2...2.0)
+        XCTAssertEqual(control.text(1.0), "1.00")
+    }
+
+    func testCaptionNamesWhatItScales() {
+        XCTAssertTrue(LightsExposureControl.caption.contains("lit scene"))
+        XCTAssertTrue(LightsExposureControl.caption.contains("air"))
+    }
+
+    /// The row's edit contract: no write during a drag, one on release, an
+    /// immediate write for a step outside a drag, and the written value shown
+    /// until a changed polled value arrives (never mid-drag).
+    func testEditCommitsOnReleaseAndHoldsUntilThePollChanges() {
+        var e = LightsExposureEdit()
+        XCTAssertEqual(e.shown(1.0), 1.0)
+        XCTAssertNil(e.editing(true))
+        XCTAssertNil(e.set(0.5))
+        XCTAssertNil(e.set(0.6), "no write per drag tick")
+        XCTAssertEqual(e.shown(1.0), 0.6)
+        e.polledChanged()
+        XCTAssertEqual(e.shown(1.0), 0.6, "a poll mid-drag does not clear it")
+        XCTAssertEqual(e.editing(false), 0.6, "one write on release")
+        XCTAssertEqual(e.shown(1.0), 0.6, "held after release, before the poll")
+        e.polledChanged()
+        XCTAssertEqual(e.shown(0.6), 0.6)
+        XCTAssertNil(e.pending, "the changed poll releases it")
+        // A VoiceOver step outside a drag writes at once.
+        XCTAssertEqual(e.set(0.65), 0.65)
+        XCTAssertEqual(e.shown(0.6), 0.65)
+    }
+
+    /// The inspector draws the Exposure row only when the app puts a control
+    /// in the environment: the rows presentation is taller by the row (and its
+    /// caption) with one, and its size is unchanged without.
+    @MainActor
+    func testInspectorDrawsTheRowOnlyWithAControl() {
+        let store = FakeRigStore()
+        store.setRig(["key", "fill"])
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        let style = LightsInspectorSnapshotTests.style(dark: true)
+        func height(_ control: LightsExposureControl?) -> CGFloat {
+            let host = NSHostingView(rootView:
+                LightsInspector(controller: controller, style: style, presentation: .rows)
+                    .environment(\.lightsExposure, control)
+                    .frame(width: LightsInspectorMetrics.width - 24))
+            host.frame = NSRect(x: 0, y: 0, width: LightsInspectorMetrics.width, height: 600)
+            host.layoutSubtreeIfNeeded()
+            XCTAssertLessThanOrEqual(host.fittingSize.width, LightsInspectorMetrics.width)
+            return host.fittingSize.height
+        }
+        let without = height(nil)
+        let with = height(.scene(values: ["metal_exposure": 1], run: { _ in }))
+        XCTAssertGreaterThan(without, 0)
+        XCTAssertGreaterThan(with, without + 20, "the Exposure row and its caption add height")
+        XCTAssertEqual(height(nil), without, accuracy: 0.5)
+    }
+}
+
+// MARK: - VoiceOver announcement (#672)
+
+@MainActor
+final class LightsInspectorAnnouncementTests: XCTestCase {
+    private var originalAnnounce: ((String) -> Void)?
+    private var announced: [String] = []
+    private var windows: [NSWindow] = []
+
+    override func setUp() {
+        super.setUp()
+        announced = []
+        originalAnnounce = LightsInspectorState.announce
+        LightsInspectorState.announce = { [weak self] text in
+            self?.announced.append(text)
+        }
+    }
+
+    override func tearDown() {
+        if let original = originalAnnounce {
+            LightsInspectorState.announce = original
+        }
+        for window in windows {
+            window.orderOut(nil)
+        }
+        windows = []
+        super.tearDown()
+    }
+
+    private func hostOffscreen<V: View>(_ view: V) -> NSHostingView<V> {
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000),
+                                                  size: NSSize(width: 320, height: 600)),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        windows.append(window)
+        host.layoutSubtreeIfNeeded()
+        return host
+    }
+
+    private func settle() {
+        for window in windows {
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        for window in windows {
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func fixture() -> (FakeRigStore, LightsController) {
+        let store = FakeRigStore()
+        store.setRig(["key", "fill", "rim"])
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        store.lights.append(.init(name: "light4"))
+        for i in 0..<3 { store.lights[i].shadow = true }
+        controller.refresh()
+        controller.select(name: "light4")
+        return (store, controller)
+    }
+
+    func testTheAnnouncementIsTheNotice() {
+        XCTAssertEqual(LightsInspectorState.shadowCapAnnouncement,
+                       "At most 3 lights cast shadows. Turn one off first.")
+    }
+
+    func testEveryRefusedShadowWriteBumpsTheCounter() {
+        let (_, controller) = fixture()
+        var events = 0
+        let sink = controller.shadowRefusalEvents.sink { events += 1 }
+        defer { sink.cancel() }
+
+        XCTAssertEqual(controller.shadowRefusals, 0)
+        XCTAssertFalse(controller.shadowRefused)
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertEqual(controller.shadowRefusals, 1)
+        XCTAssertTrue(controller.shadowRefused)
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertEqual(controller.shadowRefusals, 2)
+        XCTAssertTrue(controller.shadowRefused)
+
+        XCTAssertEqual(controller.set(.intensity, 1.5), .ok)
+        XCTAssertEqual(controller.shadowRefusals, 2)
+        XCTAssertFalse(controller.shadowRefused)
+
+        controller.select(name: "rim")
+        XCTAssertEqual(controller.shadowRefusals, 2)
+        XCTAssertFalse(controller.shadowRefused)
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        XCTAssertEqual(controller.shadowRefusals, 2)
+        XCTAssertEqual(events, 2, "one event per refused write, none for the rest")
+    }
+
+    func testTheCardAnnouncesEachRefusal() {
+        let (_, controller) = fixture()
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        _ = hostOffscreen(LightsInspector(controller: controller, style: style))
+        settle()
+        XCTAssertEqual(announced, [])
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        settle()
+        XCTAssertEqual(announced, [LightsInspectorState.shadowCapNotice])
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        settle()
+        XCTAssertEqual(announced, [LightsInspectorState.shadowCapNotice,
+                                   LightsInspectorState.shadowCapNotice])
+
+        XCTAssertEqual(controller.set(.intensity, 1.5), .ok)
+        settle()
+        XCTAssertEqual(announced, [LightsInspectorState.shadowCapNotice,
+                                   LightsInspectorState.shadowCapNotice])
+    }
+
+    func testOnlyTheHeaderAnnouncesOnTheSheet() {
+        let (_, controller) = fixture()
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        _ = hostOffscreen(
+            VStack {
+                LightsInspector(controller: controller, style: style, presentation: .header)
+                LightsInspector(controller: controller, style: style, presentation: .rows)
+            }
+        )
+        settle()
+        XCTAssertEqual(announced, [])
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        settle()
+        XCTAssertEqual(announced, [LightsInspectorState.shadowCapNotice])
     }
 }

@@ -73,16 +73,20 @@ _air = _load('_lighting_material_msl_air', 'lighting_air_msl.py')
 shader_literals = _msl.shader_literals
 strip_comments = _msl.strip_comments
 msl_functions = _msl.msl_functions
+fragments = _msl.fragments
 cpp_function = _msl.cpp_function
 squash = _msl.squash
 
-# #615's fields, appended to MaterialU in this order.
+# #615's fields, appended to MaterialU in this order (#712 B extended with 4 fields).
 LIGHT_FIELDS = ('lightDiffuse', 'lightHighlight', 'lightSharpness', 'lightTint',
-                'lightWrap', 'lightClassic', '_pad3', '_pad4')
-# The five LightResponse fields light_response reads, by MaterialU field.
+                'lightWrap', 'lightClassic', 'lightHighlight2', 'lightSharpness2',
+                'lightTint2', 'lightTintGain', '_pad3', '_pad4')
+# The nine LightResponse fields light_response reads, by MaterialU field (#712 B).
 RESPONSE_FIELDS = {'diffuse': 'lightDiffuse', 'highlight': 'lightHighlight',
                    'sharpness': 'lightSharpness', 'tint': 'lightTint',
-                   'wrap': 'lightWrap'}
+                   'wrap': 'lightWrap', 'highlight2': 'lightHighlight2',
+                   'sharpness2': 'lightSharpness2', 'tint2': 'lightTint2',
+                   'tintGain': 'lightTintGain'}
 # Byte sizes of the MaterialU field types (C++ and MSL spellings).
 TYPE_SIZES = {'simd_float4x4': 64, 'float4x4': 64, 'int': 4, 'float': 4}
 # What each C++ type is in MSL.
@@ -97,12 +101,17 @@ LIGHT_RESPONSE_BODY = (
     'r.sharpness=mat.lightSharpness;'
     'r.tint=mat.lightTint;'
     'r.wrap=mat.lightWrap;'
+    'r.highlight2=mat.lightHighlight2;'
+    'r.sharpness2=mat.lightSharpness2;'
+    'r.tint2=mat.lightTint2;'
+    'r.tintGain=mat.lightTintGain;'
     'returnr;}')
 
 # Master f8251f227 (#615's base), with these parsers: struct LightResponse's
 # braces and body, and kMaterialSrc's mat_soft_knee (signature, body),
 # comments stripped and whitespace removed, first 16 hex digits of sha256.
-MASTER_LIGHT_RESPONSE_STRUCT = 'a21a3fd677214d39'
+# #712 B: struct LightResponse extended with 4 new fields
+MASTER_LIGHT_RESPONSE_STRUCT = '022ac8a9b8b02dcf'
 MASTER_SOFT_KNEE = ('74cb65ae1e37a5c5', '532407fdae17cad5')
 # light_response's signature is master's; only its body is #615's.
 MASTER_LIGHT_RESPONSE_SIGNATURE = '0671125f88c96948'
@@ -122,6 +131,10 @@ MIRRORED = {
     'kMatJellyGlowGain': 1.15,
     'kMatRubberHighlightExp': 8.0,
     'kMatRubberHighlightTint': 0.7,
+    'kMatJellySheen': 0.12,
+    'kMatJellySheenExp': 8.0,
+    'kMatJellyTintGain': 1.3,
+    'kMatRubberTintGain': 1.4,
 }
 # Where each named constant is used in the classic shaders (whitespace
 # removed), and the literal it replaced, which must be gone from there.
@@ -136,13 +149,15 @@ USES = {
          'direct*saturate((ndotv+kMatJellyGlowWrap)/(1.0+kMatJellyGlowWrap));',
          'saturate(base*kMatJellyGlowGain)*min(wrapLit,1.0);',
          'm.p[2]*pow(ndoth,kMatJellyWetExp)',
-         'mix(float3(1.0),saturate(base*1.3),kMatJellyWetTint);'),
-        ('/1.6', '+0.6)', 'base*1.15', 'pow(ndoth,70.0)', '1.3),0.25)')),
+         'kMatJellySheen*pow(ndoth,kMatJellySheenExp)',
+         'mix(float3(1.0),saturate(base*kMatJellyTintGain),kMatJellyWetTint);'),
+        ('/1.6', '+0.6)', 'base*1.15', 'pow(ndoth,70.0)', '0.12',
+         'pow(ndoth,8.0)', 'base*1.3', '1.3),0.25)')),
 }
 # Rubber's branch of mat_shade_procedural (it has no function of its own).
 RUBBER_USES = ('pow(max(dot(N,H),0.0),kMatRubberHighlightExp)',
-               'mix(float3(1.0),saturate(base*1.4),kMatRubberHighlightTint);')
-RUBBER_LITERALS = ('pow(max(dot(N,H),0.0),8.0)', 'saturate(base*1.4),0.7)')
+               'mix(float3(1.0),saturate(base*kMatRubberTintGain),kMatRubberHighlightTint);')
+RUBBER_LITERALS = ('pow(max(dot(N,H),0.0),8.0)', 'base*1.4', 'saturate(base*1.4),0.7)')
 
 # Part 4: mat_classic_light, signature and body (whitespace removed).
 CLASSIC_LIGHT_SIGNATURE = (
@@ -155,16 +170,17 @@ GLASS_GLINT = ('floatglint=(1.0-kMatGlassFrostDim*saturate(rough))*'
                'kMatGlassHeadGlint*pow(ndotv,expo))*classic;')
 GLASS_HI = ('hi=(room*F+float3(1.0-exp(-2.0*glint)))*'
             '(kMatGlassReflection*saturate(reflection));')
-JELLY_WET = ('col+=(m.p[2]*pow(ndoth,kMatJellyWetExp)+0.12*pow(ndoth,8.0))'
+JELLY_WET = ('col+=(m.p[2]*pow(ndoth,kMatJellyWetExp)+kMatJellySheen*pow(ndoth,kMatJellySheenExp))'
              '*mat_classic_light(m)'
-             '*mix(float3(1.0),saturate(base*1.3),kMatJellyWetTint);')
+             '*mix(float3(1.0),saturate(base*kMatJellyTintGain),kMatJellyWetTint);')
 JELLY_ROOM = 'col+=room*F*0.8;'
 RUBBER_SPEC = ('floatspec=m.p[2]*pow(max(dot(N,H),0.0),kMatRubberHighlightExp)*'
                '(n1>0.0?1.0:0.0)*mat_classic_light(m);')
 RUBBER_SHEEN = 'floatsheen=m.p[3]*pow(1.0-saturate(N.z),3.0);'
 # Every mat_glass_shade call, by library, with the MaterialU it hands over.
+# #635: sphere impostor glass branch has 1 mat_glass_shade call, mirroring cylinder
 GLASS_CALLS = {'kMaterialImpostorSrc': ['m'], 'kVBOSrc': ['mat', 'mat'],
-               'kSphereImpostorSrc': ['mat', 'mat'], 'kCylinderImpostorSrc': ['mat']}
+               'kSphereImpostorSrc': ['mat'], 'kCylinderImpostorSrc': ['mat']}
 
 
 def read(path):
@@ -240,12 +256,12 @@ class TestLayout(MaterialMSLCase):
         self.assertEqual([n for _t, n, _c in cpp], [n for _t, n, _c in msl])
         self.assertEqual([(MSL_TYPE[t], c) for t, _n, c in cpp],
                          [(t, c) for t, _n, c in msl])
-        # #615's eight floats, at the end, in this order
-        self.assertEqual(tuple(n for _t, n, _c in cpp[-8:]), LIGHT_FIELDS)
-        for type_, name, count in cpp[-8:]:
+        # #615 and #712 B's twelve floats, at the end, in this order
+        self.assertEqual(tuple(n for _t, n, _c in cpp[-12:]), LIGHT_FIELDS)
+        for type_, name, count in cpp[-12:]:
             self.assertEqual((type_, count), ('float', 1), name)
         # the fields before them are the 128 bytes MaterialU had (#503, #588)
-        self.assertEqual([n for _t, n, _c in cpp[:-8]],
+        self.assertEqual([n for _t, n, _c in cpp[:-12]],
                          ['invModelview', 'family', 'mode', 'wantsPeel', '_pad0',
                           'reflect', 'tint', 'rough', 'refrPx', 'p',
                           'refrOrtho', '_pad2'])
@@ -254,15 +270,19 @@ class TestLayout(MaterialMSLCase):
         for fields in (self.cpp_material_u(),
                        struct_fields(self.material_code, 'MaterialU')):
             offsets, size = layout(fields)
-            self.assertEqual(size, 160)
+            self.assertEqual(size, 176)
             self.assertEqual(size % 16, 0)
             self.assertEqual(offsets['lightDiffuse'], 128)
+            self.assertEqual(offsets['lightHighlight2'], 152)
         cpp = self.code[:self.code.index('@R"')]
-        self.assertRegex(cpp, r'static_assert\(\s*sizeof\(MaterialU\)\s*==\s*160\s*,')
+        self.assertRegex(cpp, r'static_assert\(\s*sizeof\(MaterialU\)\s*==\s*176\s*,')
         self.assertRegex(cpp, r'static_assert\(\s*offsetof\(MaterialU,\s*'
                               r'lightDiffuse\)\s*==\s*128\s*,')
+        self.assertRegex(cpp, r'static_assert\(\s*offsetof\(MaterialU,\s*'
+                              r'lightHighlight2\)\s*==\s*152\s*,')
         self.assertRegex(cpp, r'static_assert\(\s*sizeof\(MaterialU\)\s*%\s*16'
                               r'\s*==\s*0\s*,')
+        self.assertNotRegex(cpp, r'sizeof\(MaterialU\)\s*==\s*160')
         self.assertNotRegex(cpp, r'sizeof\(MaterialU\)\s*==\s*128')
 
     def testOneMaterialUInTheShaders(self):
@@ -298,15 +318,19 @@ class TestBinding(MaterialMSLCase):
                      'u.lightSharpness=MaterialLightSharpness(r.exponent,shininess);',
                      'u.lightTint=r.tint;',
                      'u.lightWrap=r.wrap;',
-                     'u.lightClassic=classicScale;'):
+                     'u.lightClassic=classicScale;',
+                     'u.lightHighlight2=r.highlight2;',
+                     'u.lightSharpness2=MaterialLightSharpness(r.exponent2,shininess);',
+                     'u.lightTint2=r.tint2;',
+                     'u.lightTintGain=r.tintGain;'):
             self.assertEqual(body.count(stmt), 1, stmt)
             # filled before the bytes are copied to the encoder
             self.assertLess(body.index(stmt), body.index('setFragmentBytes:&u'))
         # zero-initialised, so the padding is never stale memory
         self.assertIn('MaterialUu{};', body)
-        for field in LIGHT_FIELDS[:6]:
+        for field in LIGHT_FIELDS[:10]:
             self.assertEqual(len(re.findall(r'\bu\.%s=' % field, body)), 1, field)
-        for pad in LIGHT_FIELDS[6:]:
+        for pad in LIGHT_FIELDS[10:]:
             self.assertNotIn('u.%s' % pad, body)
 
     def testCallers(self):
@@ -403,8 +427,9 @@ class TestLightResponse(MaterialMSLCase):
         self.assertEqual((digest(knee_sig), digest(knee_body)), MASTER_SOFT_KNEE)
 
     def testTheRayTracerIsUntouched(self):
-        """kRTSrc keeps its #613 copies (and the neutral response) byte for
-        byte: master's whole-literal digest, once #624's tone field in its
+        """kRTSrc keeps its #613 copies byte for byte, and still has no
+        light_response or MaterialU (#709 hands its hits their response from
+        the occurrence table, rt_hit_response): master's whole-literal digest, once #624's tone field in its
         LightRigU mirror is taken out (lighting_air_msl.py TONE_FIELD_624) and
         #624's HDR edits put back (without_hdr_624: kLightHdr, the tone
         helpers' copies, light_finish's exposure and HDR arm)."""
@@ -560,7 +585,8 @@ class TestClassicLight(MaterialMSLCase):
                 self.assertIsNotNone(last, '%s: %s' % (name, args))
                 found.setdefault(name, []).append(last.group(1))
         self.assertEqual(found, GLASS_CALLS)
-        self.assertEqual(sum(len(v) for v in found.values()), 6)
+        # #635: 5 total calls (sphere has 1, matching cylinder)
+        self.assertEqual(sum(len(v) for v in found.values()), 5)
 
     def testBindRepMaterialPassesTheScale(self):
         rep = squash(cpp_function(self.mm, 'RendererMetal::bindRepMaterial'))
@@ -599,3 +625,166 @@ class TestClassicLight(MaterialMSLCase):
         self.assertLess(body.index('setLightClassicScale('),
                         body.index('SceneRenderAll('))
         self.assertEqual(strip_comments(source).count('setLightClassicScale('), 1)
+
+
+class TestSecondLobe712(MaterialMSLCase):
+    """RayMol #712 Part B: second lobe and tint gain in MSL and RT."""
+
+    def testLightResponseStructEndsWithFourNewFields(self):
+        for lib in ('kMaterialSrc', 'kRTSrc'):
+            code = strip_comments(self.msl[lib])
+            m = re.search(r'struct\s+LightResponse\s*\{(.*?)\};', code, re.S)
+            self.assertIsNotNone(m, lib)
+            fields = [line.strip().rstrip(';').split() for line in m.group(1).split(';') if line.strip()]
+            names = [f[1] for f in fields]
+            self.assertEqual(names[-4:], ['highlight2', 'sharpness2', 'tint2', 'tintGain'], lib)
+            for f in fields[-4:]:
+                self.assertEqual(f[0], 'float', lib)
+
+    def testLightResponseNeutralValues(self):
+        for lib in ('kMaterialSrc', 'kRTSrc'):
+            rt = msl_functions(self.msl[lib])
+            body = squash(rt['light_response_neutral'][1])
+            self.assertIn('r.highlight2=0.0;', body, lib)
+            self.assertIn('r.sharpness2=1.0;', body, lib)
+            self.assertIn('r.tint2=0.0;', body, lib)
+            self.assertIn('r.tintGain=1.0;', body, lib)
+
+    def testLightTermsViewStatements(self):
+        for lib in ('kMaterialSrc', 'kRTSrc'):
+            funcs = msl_functions(self.msl[lib])
+            for fname in ('light_terms_view', 'light_terms_view_shadowed'):
+                body = squash(funcs[fname][1])
+                self.assertIn('float3spec2=float3(0.0);', body, '%s in %s' % (fname, lib))
+                self.assertIn('constfloatshin2=max(rig.head.y*r.sharpness2,1.0);', body, '%s in %s' % (fname, lib))
+                self.assertIn('if(r.highlight2>0.0)spec2+=rad*(rig.L[i].misc.x*r.highlight2*pow(ndh,shin2));', body, '%s in %s' % (fname, lib))
+                self.assertIn('constfloat3tc=r.tintGain!=1.0?saturate(base*r.tintGain):base;', body, '%s in %s' % (fname, lib))
+                self.assertIn('t.specular=t.specular*mix(float3(1.0),tc,r.tint)+spec2*mix(float3(1.0),tc,r.tint2);', body, '%s in %s' % (fname, lib))
+
+    def testFourFunctionsStayIdenticalModuloShadowed(self):
+        """kMaterialSrc and kRTSrc copies are verbatim, and shadowed vs unshadowed only differ by maps and visibility."""
+        mat_funcs = msl_functions(self.msl['kMaterialSrc'])
+        rt_funcs = msl_functions(self.msl['kRTSrc'])
+        self.assertEqual(squash(mat_funcs['light_terms_view'][1]), squash(rt_funcs['light_terms_view'][1]))
+        self.assertEqual(squash(mat_funcs['light_terms_view_shadowed'][1]), squash(rt_funcs['light_terms_view_shadowed'][1]))
+
+    def testRtHitResponseReadsFifthVector(self):
+        funcs = msl_functions(self.msl['kRTSrc'])
+        body = squash(funcs['rt_hit_response'][1])
+        self.assertIn('constfloat4e=mats[kRTMatRow*mi+4];', body)
+        self.assertIn('r.highlight2=e.x;', body)
+        self.assertIn('r.sharpness2=e.y;', body)
+        self.assertIn('r.tint2=e.z;', body)
+        self.assertIn('r.tintGain=e.w;', body)
+
+    def testKRTMatRowIsFiveAndNoFourTimesMiRemains(self):
+        rt_code = strip_comments(self.msl['kRTSrc'])
+        self.assertIn('constantintkRTMatRow=5;', squash(rt_code))
+        self.assertNotIn('4*mi', squash(rt_code))
+
+    def testRtOccurrenceMaterialReturnsTwentyValues(self):
+        body = squash(cpp_function(self.mm, 'RendererMetal::rtOccurrenceMaterial'))
+        self.assertIn('r.highlight2,', body)
+        self.assertIn('r.tint2,', body)
+        self.assertIn('r.tintGain', body)
+        m = re.search(r'return\{(.*?)\};', body)
+        self.assertIsNotNone(m)
+        raw = m.group(1)
+        items, cur, depth = [], [], 0
+        for ch in raw:
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                items.append(''.join(cur).strip())
+                cur = []
+                continue
+            cur.append(ch)
+        if cur:
+            items.append(''.join(cur).strip())
+        self.assertEqual(len(items), 20)
+        self.assertEqual(items[-4:], ['r.highlight2',
+                                     'MaterialLightSharpness(r.exponent2,_lightRigOn?_lightRigBlock.head[1]:0.0f)',
+                                     'r.tint2', 'r.tintGain'])
+
+    def testUploadRTMatTableSizesRowsAtTwentyFloats(self):
+        header = strip_comments(read(METAL_H))
+        self.assertRegex(header, r'using\s+RTMatRow\s*=\s*std::array<float,\s*20>;')
+        for name in ('_rtFrameMat', '_rtBuiltMat', '_rtTFrameMat', '_rtTBuiltMat'):
+            self.assertRegex(header, r'std::vector<RTMatRow>\s+%s;' % name)
+        body = squash(cpp_function(self.mm, 'RendererMetal::uploadRTMatTable'))
+        self.assertIn('std::tuple_size<RTMatRow>::value*sizeof(float)', body)
+        self.assertNotIn('16*sizeof(float)', body)
+
+
+class TestRigAlbedo(MaterialMSLCase):
+    """The studio rig lights the procedural material's albedo (#710)."""
+
+    def testMatRigAlbedo(self):
+        self.assertIn('mat_rig_albedo', self.material)
+        body = squash(self.material['mat_rig_albedo'][1])
+        self.assertTrue(body.startswith('{if(!kMatProcedural)returnbase;'))
+        self.assertIn('mat_marble_albedo(base,pModel,m)', body)
+        self.assertIn('kMatRubberGrainHarmonic,kMatRubberGrainOffset', body)
+        self.assertIn('kMatClayGrainHarmonic,kMatClayGrainOffset', body)
+        self.assertIn('mat_clay_edge(nz,m)', body)
+        self.assertNotIn('mat_classic_light', body)
+
+    def testMatShadeProcedural(self):
+        body = squash(self.material['mat_shade_procedural'][1])
+        self.assertIn('0.85,kMatRubberGrainHarmonic,kMatRubberGrainOffset)', body)
+        self.assertIn('0.9,kMatClayGrainHarmonic,kMatClayGrainOffset)', body)
+        self.assertIn('returncol*mat_clay_edge(N.z,m);', body)
+        self.assertNotIn('3.1,7.0', body)
+        self.assertNotIn('2.7,5.0', body)
+
+    def testMatImpostorRigAlbedo(self):
+        funcs = msl_functions(self.msl['kMaterialImpostorSrc'])
+        self.assertIn('mat_impostor_rig_albedo', funcs)
+        body = squash(funcs['mat_impostor_rig_albedo'][1])
+        self.assertEqual(
+            body,
+            '{if(!kMatProcedural)returnbase;'
+            'returnmat_rig_albedo(base,N,(m.invModelview*float4(pEye,1.0)).xyz,m);}')
+
+    def testCallSites(self):
+        vbo = fragments(self.msl['kVBOSrc'])
+        vbo_frag = squash(vbo['vbo_fragment'][1])
+        vbo_oit = squash(vbo['vbo_fragment_oit'][1])
+        self.assertIn('light_apply_shadowed(shaded,albedo,', vbo_frag)
+        self.assertIn('light_apply(shaded,albedo,', vbo_frag)
+        self.assertIn('light_apply_shadowed(c.rgb,albedo,', vbo_oit)
+        self.assertIn('light_apply(c.rgb,albedo,', vbo_oit)
+        albedo_decl = 'constfloat3albedo=mat_rig_albedo(in.color.rgb,in.normalEye,in.posModel,mat);'
+        self.assertIn(albedo_decl, vbo_frag)
+        self.assertIn(albedo_decl, vbo_oit)
+
+        sph = msl_functions(self.msl['kSphereImpostorSrc'])
+        for name in ('sphere_shade_material_rig', 'sphere_shade_material_rig_shadowed'):
+            body = squash(sph[name][1])
+            self.assertIn('(rgb,mat_impostor_rig_albedo(in.color.rgb,n,pt,mat),n,pt,rig,', body)
+
+        cyl = msl_functions(self.msl['kCylinderImpostorSrc'])
+        for name in ('cyl_shade_material_rig', 'cyl_shade_material_rig_shadowed'):
+            body = squash(cyl[name][1])
+            self.assertIn('(rgb,mat_impostor_rig_albedo(base,n,pt,mat),n,pt,rig,', body)
+
+    def testNoRigCallLightsTheRawBase(self):
+        vbo = fragments(self.msl['kVBOSrc'])
+        for name, rgb in (('vbo_fragment', 'shaded'), ('vbo_fragment_oit', 'c.rgb')):
+            body = squash(vbo[name][1])
+            for fn in ('light_apply', 'light_apply_shadowed'):
+                self.assertNotIn('%s(%s,in.color.rgb' % (fn, rgb), body, name)
+        for lib, helpers, base in (
+                ('kSphereImpostorSrc', ('sphere_shade_material_rig',
+                                        'sphere_shade_material_rig_shadowed'),
+                 'in.color.rgb'),
+                ('kCylinderImpostorSrc', ('cyl_shade_material_rig',
+                                          'cyl_shade_material_rig_shadowed'),
+                 'base')):
+            functions = msl_functions(self.msl[lib])
+            for name in helpers:
+                body = squash(functions[name][1])
+                self.assertNotRegex(body, r'light_apply(_shadowed)?\(rgb,%s,'
+                                    % re.escape(base), name)

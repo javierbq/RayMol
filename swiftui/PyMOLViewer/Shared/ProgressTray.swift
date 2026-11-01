@@ -352,6 +352,52 @@ struct ProgressItem: Identifiable, Equatable {
             bundle: current.bundle)
     }
 
+    /// A running or settled MORPH job.
+    ///
+    /// A sibling of `prediction(_:)` / `design(_:)`. The record type is the same
+    /// (`PredictionJobState`, because morph_jobs publishes the same keys as
+    /// predicting.pending_info deliberately), but every user-visible word differs:
+    /// morph is frame-based rather than model-based, so the detail line reads
+    /// "leg k of N" (a leg = one inter-model interpolation) rather than "model k of N".
+    static func morph(_ job: PredictionJobState) -> ProgressItem {
+        let icon: String
+        let title: String
+        let detail: String
+        if job.isCancelled {
+            icon = "xmark.circle"
+            title = "Morph cancelled: \(job.id)"
+            detail = "\(ProgressCard.formatElapsed(job.elapsed)) elapsed"
+        } else if job.isError {
+            icon = "exclamationmark.triangle.fill"
+            title = "Morph failed: \(job.id)"
+            detail = job.error ?? "Unknown error"
+        } else {
+            icon = "repeat"
+            title = "Morphing \(job.id)"
+            // "leg k of N · P%" — legs are model-to-model transitions, and the
+            // percentage is the composed whole-job fraction the bar draws, so the
+            // two numbers can never disagree.
+            detail = "leg \(job.modelsDone) of \(job.modelsTotal)"
+                + " · \(Int((job.fraction ?? 0) * 100))%"
+        }
+        return ProgressItem(
+            id: "morph:\(job.id)",
+            icon: icon,
+            title: title,
+            detail: detail,
+            fraction: job.fraction,
+            moving: job.moving && !job.isError,
+            isError: job.isError,
+            isCancelled: job.isCancelled,
+            buttonTitle: job.isError ? "Dismiss" : "Cancel",
+            // `.python` channel and the import are load-bearing for the same
+            // reasons `prediction(_:)` gives: the text parser does not strip
+            // surrounding quotes, and __main__ is empty in this embedding.
+            action: job.isError ? .python(pythonCall("morph_dismiss", job.id))
+                                : .python(pythonCall("morph_cancel", job.id)),
+            bundle: nil)
+    }
+
     /// A self-contained Python statement calling `cmd.<function>(<name>)`.
     ///
     /// `_c` rather than `cmd`: the name is bound in `__main__` for the duration of
@@ -365,11 +411,12 @@ struct ProgressItem: Identifiable, Equatable {
     ///
     /// A static rather than a computed property on ContentView so the merge, the
     /// filter and the sort are unit-testable without instantiating a View.
-    /// `designs` is defaulted, so every existing call site and test is unchanged and the
-    /// tray degrades to exactly its previous behaviour when nothing is designing.
+    /// `designs` and `morphs` are defaulted, so every existing call site and test is
+    /// unchanged and the tray degrades to its previous behaviour when nothing is running.
     static func tray(weights: WeightsFetchState?,
                      predictions: [PredictionJobState],
-                     designs: [PredictionJobState] = []) -> [ProgressItem] {
+                     designs: [PredictionJobState] = [],
+                     morphs: [PredictionJobState] = []) -> [ProgressItem] {
         var items: [ProgressItem] = []
         if let weights { items.append(.weights(weights)) }
         // While a bundle is fetching, its OWN card is the measured one; a
@@ -394,7 +441,11 @@ struct ProgressItem: Identifiable, Equatable {
                   // does not matter, because the sort below is TOTAL: every row's id is
                   // unique, so `lhs.id < rhs.id` decides every pair within a tier. Sorting
                   // the keys here as well was measured to change the answer on nothing.
-                  + batches.values.map(ProgressItem.designBatch))
+                  + batches.values.map(ProgressItem.designBatch)
+                  // Morph jobs (#morph). Bundle is always nil for a morph card, so the
+                  // filter below passes them through unconditionally; they are included
+                  // here rather than before the filter so the sort covers them.
+                  + morphs.map(ProgressItem.morph))
             .filter { item in item.bundle.map { !fetching.contains($0) } ?? true }
         // Running first, so a live job is never pushed below the fold by a stale
         // error card the user has not dismissed. Within a tier by id, which puts

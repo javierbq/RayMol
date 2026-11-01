@@ -37,6 +37,20 @@ make_fixture () {
   echo "$r"
 }
 
+# A fake repo root with everything the SIMULATOR build needs.
+make_sim_fixture () {
+  local r; r="$(mktemp -d)"
+  mkdir -p "$r/deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers"
+  : >     "$r/deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Python"
+  mkdir -p "$r/deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/lib/python3.13/site-packages/Bio"
+  mkdir -p "$r/deps_ios/install/lib"
+  : >     "$r/deps_ios/install/lib/libpng16.a"
+  : >     "$r/deps_ios/install/lib/libfreetype.a"
+  mkdir -p "$r/deps_ios/numpy-ios/simulator/numpy"
+  make_lib arm64 "$r/build_ios/libpymol_core.a"
+  echo "$r"
+}
+
 echo "== assert_ios_build_inputs =="
 
 R="$(make_fixture)"
@@ -85,6 +99,58 @@ if grep -q "numpy-ios/device/numpy" <<<"$OUT" && grep -q "libpng16.a" <<<"$OUT";
   echo "  ok: lists all missing paths"
 else echo "  FAIL: did not list all missing paths; got: $OUT"; FAILED=1; fi
 rm -rf "$F"
-
 rm -rf "$R"
+
+echo "== assert_ios_build_inputs (simulator) =="
+SIM_R="$(make_sim_fixture)"
+if bash "$SCRIPT" "$SIM_R" simulator >/dev/null 2>&1; then
+  echo "  ok: complete simulator tree passes"
+else
+  echo "  FAIL: complete simulator tree should pass"; bash "$SCRIPT" "$SIM_R" simulator; FAILED=1
+fi
+
+# Each simulator dep path is individually load-bearing.
+for req in \
+  "deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Python" \
+  "deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers" \
+  "deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/lib/python3.13" \
+  "deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/lib/python3.13/site-packages/Bio" \
+  "deps_ios/install/lib/libpng16.a" \
+  "deps_ios/install/lib/libfreetype.a" \
+  "deps_ios/numpy-ios/simulator/numpy"; do
+  F="$(make_sim_fixture)"; rm -rf "$F/$req"
+  if bash "$SCRIPT" "$F" simulator >/dev/null 2>&1; then
+    echo "  FAIL: passed with simulator $req missing"; FAILED=1
+  else echo "  ok: fails when simulator $req is missing"; fi
+  rm -rf "$F"
+done
+
+# Missing core library.
+F="$(make_sim_fixture)"; rm -f "$F/build_ios/libpymol_core.a"
+if bash "$SCRIPT" "$F" simulator >/dev/null 2>&1; then
+  echo "  FAIL: simulator passed with no libpymol_core.a"; FAILED=1
+else echo "  ok: simulator fails when libpymol_core.a is absent"; fi
+rm -rf "$F"
+
+# Wrong architecture — an x86_64-only core cannot run on Apple Silicon runners.
+F="$(make_sim_fixture)"; rm -f "$F/build_ios/libpymol_core.a"
+make_lib x86_64 "$F/build_ios/libpymol_core.a"
+if bash "$SCRIPT" "$F" simulator >/dev/null 2>&1; then
+  echo "  FAIL: simulator accepted an x86_64-only core library"; FAILED=1
+else echo "  ok: simulator rejects an x86_64-only core library"; fi
+rm -rf "$F"
+
+# A device-only tree fails in simulator mode.
+DEV="$(make_fixture)"
+if bash "$SCRIPT" "$DEV" simulator >/dev/null 2>&1; then
+  echo "  FAIL: device-only tree passed in simulator mode"; FAILED=1
+else echo "  ok: device-only tree fails in simulator mode"; fi
+rm -rf "$DEV"
+
+# Invalid mode argument fails.
+if bash "$SCRIPT" "$SIM_R" invalid_mode >/dev/null 2>&1; then
+  echo "  FAIL: accepted invalid mode"; FAILED=1
+else echo "  ok: rejects invalid mode argument"; fi
+rm -rf "$SIM_R"
+
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAILURES"; exit 1; }

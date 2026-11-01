@@ -34,7 +34,7 @@ shortcut_dict_ref = {
 'CTRL-F': ('wizard find','find',''),
 'CTRL-H': ('help edit_keys','help',''),
 'CTRL-I': ('editing_ring invert','invert selection',''),
-'CTRL-L': ('util.ligand_zoom()','zoom next ligand',''),
+'CTRL-G': ('util.ligand_zoom()','zoom next ligand',''),  # RayMol#873: was CTRL-L, now Lights mode
 'CTRL-T': ('bond;unpick','create bond',''),
 'CTRL-V': ('editing_ring paste','paste',''),
 'CTRL-X': ('editing_ring cut','cut',''),

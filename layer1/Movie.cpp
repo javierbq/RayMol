@@ -1077,6 +1077,14 @@ void MovieDoFrameCommand(PyMOLGlobals * G, int frame)
 
 
 /*========================================================================*/
+std::string MovieGetCommand(PyMOLGlobals* G, int frame)
+{
+  CMovie* I = G->Movie;
+  if (frame >= 0 && frame < I->NFrame && frame < (int) I->Cmd.size())
+    return I->Cmd[frame];
+  return {};
+}
+
 void MovieSetCommand(PyMOLGlobals* G, int frame, const char* command)
 {
   CMovie *I = G->Movie;

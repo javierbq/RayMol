@@ -125,6 +125,44 @@ struct LightGizmoMetrics: Equatable {
 
 // MARK: - Inputs
 
+/// The view's edges covered by chrome drawn over the viewport (the macOS
+/// Lights bar), in points. The ring handles keep out of them (#693).
+struct LightGizmoInsets: Equatable {
+    var top: CGFloat = 0
+    var left: CGFloat = 0
+    var bottom: CGFloat = 0
+    var right: CGFloat = 0
+    static let zero = LightGizmoInsets()
+}
+
+/// Where the transient readout's box goes during a gizmo drag (#703): at the
+/// pointer (the cursor, the finger) with a fixed offset, right of and above
+/// it; flipped to the left near the right edge and below near the top; then
+/// kept inside the view less its chrome insets and a margin. Top-left points.
+enum LightGizmoReadoutPlacement {
+    /// The box's offset from the pointer.
+    static let offset = CGSize(width: 14, height: 14)
+    /// The box keeps this far inside the view (and its insets).
+    static let margin: CGFloat = 8
+
+    /// The box's top-left corner for a box of `box` points beside `pointer`
+    /// in a view of `viewSize` whose edges `insets` are covered.
+    static func origin(pointer: CGPoint, box: CGSize, viewSize: CGSize,
+                       insets: LightGizmoInsets = .zero,
+                       offset: CGSize = offset, margin: CGFloat = margin) -> CGPoint {
+        let minX = insets.left + margin
+        let maxX = viewSize.width - insets.right - margin - box.width
+        let minY = insets.top + margin
+        let maxY = viewSize.height - insets.bottom - margin - box.height
+        var x = pointer.x + offset.width
+        if x > maxX { x = pointer.x - offset.width - box.width }
+        var y = pointer.y - offset.height - box.height
+        if y < minY { y = pointer.y + offset.height }
+        func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat { hi < lo ? lo : min(max(v, lo), hi) }
+        return CGPoint(x: clamp(x, minX, maxX), y: clamp(y, minY, maxY))
+    }
+}
+
 /// Everything the layout is made from, as a plain value: tests build it
 /// without a controller; the overlay and the viewport build it from the same
 /// controller, so what is drawn is what is hit-tested.
@@ -132,8 +170,11 @@ struct LightGizmoInputs: Equatable {
     /// One rig light, in rig order.
     struct Light: Equatable {
         var name: String
-        /// The identity colour slot (the bar chip's colour).
+        /// The identity colour slot.
         var slot: Int
+        /// What the knob is drawn in: the light's own colour (#798), the bar
+        /// chip's too.
+        var marker = LightMarkerColour.neutral
         var beam: Double
         var softness: Double
         var shadow: Bool
@@ -152,15 +193,22 @@ struct LightGizmoInputs: Equatable {
     var projection: LightCameraProjection?
     /// The overlay's size (the viewport's bounds), in points.
     var viewSize: CGSize
-    /// `grid_mode` is on: each cell has its own view, which the whole-view
-    /// projection cannot match, so the gizmo hides.
+    /// `grid_mode` is on (the scene poll's): the gizmo shows in `gridCell`
+    /// (the cell under the pointer), or hides when nil (#697).
     var gridMode: Bool
+    /// The grid cell the gizmo shows in while grid_mode is on (#697): the one
+    /// under the pointer when a hover or press began; nil: none yet, the gizmo
+    /// hides.
+    var gridCell: LightGizmoGridCell?
     /// The scene's Shadows switch as last read (nil: unknown).
     var sceneShadowsOn: Bool?
+    /// Edges covered by chrome drawn over the viewport (#693).
+    var chromeInsets: LightGizmoInsets
 
     init(isActive: Bool, isBusy: Bool, isOn: Bool, lights: [Light], selection: LightSelection,
          rigSize: Double?, eyeSpace: LightEyeSpace?, projection: LightCameraProjection?,
-         viewSize: CGSize, gridMode: Bool, sceneShadowsOn: Bool?) {
+         viewSize: CGSize, gridMode: Bool, gridCell: LightGizmoGridCell? = nil,
+         sceneShadowsOn: Bool?, chromeInsets: LightGizmoInsets = .zero) {
         self.isActive = isActive
         self.isBusy = isBusy
         self.isOn = isOn
@@ -171,21 +219,27 @@ struct LightGizmoInputs: Equatable {
         self.projection = projection
         self.viewSize = viewSize
         self.gridMode = gridMode
+        self.gridCell = gridCell
         self.sceneShadowsOn = sceneShadowsOn
+        self.chromeInsets = chromeInsets
     }
 
     /// The controller's state now, for a view of `viewSize` points.
     @MainActor
-    init(controller: LightsController, viewSize: CGSize, gridMode: Bool, sceneShadowsOn: Bool?) {
+    init(controller: LightsController, viewSize: CGSize, gridMode: Bool,
+         gridCell: LightGizmoGridCell? = nil, sceneShadowsOn: Bool?,
+         chromeInsets: LightGizmoInsets = .zero) {
         self.init(
             isActive: controller.isActive, isBusy: controller.isBusy, isOn: controller.isOn,
             lights: (controller.rig?.lights ?? []).map {
-                Light(name: $0.name, slot: controller.identitySlot(for: $0.name), beam: $0.beam,
+                Light(name: $0.name, slot: controller.identitySlot(for: $0.name),
+                      marker: LightMarkerColour($0), beam: $0.beam,
                       softness: $0.softness, shadow: $0.shadow)
             },
             selection: controller.selection, rigSize: controller.rig?.size,
             eyeSpace: controller.eye.eyeSpace, projection: controller.eye.projection,
-            viewSize: viewSize, gridMode: gridMode, sceneShadowsOn: sceneShadowsOn)
+            viewSize: viewSize, gridMode: gridMode, gridCell: gridCell, sceneShadowsOn: sceneShadowsOn,
+            chromeInsets: chromeInsets)
     }
 }
 
@@ -198,6 +252,7 @@ struct LightGizmoLayout: Equatable {
         var name: String
         var index: Int
         var slot: Int
+        var marker = LightMarkerColour.neutral
         var centre: CGPoint
         /// The drawn radius (larger when selected).
         var radius: CGFloat
@@ -254,9 +309,9 @@ struct LightGizmoLayout: Equatable {
     struct Handle: Equatable {
         /// Where it is drawn (and hit).
         var point: CGPoint
-        /// Where on its ring it belongs: the rightmost sample, or, when a
-        /// handle there would leave the view, the rightmost sample whose
-        /// handles both stay inside it (#693).
+        /// Where on its ring it belongs: the rightmost sample, or, when
+        /// handles there would leave the view or fall under chrome, the best
+        /// candidate sample keeping handles in view (#693).
         var ringPoint: CGPoint
         /// Drawn away from its ring (the separation rule), joined by a tick.
         var isOffRing: Bool
@@ -310,13 +365,16 @@ struct LightGizmoLayout: Equatable {
     /// The layout for `inputs`, or nil (nothing drawn, every press goes to
     /// the camera) unless Lights mode is active, the rig is not busy (a movie
     /// export), has lights, the eye space and projection are published and
-    /// describe this rig, grid mode is off, and the rig centre projects.
+    /// describe this rig, grid mode is off, or a grid cell is given, and the
+    /// rig centre projects.
     static func make(_ inputs: LightGizmoInputs,
                      metrics: LightGizmoMetrics = LightGizmoMetrics()) -> LightGizmoLayout? {
-        guard inputs.isActive, !inputs.isBusy, !inputs.gridMode, !inputs.lights.isEmpty,
+        guard inputs.isActive, !inputs.isBusy, !inputs.gridMode || inputs.gridCell != nil,
+              !inputs.lights.isEmpty,
               let eye = inputs.eyeSpace, eye.hasFrame, eye.lights.count == inputs.lights.count,
               let camera = inputs.projection,
-              let projection = LightGizmoProjection(camera: camera, viewSize: inputs.viewSize)
+              let projection = LightGizmoProjection(camera: camera, viewSize: inputs.viewSize,
+                                                    cell: inputs.gridMode ? inputs.gridCell : nil)
         else { return nil }
         let centreEye = SIMD3<Double>(eye.centre)
         guard let centre = projection.point(eye: centreEye),
@@ -325,7 +383,7 @@ struct LightGizmoLayout: Equatable {
 
         // The display sphere.
         let maxR = metrics.sphereMaximumFraction
-            * min(projection.sceneRect.width, projection.sceneRect.height)
+            * min(projection.cellRect.width, projection.cellRect.height)
         let wanted = CGFloat(metrics.sphereScale * Double(eye.size) * perAngstrom)
         let sphereRadius = min(max(wanted.isFinite ? wanted : 0, min(metrics.sphereMinimum, maxR)), maxR)
         guard sphereRadius > 0 else { return nil }
@@ -349,7 +407,7 @@ struct LightGizmoLayout: Equatable {
                 ? light.name + " " + LightInspectorFormat.radius(placement.radius, frameSize: nil)
                 : light.name
             knobs.append(Knob(
-                name: light.name, index: i, slot: light.slot, centre: point, radius: radius,
+                name: light.name, index: i, slot: light.slot, marker: light.marker, centre: point, radius: radius,
                 direction: d, placement: placement, isSelected: isSelected,
                 isBehind: LightDepth.isBehind(placement), isShadowed: light.shadow,
                 isShadowDimmed: light.shadow && shadowDimmed,
@@ -365,7 +423,7 @@ struct LightGizmoLayout: Equatable {
         var selected: Selected?
         if let index = selectedIndex {
             selected = Self.selected(index: index, light: inputs.lights[index], eye: eye.lights[index],
-                                     projection: projection, metrics: metrics)
+                                     projection: projection, metrics: metrics, insets: inputs.chromeInsets)
         }
         return LightGizmoLayout(projection: projection, metrics: metrics, centre: centre,
                                 sphereRadius: sphereRadius, knobs: knobs, drawingOrder: drawingOrder,
@@ -375,7 +433,8 @@ struct LightGizmoLayout: Equatable {
     /// The selected light's aim dot, rings and handles.
     private static func selected(index: Int, light: LightGizmoInputs.Light, eye: LightEyeSpace.Light,
                                  projection: LightGizmoProjection,
-                                 metrics: LightGizmoMetrics) -> Selected {
+                                 metrics: LightGizmoMetrics,
+                                 insets: LightGizmoInsets) -> Selected {
         let target = SIMD3<Double>(eye.target)
         let direction = SIMD3<Double>(eye.direction)
         var s = Selected(name: light.name, index: index, placement: LightPlacement(eye),
@@ -391,28 +450,47 @@ struct LightGizmoLayout: Equatable {
         s.innerRing = inner
         var handles = Self.handles(aim: aim, outer: o, inner: inner.rightmost ?? aim, metrics: metrics)
         // #693: handles at the rightmost samples can leave the view (a wide
-        // beam, a light near the right edge). Then the handles go to the
-        // rightmost sample index whose two handles both stay inside the view,
-        // inset by the handle's reach so the whole target can be pressed.
-        // Both rings share the basis and the sample count, so index k is the
-        // same direction on each. Handles already inside never move, and with
-        // no index inside, today's place stays.
-        let view = CGRect(origin: .zero, size: projection.viewSize)
-            .insetBy(dx: metrics.handleReach, dy: metrics.handleReach)
-        func inside(_ h: (outer: Handle, inner: Handle)) -> Bool {
-            view.contains(h.outer.point) && view.contains(h.inner.point)
+        // beam, a light near the right edge) or fall under chrome (the macOS
+        // Lights bar). In priority order:
+        // 1. Keep the rightmost-sample handles if both lie inside allowed bounds.
+        // 2. Otherwise, pick the rightmost sample index whose candidate handles
+        //    both lie inside allowed bounds.
+        // 3. Fallback: among indices whose candidate outer handle lies inside
+        //    allowed bounds, choose the one whose outer sample is nearest the
+        //    aim dot (ties within 0.5 pt go to the larger sample x, then lower k).
+        // 4. Otherwise, keep the rightmost-sample handles.
+        var allowed = CGRect(origin: .zero, size: projection.viewSize)
+        allowed.origin.x += insets.left
+        allowed.origin.y += insets.top
+        allowed.size.width -= insets.left + insets.right
+        allowed.size.height -= insets.top + insets.bottom
+        allowed = allowed.insetBy(dx: metrics.handleReach, dy: metrics.handleReach)
+
+        func insideBoth(_ h: (outer: Handle, inner: Handle)) -> Bool {
+            allowed.contains(h.outer.point) && allowed.contains(h.inner.point)
         }
-        if !inside(handles) {
-            let order = outer.samples.indices
-                .compactMap { k in outer.samples[k].map { (k, $0.x) } }
-                .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
-            for (k, _) in order {
-                guard let ok = outer.samples[k] else { continue }
+
+        if !insideBoth(handles) {
+            // Both rings share the basis and the sample count, so index k is
+            // the same direction on each.
+            typealias Candidate = (k: Int, ring: CGPoint, handles: (outer: Handle, inner: Handle))
+            let candidates = outer.samples.indices.compactMap { k -> Candidate? in
+                guard let ok = outer.samples[k] else { return nil }
                 let ik = (inner.samples.indices.contains(k) ? inner.samples[k] : nil) ?? aim
-                let candidate = Self.handles(aim: aim, outer: ok, inner: ik, metrics: metrics)
-                if inside(candidate) {
-                    handles = candidate
-                    break
+                return (k, ok, Self.handles(aim: aim, outer: ok, inner: ik, metrics: metrics))
+            }
+            // Rightmost first, ties to the lower index.
+            func righter(_ a: Candidate, _ b: Candidate) -> Bool {
+                a.ring.x != b.ring.x ? a.ring.x > b.ring.x : a.k < b.k
+            }
+            if let best = candidates.filter({ insideBoth($0.handles) }).sorted(by: righter).first {
+                handles = best.handles
+            } else {
+                let visible = candidates.filter { allowed.contains($0.handles.outer.point) }
+                if let nearest = visible.map({ gizmoDistance($0.ring, aim) }).min(),
+                   let best = visible.filter({ gizmoDistance($0.ring, aim) - nearest <= 0.5 })
+                       .sorted(by: righter).first {
+                    handles = best.handles
                 }
             }
         }
@@ -534,6 +612,24 @@ enum LightGizmoTarget: Hashable {
     /// Both rings where they coincide (softness near 0): the first move
     /// decides (inwards softness, outwards beam).
     case rings
+}
+
+/// The cursor the viewport shows over the light gizmo (#701).
+enum LightGizmoCursorKind: Equatable {
+    /// Unchanged: whatever the viewport shows today.
+    case normal
+    /// Over a target a press would take.
+    case openHand
+    /// Dragging a target.
+    case closedHand
+
+    /// The cursor for `mode`, the target under the pointer and whether the
+    /// gizmo owns a press. Only Lights mode changes the cursor.
+    static func cursor(mode: InteractionMode, hovered: LightGizmoTarget?, isDragging: Bool) -> LightGizmoCursorKind {
+        guard mode == .lights else { return .normal }
+        if isDragging { return .closedHand }
+        return hovered == nil ? .normal : .openHand
+    }
 }
 
 /// Which target a point lands on: section 4.7 of the plan.
@@ -1189,6 +1285,14 @@ struct LightGizmoInteraction {
         return controller.placeHighlight(sceneNDC: ndc, rim: rim) ? .placed(rim: rim) : .refused
     }
 
+    /// Re-aim the selected light called `name` at the rig centre (#699's
+    /// double-click or double-tap on its aim dot). False when nothing ran.
+    @discardableResult
+    func aimAtCentre(name: String) -> Bool {
+        guard controller.canEdit, isSelected(name) else { return false }
+        return controller.aimAtCentre(name: name)
+    }
+
     /// The Shadow chip: the selected light's shadow toggled with the
     /// inspector's own call, so the cap, its notice and their clearing are
     /// shared.
@@ -1234,6 +1338,17 @@ struct LightGizmoInteraction {
 
 // MARK: - Press ownership
 
+/// #699: when a gizmo press re-aims its light at the rig centre.
+enum LightAimRecentre {
+    /// macOS: a press on `target` with `clickCount` (NSEvent's: 2 for the
+    /// second press of a double-click) ends; `hasMoved` when it dragged past
+    /// the slop. True only for a double-click (or more) on the aim dot that
+    /// never dragged: a single click or any drag stays today's.
+    static func onRelease(target: LightGizmoTarget?, clickCount: Int, hasMoved: Bool) -> Bool {
+        target == .aimDot && clickCount >= 2 && !hasMoved
+    }
+}
+
 /// Which input owns a press, from its start to its end, whatever the mode does
 /// meanwhile (plan 4.13; the viewport wires it in Lights mode):
 /// - a press on a target opens a session and owns the press (`.gizmo`): no
@@ -1265,16 +1380,23 @@ struct LightGizmoPointer {
     private var candidateLayout: LightGizmoLayout?
     /// The last option-click's outcome.
     private(set) var lastHighlight: LightGizmoHighlightResult?
+    /// The last double-click on the aim dot (#699): true ran `aim=centre`,
+    /// false was refused; nil before the first.
+    private(set) var lastRecentre: Bool?
+    /// The current press's click count (2 for a double-click's second press).
+    private var pressClickCount = 1
     private var touch = OrbitTouchSequence()
 
     init() {}
 
-    /// A press at `point` (`option`: the option key is down). `layout` is
-    /// nil when the gizmo is not shown.
+    /// A press at `point` (`option`: the option key is down; `clickCount`:
+    /// NSEvent's, 2 for a double-click's second press). `layout` is nil when
+    /// the gizmo is not shown.
     @MainActor
     mutating func press(at point: CGPoint, option: Bool, layout: LightGizmoLayout?,
-                        interaction: LightGizmoInteraction) -> Route {
+                        interaction: LightGizmoInteraction, clickCount: Int = 1) -> Route {
         forgetPress()
+        pressClickCount = clickCount
         guard let layout else { return .camera }
         if LightGizmoHitTest.target(at: point, layout: layout) != nil {
             guard let started = interaction.press(at: point, layout: layout) else { return .camera }
@@ -1311,13 +1433,21 @@ struct LightGizmoPointer {
     }
 
     /// The press ends at `point`. A highlight candidate that never dragged
-    /// places a highlight (at its press point) and is consumed.
+    /// places a highlight (at its press point) and is consumed. A double-click
+    /// on the aim dot that never dragged aims its light at the centre (#699).
     @MainActor
     mutating func release(at point: CGPoint, interaction: LightGizmoInteraction) -> Route {
         if ownsPress {
+            var recentre: String?
+            if let s = session, !s.isEnded,
+               LightAimRecentre.onRelease(target: s.target, clickCount: pressClickCount, hasMoved: s.hasMoved) {
+                recentre = s.owner
+            }
             session?.end()
             session = nil
             ownsPress = false
+            pressClickCount = 1
+            if let recentre { lastRecentre = interaction.aimAtCentre(name: recentre) }
             return .gizmo
         }
         if let start = candidate, let layout = candidateLayout {
@@ -1370,6 +1500,7 @@ struct LightGizmoPointer {
         session?.end()
         session = nil
         ownsPress = false
+        pressClickCount = 1
         candidate = nil
         candidateLayout = nil
     }

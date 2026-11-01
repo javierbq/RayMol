@@ -178,10 +178,12 @@ Rect2D OrthoGetRect(PyMOLGlobals* G);
  * @param dpi resolution in dots per inch
  * @param format image format (png, ppm, etc...)
  * @param quiet suppresses output messages
- * @param out_img output image
  * @param with_overlay include overlay in the image
  * @return true if this operation immediately triggered (has OpenGL context)
+ *
+ * Like SceneDeferImage, it takes no out-pointer: a deferred render would write
+ * through it after the caller's storage may be gone (see SceneDeferImageTo).
  */
 pymol::Result<bool> OrthoDeferImage(PyMOLGlobals* G, Extent2D extent,
     const char* filename, int antialias, float dpi, int format, int quiet,
-    pymol::Image* out_img, bool with_overlay);
+    bool with_overlay);

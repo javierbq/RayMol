@@ -1,5 +1,5 @@
 {
- "comment": "#616 L2: per-light shadow maps, checked with scripts/lighting/check_shadows.py l2 (see its docstring for every tag set). Two coloured lights, amber A (orbit -55, pitch 25) and cyan B (orbit +55, pitch 10), radius 3, beam 60, softness 0.3, highlight 0, ambient 0.05, classic 0, on grey80 subjects in front of a grey80 backdrop quad (perpendicular to the fixed view, 0.15 sizes behind the farthest atom so it stays inside the slab; depth_cue 0 so the fog does not hide its shadows). Every rig passes an explicit centre and size (the extent of m), so neither the backdrop nor a caster CGO moves the lights. The overlay scenes put a CGO sphere halfway between A (orbit 0, pitch 70) and the centre, outside the view, named _move_gizmo (ovl_gizmo*: an overlay, never casts, #433) or caster (ctl_caster*: the POSITIVE CONTROL, an ordinary CGO that MUST cast; it is no overlay); *hid hides its cgo rep, which keeps its extent. The *_dark* scenes set both lights to intensity 0 (ambient 0.05 only), so they are nearly black by design. cartoon_ab_s* set metal_light_shadow_size only where the setting exists. The frozen harness (render.py) installs its own 3-light rig for \"rig\": \"on\" by calling cmd.set_lights after each scene's lines; the extra lines wrap cmd.set_lights once per process (hasattr guard: the app runs the script twice): while cmd._l616_rig is a dict, that rig is installed instead; a function is applied to the harness rig. Every scene sets cmd._l616_rig.",
+ "comment": "#616 L2: per-light shadow maps, checked with scripts/lighting/check_shadows.py l2 (see its docstring for every tag set). Two coloured lights, amber A (orbit -55, pitch 25) and cyan B (orbit +55, pitch 10), radius 3, beam 60, softness 0.3, highlight 0, ambient 0.05, classic 0, on grey80 subjects in front of a grey80 backdrop quad (perpendicular to the fixed view, 0.15 sizes behind the farthest atom so it stays inside the slab; depth_cue 0 so the fog does not hide its shadows). Every rig passes an explicit centre and size (the extent of m), so neither the backdrop nor a caster CGO moves the lights. The overlay scenes put a CGO sphere halfway between A (orbit 0, pitch 70) and the centre, outside the view, named _move_gizmo (ovl_gizmo*: an overlay, never casts, #433) or caster (ctl_caster*: the POSITIVE CONTROL, an ordinary CGO that MUST cast; it is no overlay); *hid hides its cgo rep, which keeps its extent. The *_dark* scenes set both lights to intensity 0 (ambient 0.05 only), so they are nearly black by design. cartoon_ab_s* set metal_light_shadow_size only where the setting exists. The after_rig line installs cmd._l616_rig after the harness rig block: while cmd._l616_rig is a dict, that rig is installed instead; a function is applied to the harness rig. Every scene sets cmd._l616_rig.",
  "base": null,
  "rig": "on",
  "size": [
@@ -22,8 +22,6 @@
   "_l616_frame = lambda rig: dict(rig, centre=list(_l616_c), size=_l616_s)",
   "_l616_make = lambda lights, **kw: _l616_frame(dict({'version': 1, 'enabled': True, 'ambient': 0.05, 'classic': 0.0, 'lights': lights}, **kw))",
   "_l616_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
-  "if not hasattr(cmd, '_l616_set'): cmd._l616_set = cmd.set_lights",
-  "cmd.set_lights = lambda rig, _c=cmd: _c._l616_set(rig if getattr(_c, '_l616_rig', None) is None else (_c._l616_rig(rig) if callable(_c._l616_rig) else _c._l616_rig))",
   "cmd.set('depth_cue', 0)",
   "_l616_xyz = []",
   "cmd.iterate_state(1, 'm', '_l616_xyz.append((x, y, z))', space={'_l616_xyz': _l616_xyz})",
@@ -31,6 +29,9 @@
   "_l616_backdrop = lambda: cmd.load_cgo([2.0, 5.0, 6.0, 0.8, 0.8, 0.8, 5.0] + _l616_rot([0.0, 0.0, 1.0]) + [v for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)) for v in [4.0] + _l616_w([sx * 2.5 * _l616_s, sy * 2.5 * _l616_s, _l616_dz])] + [3.0], 'backdrop', zoom=0)",
   "_l616_ovl = dict(_l616_a, orbit=0.0, pitch=70.0, shadow=True)",
   "_l616_sphere = lambda name: cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 7.0] + _l616_at(_l616_ovl, 0.5) + [0.2 * _l616_s], name, zoom=0)"
+ ],
+ "after_rig": [
+  "if getattr(cmd, '_l616_rig', None) is not None: cmd.set_lights(cmd._l616_rig(_lh_rig) if callable(cmd._l616_rig) else cmd._l616_rig)"
  ],
  "scenes": [
   {

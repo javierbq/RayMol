@@ -30,6 +30,10 @@ echo "  Platform:   ${IOS_PLATFORM}"
 echo "  EXTERNAL_PREFIX: ${PYMOL_EXTERNAL_PREFIX}"
 echo ""
 
+# Fingerprint the core sources BEFORE compiling, stamp after (#400); see
+# scripts/check_core_fresh.sh and build_macos.sh.
+CORE_FP="$(bash "${PYMOL_ROOT}/scripts/check_core_fresh.sh" fingerprint 2>/dev/null || true)"
+
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
@@ -41,6 +45,8 @@ cmake "${PYMOL_ROOT}/appkit" \
     -DCMAKE_BUILD_TYPE=Release
 
 cmake --build . --target pymol_core -j"${NCPU}"
+
+bash "${PYMOL_ROOT}/scripts/check_core_fresh.sh" stamp "${BUILD_DIR}" "$CORE_FP"
 
 echo ""
 echo "=== Done ==="

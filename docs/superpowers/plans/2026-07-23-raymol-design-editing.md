@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - macOS-only this slice; all editing code is `#if RAYMOL_MPNN`-gated; the iOS target must still compile (no `DesignController`/MPNNKit leakage into iOS).
-- App target stays **Swift 5.9** language mode; do **not** hand-edit `swiftui/PyMOLViewer.xcodeproj/project.pbxproj` — run `cd swiftui && xcodegen generate`; discard xcodegen UUID churn (`git checkout -- …/project.pbxproj`) before committing if the only change is `TEMP_` reshuffling.
+- App target stays **Swift 5.9** language mode; do **not** hand-edit `swiftui/PyMOLViewer.xcodeproj/project.pbxproj` — run `cd swiftui && xcodegen generate` (since #642 regeneration is deterministic, so a `TEMP_` id in the diff is a regression to fix, not churn to discard).
 - Swift module for `@testable import` is **`RayMol`**; test files need BOTH `import MPNNKit` and `@testable import RayMol`.
 - Unit tests run: `cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS -destination 'platform=macOS' -skipPackagePluginValidation -only-testing:PyMOLViewerTests/<Class>`; gated real-inference tests use `-scheme UnitTests_macOS_Inference` (injects `MPNN_INFERENCE=1`).
 - Python tests run via the symlink recipe: `ln -sf "$(pwd)/modules/pymol/raymol_design.py" /opt/homebrew/lib/python3.14/site-packages/pymol/raymol_design.py; cd testing && pymol -ckqy testing.py --run tests/raymol/<file>.py; cd ..; rm -f /opt/homebrew/lib/python3.14/site-packages/pymol/raymol_design.py`.

@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #include <simd/simd.h>
+#include <TargetConditionals.h>  // TARGET_OS_IPHONE (kShadowDim)
 
 #include <array>
 #include <atomic>
@@ -205,9 +206,12 @@ public:
   // of one array (beginLightShadowMap per slot), and one scene-pass reopen
   // (endLightShadowMaps) ends them.
   void setLightShadowFrame(bool studioShadows, int mapSize) override;
+  // Traced soft shadows (#741): see Renderer.h.
+  void setLightSoftShadows(const float* radius) override;
   bool beginLightShadowMap(int slot, const float* view) override;
   void setLightShadowViewport(int x, int y, int w, int h) override;
   void endLightShadowMaps() override;
+  bool reuseLightShadowMaps(int count) override;
   // GPU frame times (#616): see Renderer.h. setGpuTiming takes
   // metal_gpu_timing every frame (SceneRenderMetal); a mode change starts a
   // fresh readout. getGpuFrameStats is false at mode 0.
@@ -224,12 +228,41 @@ public:
 
   // Letterbox: render the scene into a centered sub-rect of the given aspect
   // (W/H) so a loaded .pse reproduces its saved-viewport framing. 0 = fill.
-  void setLetterboxAspect(float a) { _letterboxAspect = a; }
+  void setLetterboxAspect(float a) {
+    if (_letterboxAspect != a) {
+      _letterboxAspect = a;
+      _airCacheValid = false;
+    }
+  }
   float letterboxAspect() const { return _letterboxAspect; }
   // Letterbox origin in backing px (for mouse-coordinate offsetting).
   int letterboxOriginX() const { return _lbOriginX; }
   int letterboxOriginY() const { return _lbOriginY; }
   void setLetterboxOrigin(int x, int y) { _lbOriginX = x; _lbOriginY = y; }
+  void setSelectionColor(float r, float g, float b) override {
+    if (selColor[0] != r || selColor[1] != g || selColor[2] != b) {
+      Renderer::setSelectionColor(r, g, b);
+      _airCacheValid = false;
+    }
+  }
+  void setPreselectionColor(float r, float g, float b) override {
+    if (preselColor[0] != r || preselColor[1] != g || preselColor[2] != b) {
+      Renderer::setPreselectionColor(r, g, b);
+      _airCacheValid = false;
+    }
+  }
+
+  // #685: dust-only ticks
+  bool armAirOnlyFrame() override;
+  bool airOnlyArmed() const override;
+  bool beginAirOnlyFrame() override;
+  bool airCacheStats(int& sceneFrames, int& postChains,
+                     int& airFrames, bool forget) override;
+  bool setAirDebugPoison(bool on) override;
+  // The live frame being begun renders only because the dust moves (the
+  // bridge's airTick). Only such a frame keeps its pre-air image, so a camera
+  // drag or a redisplay never pays the copy. endFrame clears it.
+  void setAirTickFrame(bool airTick) { _airTickFrame = airTick; }
 
   // Request a PNG capture of the next RENDERED frame (png ray=0). The Metal
   // app has no GL framebuffer for PyMOL's ScenePNG to read, so we grab the
@@ -256,13 +289,19 @@ public:
   void setEnvironment(int mode, float bgR, float bgG, float bgB) override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
       float r, float g, float b) override;
+  void setOverlayDraw(bool overlay) override { _overlayDraw = overlay; }
+  void setBackgroundGradient(
+      bool on, const float* top, const float* bottom) override;
+  void setScreenOverlay(bool on) override;
+  void setScreenOverlayOffset(float x, float y, float z) override;
 
-  // Shadow map: SceneRenderMetal replays the opaque geometry a second time
-  // between begin/endShadowPass with the LIGHT view-projection loaded via
-  // matrixMode/loadMatrixf. Draws route to depth-only pipelines that write
-  // into _shadowDepth (the light-POV depth map). setLightViewProjEye hands the
-  // renderer the eye-space light VP so the post pass can sample the map.
-  void beginShadowPass() override;
+  // Shadow map: SceneRenderMetal opens the pass with beginShadowPass(view)
+  // (the light's eye-space view, premultiplied onto every modelview) and loads
+  // the light's orthographic projection, then replays the opaque geometry.
+  // Draws route to depth-only pipelines that write into _shadowDepth (the
+  // light-POV depth map). setLightViewProjEye hands the renderer the eye-space
+  // light VP so the post pass can sample the map.
+  bool beginShadowPass(const float* view) override;
   void endShadowPass() override;
   void setLightViewProjEye(const float* m) override;
   void setShadowFrustum(float radius) override;
@@ -305,6 +344,9 @@ private:
 
   // 4x4 matrix stored column-major
   using Mat4 = std::array<float, 16>;
+  // drawLabels' encoding, also run for the labels it deferred (#736).
+  void encodeLabels(const LabelDrawCall& call, const Mat4& mv, const Mat4& proj,
+      bool depthTest);
 
   static Mat4 identityMatrix();
   static Mat4 multiplyMatrices(const Mat4& a, const Mat4& b);
@@ -318,6 +360,7 @@ private:
   // a fresh state (+ descriptor) was created per draw call, leaking one of each
   // every transparent/tube draw under MRC. Released in the destructor.
   id<MTLDepthStencilState> oitDepthState();     // LessEqual, no depth write
+  id<MTLDepthStencilState> labelOitNoDepthState(); // float_labels in OIT (#736)
   id<MTLDepthStencilState> bezierDepthState();  // LessEqual, depth write
   MTLPrimitiveType toMTL(PrimitiveType t);
   void buildVBOPipelines();
@@ -370,7 +413,6 @@ private:
   uint32_t _boundFBO = 0;
 
   // Pipeline state cache
-  id<MTLRenderPipelineState> _currentPipeline;
   id<MTLRenderPipelineState> _batchPipeline;  // built-in batch shader pipeline
   // Lit pipelines are specialised per MATERIAL FAMILY (#503): the fragment
   // function is compiled with kMatFamily fixed, so the `default` family carries
@@ -550,6 +592,17 @@ private:
   id<MTLRenderPipelineState> _airFullPipeline[2] = {};
   id<MTLRenderPipelineState> _airMarchPipeline = nil;
   id<MTLRenderPipelineState> _airUpsamplePipeline[2] = {};
+  // metal_light_air_alpha (#684): what the air added, as an alpha, for a
+  // transparent-background export's matte. _airAlphaPipeline is made in the
+  // air's one attempt; _airAlphaTex (R8Unorm, w x h, made on the first export
+  // that asks, _airAlphaW/_airAlphaH the size made or tried for);
+  // _airAlphaDrawn is true only on a frame whose air pass drew it.
+  id<MTLRenderPipelineState> _airAlphaPipeline = nil;
+  id<MTLRenderPipelineState> _airAlphaMergePipeline = nil;
+  id<MTLTexture> _airAlphaTex = nil;
+  NSUInteger _airAlphaW = 0;
+  NSUInteger _airAlphaH = 0;
+  bool _airAlphaDrawn = false;
   bool _airPipelinesTried = false;
   id<MTLTexture> _airNoMaps = nil;
   id<MTLTexture> _airTerm = nil;
@@ -559,6 +612,11 @@ private:
   bool ensureAirPipelines();
   id<MTLTexture> ensureAirNoMaps();
   bool ensureAirTerm(NSUInteger w, NSUInteger h);
+  bool ensureAirAlpha(NSUInteger w, NSUInteger h);
+  void encodeAirAlpha(id<MTLTexture> before, id<MTLTexture> after, bool wanted,
+      const LightAirBlock& air, const std::vector<std::array<float, 4>>& rects,
+      bool grid);
+  id<MTLTexture> encodeAirAlphaMerge(id<MTLTexture> matte);
   // Encodes the air over sceneSrc into the other ping-pong target, on
   // _cmdBuffer, and returns that target (sceneSrc when it cannot draw).
   id<MTLTexture> encodeAirPass(id<MTLTexture> sceneSrc);
@@ -568,6 +626,10 @@ private:
   // acceleration structure when the accumulated sphere set changes.
   void buildSphereProtoAS();
   void ensureRayTracingAS();
+  // Five float4 per occurrence (#709, #855, #712).
+  using RTMatRow = std::array<float, 20>;
+  void uploadRTMatTable(id<MTLBuffer>& buffer,
+      const std::vector<RTMatRow>& rows);
   void uploadRTMaterials();
   id<MTLAccelerationStructure> buildAccelStructure(MTLAccelerationStructureDescriptor* desc);
 
@@ -728,6 +790,41 @@ private:
   bool _peelUnseeded = false;
   bool _oitPeelTest = false;    // true while an OIT pass tests against the peel
   bool _oitCleared = false;     // the frame's first transparent encoder cleared
+  bool _overlayDraw = false;    // true while drawing UI overlays (never recorded for RT)
+
+  // Background vertical gradient (#689)
+  bool _bgGradOn = false;
+  float _bgGradTop[3] = {0, 0, 0};
+  float _bgGradBottom[3] = {0, 0, 0};
+  float _bgGradSpan[2] = {0, 1};  // first row and rows spanned, post uv
+
+  // Screen-space overlays (ramp gadgets, #689)
+  bool _screenOverlay = false;
+  float _screenOverlayOffset[3] = {0, 0, 0};
+  struct ScreenOverlayDraw {
+    id<MTLBuffer> vbo;  // retained (MRC) until clearScreenOverlayDraws
+    PrimitiveType mode;
+    int count;
+    size_t stride;
+    int posOffset, normalOffset, colorOffset, colorType;
+    float projection[16];
+    float offset[3];
+    MTLViewport viewport;
+    bool scissorOn;
+    MTLScissorRect scissor;
+  };
+  std::vector<ScreenOverlayDraw> _screenOverlayDraws;
+  std::map<uint64_t, id<MTLRenderPipelineState>> _screenOverlayPipelines;
+  id<MTLLibrary> _overlayLib = nil;
+  bool _overlayLibFailed = false;
+  id<MTLFunction> _overlayVtxFunc = nil;
+  id<MTLFunction> _overlayVtxNoNormalFunc = nil;
+  id<MTLFunction> _overlayFragFunc = nil;
+  id<MTLRenderPipelineState> screenOverlayPipeline(
+      const ScreenOverlayDraw& draw, MTLPixelFormat pixelFormat);
+  void encodeScreenOverlays(id<MTLTexture> target);
+  void clearScreenOverlayDraws();  // releases the stash's retained buffers
+  id<MTLBuffer> cachedVBOBuffer(const void* data, size_t dataSize);
 
   // --- Real shadow map (light-POV depth pre-pass + PCF in the post pass) ---
   // _shadowDepth is a fixed-resolution single-sample Depth32Float map rendered
@@ -735,9 +832,24 @@ private:
   // light space and PCF-compares against it. Depth-only pipelines mirror the
   // opaque ones but write no color and stay single-sample (the scene pass is
   // 4x MSAA; the shadow pass is not). _shadowMode is true during the replay.
+  // The map is LAZY (#667): ensureShadowMap makes it, and _shadowPassDesc, on
+  // the first classic pre-pass (beginShadowPass), so a renderer that never
+  // shadows holds none of it (64 MB at 4096^2). It is then kept: a toggle
+  // would otherwise re-allocate it on every flip. Until then _shadowDepth is
+  // nil and the post passes bind the 1x1 _shadowNone stand-in, which the
+  // composite never samples (shadowEnabled follows _shadowMapValid).
+  // iOS gets 2048^2 (16 MB); the composite scales its texel by the map's width.
+#if TARGET_OS_IPHONE
+  static constexpr NSUInteger kShadowDim = 2048;
+#else
   static constexpr NSUInteger kShadowDim = 4096;
+#endif
   id<MTLTexture> _shadowDepth = nil;
+  id<MTLTexture> _shadowNone = nil;  // 1x1 stand-in while _shadowDepth is nil
   MTLRenderPassDescriptor* _shadowPassDesc = nil;
+  bool _shadowMapFailed = false;      // allocation failed once: not retried
+  bool ensureShadowMap();
+  id<MTLTexture> shadowTextureForBind();
   id<MTLDepthStencilState> _shadowDepthState = nil;
   id<MTLSamplerState> _shadowSampler = nil;
   id<MTLFunction> _vboFragmentShadowFunc = nil;  // depth-only VBO fragment
@@ -853,6 +965,11 @@ private:
   id<MTLBuffer> _bezierTessFactors = nil;  // MTLQuadTessellationFactorsHalf/patch
   NSUInteger _bezierTessPatchCap = 0;      // patches the factor buffer covers
   void buildBezierTubePipeline();
+  // The tube's depth-only pipeline (#663): the studio maps and the classic
+  // shadow pre-pass. Lazy, one attempt; sample-count independent.
+  id<MTLRenderPipelineState> _bezierTubeShadowPipeline = nil;
+  bool _bezierTubeShadowTried = false;
+  void buildBezierTubeShadowPipeline();
   // The tube under the light rig (#613): a separate library and pipeline
   // (kMaterialSrc + kBezierTubeSrc + kBezierTubeRigSrc), so the classic tube
   // above is untouched. Built lazily on the first rig-on tube draw, one
@@ -861,6 +978,7 @@ private:
   // frame's, both built from the one library compile under the one tried
   // flag.
   id<MTLRenderPipelineState> _bezierTubeRigPipeline[2] = {};
+  id<MTLRenderPipelineState> _bezierTubeRigShadowPipeline[2] = {};
   bool _bezierTubeRigTried = false;
   void buildBezierTubeRigPipeline();
   // Per-frame post params (fog/depth-cue + SSAO), set by SceneRenderMetal.
@@ -930,6 +1048,10 @@ private:
   // shaders (runPostChain then exposes at 1). Off with the rig, and at every
   // beginFrame.
   bool _lightHdrOn = false;
+  // ACES is the rig's curve (#735): rig is on, HDR is on, and metal_tonemap is on
+  // (the block's tone[2] is 1). Tone curve is ACES instead of T; post pass 3.5
+  // does not re-apply ACES.
+  bool _lightAcesOn = false;
   // The rig's classic scale this frame (#615; setLightClassicScale, right
   // after setLightRig), for MaterialU.lightClassic. Read only while
   // _lightRigOn, which beginFrame clears and SceneRenderMetal sets just
@@ -941,15 +1063,40 @@ private:
   // SceneRenderMetal sets it again.
   bool _lightAirOn = false;
   LightAirBlock _lightAirBlock{};
+  // Dust-only ticks (#685). The last full live frame's pre-air colour
+  // (keepPreAirImage), whether it may be reused, and its letterbox origin.
+  id<MTLTexture> _airCacheColor = nil;
+  bool _airCacheValid = false;
+  int _airCacheLbX = 0, _airCacheLbY = 0;
+  // armAirOnlyFrame; cleared by beginFrame, beginAirOnlyFrame and endFrame.
+  bool _airOnlyArmed = false;
+  // This frame re-runs only the post chain, from _airCacheColor.
+  bool _airOnlyFrame = false;
+  // The bridge renders this frame for the dust alone (setAirTickFrame).
+  bool _airTickFrame = false;
+  // Temporal AO: whether pass A.5 ran this frame, and the frames it has
+  // accumulated since its last reset.
+  bool _rtAOTemporalRan = false;
+  int _rtAOAccumFrames = 0;
+  // Test-only counters (airCacheStats).
+  int _statSceneFrames = 0, _statPostChains = 0, _statAirFrames = 0;
+  // Test-only (#739): setAirDebugPoison.
+  bool _airDebugPoison = false;
+  // Temporal AO frames needed before a frame's image may be kept.
+  static constexpr int kAirCacheAOFrames = 32;
+  bool airCacheUsable() const;
+  void noteSceneFrame();
+  void keepPreAirImage(id<MTLTexture> src);
+  bool rayTracingCurrent() const;
   // A rig pipeline that cannot be built draws classic instead; this logs it
   // once per renderer rather than once per draw.
   bool _lightRigWarned = false;
   // The studio shadow maps (#616). _lightShadowMapsReady: this frame's maps
   // were rendered (cleared at every beginFrame; set by the map pass, Part 4
-  // of #616). lightShadowsReady() is the one predicate that chooses the
-  // shadow variants of the rig pipelines and, with them, binds the maps.
-  // A shadow variant that cannot be built draws the rig without its maps,
-  // logged once (_lightShadowWarned).
+  // of #616; also set by reuseLightShadowMaps, #666). lightShadowsReady() is
+  // the one predicate that chooses the shadow variants of the rig pipelines
+  // and, with them, binds the maps. A shadow variant that cannot be built
+  // draws the rig without its maps, logged once (_lightShadowWarned).
   bool _lightShadowMapsReady = false;
   bool _lightShadowWarned = false;
   bool lightShadowsReady() const;
@@ -972,14 +1119,35 @@ private:
   // the attachment (-1 outside the pass); while it is >= 0, loadMatrixf and
   // loadIdentity store _lightShadowView x M in modelview mode (light-facing
   // impostor casters) and the impostor draws use u.ortho = 0.
+  // _lightShadowView holds the view of whichever shadow map is open (a studio
+  // slice, or the classic map, #665).
   // _lightShadowPassActive: the scene encoder was ended for the pass, so
   // endLightShadowMaps must reopen it. The maps are ready only when every
   // planned slice (head.w) was opened and nothing failed.
   int _lightShadowSlotOpen = -1;
+  // #665: the classic pre-pass is open (beginShadowPass to endShadowPass) with
+  // its light's view in _lightShadowView: the same premultiply as a studio
+  // slice, but its impostors ray-cast with u.ortho = 1, since the classic
+  // map's projection is orthographic.
+  bool _classicShadowViewOpen = false;
+  // A shadow map is being drawn with its light's view premultiplied onto
+  // every modelview: a studio slice (#616) or the classic map (#665).
+  bool shadowCasterViewOpen() const
+  {
+    return _lightShadowSlotOpen >= 0 || _classicShadowViewOpen;
+  }
   float _lightShadowView[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   bool _lightShadowPassActive = false;
   int _lightShadowSlicesOpened = 0;
   bool _lightShadowFailed = false;
+
+  // #666: the maps the last map pass left complete (endLightShadowMaps), kept
+  // across frames until a slice is opened again, the array is reallocated or
+  // a test forgets them; their count. _lightShadowSlicesRendered
+  // counts every slice opened (test-only readout).
+  bool _lightShadowMapsKept = false;
+  int _lightShadowMapsKeptCount = 0;
+  unsigned long long _lightShadowSlicesRendered = 0;
   // The grid cell the following draws belong to (grid_mode): stored by
   // setGridSlot before anything else, 0 outside the grid loops (beginFrame
   // and the loops' setGridSlot(0)). bindLightRig picks that cell's tile of
@@ -992,12 +1160,31 @@ private:
   // runs on Metal's thread and may outlive this renderer (as _inFlight).
   std::shared_ptr<GpuFrameTimes> _gpuTiming;
   int _gpuTimingMode = 0;
+  // Test-only (#667, _cmd.get_classic_shadow_map_bytes): the classic shadow
+  // map's size in bytes, 0 while it has not been allocated. Read from the
+  // texture itself (Depth32Float: 4 bytes a texel), not from kShadowDim.
+  size_t classicShadowMapBytes() const override
+  {
+    return _shadowDepth ? (size_t)_shadowDepth.width * _shadowDepth.height * 4
+                        : 0;
+  }
+  void releaseClassicShadowMap() override;
+  unsigned long long lightShadowMapSlicesRendered() const override
+  {
+    return _lightShadowSlicesRendered;
+  }
+  void forgetLightShadowMaps() override;
   // This frame's studio shadow maps for the readout: the slices the map pass
-  // rendered, and their size (0 without maps).
-  int gpuFrameShadowMaps() const { return _lightShadowSlicesOpened; }
+  // rendered, and their size (0 without maps; a frame that reuses its maps
+  // reports 0 maps rendered this frame).
+  // A dust-only frame (#685) renders none.
+  int gpuFrameShadowMaps() const
+  {
+    return _airOnlyFrame ? 0 : _lightShadowSlicesOpened;
+  }
   int gpuFrameShadowSize() const
   {
-    return _lightShadowSlicesOpened > 0 ? _lightShadowArraySize : 0;
+    return gpuFrameShadowMaps() > 0 ? _lightShadowArraySize : 0;
   }
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
@@ -1072,12 +1259,19 @@ private:
   //    surface-clipped-open cavities stop occluding (#425).
   std::vector<Mat4> _rtFrameXform;
   std::vector<std::array<float, 2>> _rtFrameClip;
-  // Per-occurrence traced-reflection material {reflect, tint, rough, 0}. NOT
-  // folded into the rebuild signature: the built AS stores each primitive's
-  // occurrence index, and the material table is refreshed from the current
-  // frame's record every frame, so dragging a material slider never rebuilds.
-  std::vector<std::array<float, 4>> _rtFrameMat;
-  std::vector<std::array<float, 4>> _rtBuiltMat;   // table uploaded for the built AS
+  // Per-occurrence traced-reflection material (#709, #855, #712): five float4 (20 floats) per
+  // occurrence. row0 = {reflect, tint, rough, lightWrap}, row1 = {lightDiffuse,
+  // lightHighlight, lightSharpness, lightTint}, row2 = {float(family), float(mode),
+  // p[0], p[1]}, row3 = {p[2], p[3], p[4], p[5]}, row4 = {lightHighlight2,
+  // lightSharpness2, lightTint2, lightTintGain}. NOT folded into the rebuild
+  // signature: the built AS stores each primitive's occurrence index, and the
+  // material table is refreshed from the current frame's record every frame, so
+  // dragging a material slider never rebuilds.
+  std::vector<RTMatRow> _rtFrameMat;
+  std::vector<RTMatRow> _rtBuiltMat;   // table uploaded for the built AS
+  // The next draw's row of that table: _repMat plus the studio response
+  // bindRepMaterial gives the raster draw and procedural/glass parameters (#709, #855, #712).
+  RTMatRow rtOccurrenceMaterial() const;
   Mat4 _rtBaseModelView{};      // camera-only modelview (world -> eye)
   Mat4 _rtBaseModelViewInv{};   // its inverse (eye -> world)
 
@@ -1136,7 +1330,8 @@ private:
     std::memcpy(delta.data(), &d, 64);
     _rtFrameXform.push_back(delta);
     _rtFrameClip.push_back({_repClipFront, _repClipBack});
-    _rtFrameMat.push_back({_repMat[0], _repMat[1], _repMat[2], 0.0f});
+    // #709, #855: snapshot this occurrence's full 16-float material response
+    _rtFrameMat.push_back(rtOccurrenceMaterial());
 
     _rtFrameSig ^= (uint64_t)reinterpret_cast<uintptr_t>(key);
     _rtFrameSig *= 1099511628211ULL;
@@ -1178,6 +1373,10 @@ private:
   std::vector<const void*> _rtTFrameKeys;
   std::vector<Mat4> _rtTFrameXform;
   std::vector<std::array<float, 2>> _rtTFrameClip;
+  // The transparent occurrences' material rows (#855), as _rtFrameMat: indexed
+  // by the per-triangle occurrence in _rtTOccBuffer, never in the signature.
+  std::vector<RTMatRow> _rtTFrameMat;
+  std::vector<RTMatRow> _rtTBuiltMat;
   uint64_t _rtTFrameSig = 0;
   uint64_t _rtTBuiltSig = 0;
   bool _rtTReady = false;
@@ -1188,6 +1387,7 @@ private:
   id<MTLBuffer> _rtTColBuffer = nil;   // float4/tri: rgb, alpha
   id<MTLBuffer> _rtTNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
   id<MTLBuffer> _rtTOccBuffer = nil;   // uint32/tri: occurrence (one object's rep)
+  id<MTLBuffer> _rtTMatBuffer = nil;  // 5 float4 per transparent occurrence (#855, #712)
   id<MTLLibrary> _rtLib = nil;         // kept to specialise the transparent pipelines
   id<MTLRenderPipelineState> _rtAOPipelineT = nil;
   id<MTLRenderPipelineState> _rtResolvePipelineT = nil;
@@ -1196,15 +1396,25 @@ private:
   void buildRTPipelines(bool transparent, id<MTLRenderPipelineState>* ao,
       id<MTLRenderPipelineState>* composite);
   void releaseRayTracingTransAS();
+  // Traced soft shadows (#741), set by setLightSoftShadows each frame.
+  float _lightSoftRadius[6] = {};   // eye Å; > 0 only for a traced light
+  bool _lightSoftFrame = false;     // a light is traced this frame
+  id<MTLTexture> _rtSoft = nil;     // RGBA16Float, _rtAO's size, made lazily
+  id<MTLRenderPipelineState> _rtSoftPipeline = nil;
+  bool _rtSoftTried = false;
+  bool _rtSoftBroken = false;       // a soft pipeline failed to build: maps stay
+  bool ensureRTSoftPipeline();
   // The light rig on traced reflection hits (#613): rt_composite specialised
-  // with kRTLightRig, [transparent][hdr] (kRTTrans; kLightHdr, #624: 1 for an
-  // HDR frame, 0 for the 8-bit knee), each built from the retained _rtLib the
-  // first time a rig-on frame of that kind has something reflective (one
-  // attempt each, _rtRigTried). Used only then; every other frame keeps
-  // _rtResolvePipeline / _rtResolvePipelineT.
-  id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2] = {};
-  bool _rtRigTried[2][2] = {};
-  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr);
+  // with kRTLightRig, [transparent][hdr][shadow][soft] (kRTTrans; kLightHdr,
+  // #624: 1 for an HDR frame, 0 for the 8-bit knee; kRTLightShadow, #664: 1 for
+  // studio shadows on reflection hits, 0 otherwise; kRTLightSoft, #741: 1 for
+  // traced soft shadows, 0 otherwise), each built from the retained _rtLib the
+  // first time a rig-on frame of that kind has something reflective or soft
+  // shadows (one attempt each, _rtRigTried). Used only then; every other frame
+  // keeps _rtResolvePipeline / _rtResolvePipelineT.
+  id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2][2][2] = {};
+  bool _rtRigTried[2][2][2][2] = {};
+  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr, bool shadow, bool soft);
 
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.
@@ -1220,7 +1430,7 @@ private:
   id<MTLBuffer> _rtTriColBuffer = nil;
   id<MTLBuffer> _rtTriNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
   id<MTLBuffer> _rtTriMatBuffer = nil;   // uint32/tri: occurrence index into the material table
-  id<MTLBuffer> _rtMatBuffer = nil;      // float4 per occurrence: {reflect, tint, rough, 0}
+  id<MTLBuffer> _rtMatBuffer = nil;      // 5 float4 per occurrence (#709, #855, #712)
   id<MTLBuffer> _rtSphereBuffer = nil;
   size_t _rtSphereInstCount = 0;
   id<MTLBuffer> _rtTriBuffer = nil;   // world-tri vertices (9 floats/tri), bound to rt_ao so the
@@ -1268,6 +1478,19 @@ private:
   // Label/text rendering (screen-aligned textured glyph quads). Initialized to
   // nil — this is a C++ class under MRC, so id ivars are not zero-initialized.
   id<MTLRenderPipelineState> _labelPipeline = nil;
+  // The OIT pass's variant (#736): labels draw in the transparent pass, which
+  // is the OIT pass, so they need its RGBA16F/R16F single-sample targets.
+  id<MTLRenderPipelineState> _labelOitPipeline = nil;
+  id<MTLDepthStencilState> _labelOitNoDepthState = nil;
+  // Label draws issued in a peeled object's OIT pass, drawn at the start of
+  // the frame's ordinary OIT pass instead (#736, see drawLabels).
+  struct PeelDeferredLabels {
+    LabelDrawCall call;
+    Mat4 modelview;
+    Mat4 projection;
+    bool depthTest;
+  };
+  std::vector<PeelDeferredLabels> _peelDeferredLabels;
   id<MTLSamplerState> _labelSampler = nil;
   id<MTLTexture> _labelAtlas = nil;  // glyph atlas, uploaded from CPU copy
   uint64_t _labelAtlasGen = 0;       // generation of the uploaded atlas

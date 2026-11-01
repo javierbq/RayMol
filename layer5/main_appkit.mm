@@ -117,6 +117,8 @@ extern "C" void initGLEWForDummyContext(void);
 
 #if PYMOL_HAS_METAL
 #include "RendererMetal.h"
+#include "Setting.h"
+#include "Color.h"
 #endif
 
 // Defined in ImmediateHelper.h — forward-declared here to avoid
@@ -886,6 +888,11 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     // Set viewport to match drawable size
     CGSize sz = self.drawableSize;
     renderer->viewport(0, 0, (int)sz.width, (int)sz.height);
+    const float* bg = ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb));
+    int opaqueBg = SettingGetGlobal_b(G, cSetting_ray_opaque_background);
+    if (bg) {
+        renderer->clearColor(bg[0], bg[1], bg[2], opaqueBg ? 1.0f : 0.0f);
+    }
     renderer->beginFrame();
 
     // Handle pending reshapes

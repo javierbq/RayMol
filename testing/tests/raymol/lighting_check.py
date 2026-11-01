@@ -84,10 +84,7 @@ def f32(x):
 
 
 def restore_set_lights():
-    """Undo the scene files' shim (what tearDown does)."""
-    original = vars(cmd).pop('_l613_set', None)
-    if original is not None:
-        cmd.set_lights = original
+    """Undo the scene files' rig state (what tearDown does)."""
     vars(cmd).pop('_l613_rig', None)
 
 
@@ -130,11 +127,17 @@ class TestSceneFiles(testing.PyMOLTestCase):
                           'd15': 4})
         for which in ('pairs', 'params'):
             spec = self.specs[which]
+            applier = [
+                "if getattr(cmd, '_l613_rig', None) is not None: "
+                "cmd.set_lights(cmd._l613_rig(_lh_rig) if callable(cmd._l613_rig) else cmd._l613_rig)"
+            ]
+            self.assertEqual(spec.get('after_rig'), applier)
             self.assertEqual((spec['base'], spec['rig']), (None, 'on'), which)
             for job in self.jobs[which]:
+                self.assertEqual(job.after_rig, applier, job.tag)
                 self.assertEqual(job.rig, 'on', job.tag)
                 self.assertEqual(job.extra[:len(spec['extra'])], spec['extra'], job.tag)
-                # every scene says which rig the shim installs, as its last line
+                # every scene says which rig after_rig installs, as its last line
                 own = job.extra[len(spec['extra']):]
                 self.assertEqual([l for l in own if l.startswith(RIG_LINE)], [own[-1]],
                                  job.tag)
@@ -142,6 +145,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
             for job in self.jobs[which]:
                 self.assertFalse(any('_l613_rig' in l or 'set_lights' in l
                                      for l in job.extra), job.tag)
+                self.assertEqual(job.after_rig, [], job.tag)
         self.assertEqual((self.specs['d15']['base'], self.specs['d15']['rig']), (None, 'none'))
         # the default-path files differ only in "rig"
         a, b = self.specs['default'], self.specs['default_off']
@@ -336,8 +340,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
         job = self.job('pairs', 'cartoon_2l_rt0')
         marker = self.run_job(job, times=2)       # the app runs it twice
         self.assertIsNone(self.render.check_marker(marker, job.tag, 'on'))
-        # the guard kept the real set_lights (no shim wrapping a shim)
-        self.assertIs(cmd._l613_set, self.original_set_lights)
+        self.assertNotIn('_l613_set', vars(cmd))
+        self.assertIs(cmd.set_lights, self.original_set_lights)
         rig = cmd.get_lights()
         self.assertIs(rig['enabled'], True)
         self.assertEqual((rig['ambient'], rig['classic']), (0.06, 0.0))
@@ -364,9 +368,10 @@ class TestSceneFiles(testing.PyMOLTestCase):
             self.assertEqual(light['radiance'], [0.0, 0.0, 0.0])
 
         # a FUNCTION of the harness's rig (the params file's 3-light twins):
-        # the shim applies it to the rig the harness installs
+        # after_rig applies it to the rig the harness installs
         self.run_job(self.job('params', 'cartoon_rig3dark_rt0'), times=2)
-        self.assertIs(cmd._l613_set, self.original_set_lights)
+        self.assertNotIn('_l613_set', vars(cmd))
+        self.assertIs(cmd.set_lights, self.original_set_lights)
         rig = cmd.get_lights()
         self.assertIs(rig['enabled'], True)
         self.assertEqual([l['name'] for l in rig['lights']], ['key', 'fill', 'rim'])

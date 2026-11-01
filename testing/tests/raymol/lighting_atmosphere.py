@@ -66,7 +66,8 @@ from pymol import appkit_lights, cmd, lighting, raymol_scene_anim, \
 PEPTIDE = 'ACDEFG'
 
 # The air fields, in table order (the order of the .pse session list).
-AIR_FIELDS = ['haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed']
+AIR_FIELDS = ['haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed',
+              'dust_glow', 'dust_opacity']
 
 # What write_air_fields writes today, byte for byte (seed's bounds are
 # whole numbers; Swift decodes every number as a Double). Swift's
@@ -85,12 +86,16 @@ HELPER_JSON = (
     '{"name": "scatter", "kind": "float", "default": 0.55, "min": -0.9, '
     '"max": 0.9}, '
     '{"name": "seed", "kind": "int", "default": 0, "min": 0, '
-    '"max": 1000000}]')
+    '"max": 1000000}, '
+    '{"name": "dust_glow", "kind": "float", "default": 1.0, "min": 0.0, '
+    '"max": 4.0}, '
+    '{"name": "dust_opacity", "kind": "float", "default": 0.0, "min": 0.0, '
+    '"max": 1.0}]')
 
 # The card's slider resolutions (AirParameter.stepsPerUnit): steps per unit,
 # not ranges. A slider value is round(x * steps) / steps.
 STEPS = {'haze': 100, 'dust': 100, 'dust_size': 100, 'dust_speed': 20,
-         'scatter': 100}
+         'scatter': 100, 'dust_glow': 100, 'dust_opacity': 100}
 
 # The switch's On command with nothing remembered (AtmosphereSwitch.startLook,
 # the orchestrator's Q1): a UI default, not a field default.
@@ -234,8 +239,8 @@ class TestAirFieldsHelper(AtmosphereCase):
             self.assertEqual(handle.read(), HELPER_JSON)
 
     def testCardSliderFieldsAreTheFloatAirFields(self):
-        """The card has a slider for every float air field (seed stays
-        command-only, Q5)."""
+        """The card has a slider for every float air field (seed has a
+        whole-number field, not a slider)."""
         floats = [name for name, kind, *_ in air_rows() if kind == 'float']
         self.assertEqual(floats, list(STEPS))
         for field, value in START_LOOK.items():
@@ -411,6 +416,18 @@ class TestCardSetterPath(AtmosphereCase):
         self.assertIn('haze 0.4, dust 0.45, dust_size 0.6, dust_speed 2.5, '
                       'scatter -0.25', text)
 
+    def testSeedSetterIsWhatAtmosphereReads(self):
+        self.three_point()
+        lighting._light_set(-1, 'seed', 42)
+        self.assertEqual(self.air()['seed'], 42)
+        result, _ = output(cmd.atmosphere)
+        self.assertEqual(result['seed'], 42)
+        _kind, _default, lo, hi = air_table()['seed']
+        lighting._light_set(-1, 'seed', 2000000)
+        self.assertEqual(self.air()['seed'], hi)
+        lighting._light_set(-1, 'seed', -5)
+        self.assertEqual(self.air()['seed'], lo)
+
     def testSetterClampsToTheTableRange(self):
         self.three_point()
         for field in EDITS:
@@ -552,6 +569,7 @@ MODEL = os.path.join(SHARED, 'LightsAtmosphere.swift')
 ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
 CARD = os.path.join(SHARED, 'LightsAtmosphereCard.swift')
 SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
+BAR = os.path.join(SHARED, 'LightsBar.swift')
 FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
 SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
@@ -656,7 +674,8 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
         default = re.search(r'default:\s*return\s+(\d+)', body)
         self.assertIsNotNone(default)
         names = {'haze': 'haze', 'dust': 'dust', 'dustSize': 'dust_size',
-                 'dustSpeed': 'dust_speed', 'scatter': 'scatter'}
+                 'dustSpeed': 'dust_speed', 'scatter': 'scatter',
+                 'dustGlow': 'dust_glow', 'dustOpacity': 'dust_opacity'}
         steps = {field: int(cases.get(case, default.group(1)))
                  for case, field in names.items()}
         self.assertEqual(steps, STEPS)
@@ -706,49 +725,53 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
                 self.assertIsNone(re.search(r'\brunPython\w*\(', loader))
                 self.assertIn('loadLightTables()', loader)
 
-    def testTheCardSitsUnderTheInspectorOnMacAndIPad(self):
-        """macOS: the side column builds the card under the inspector, with
-        layoutPriority(1) (it keeps its height; the inspector scrolls
-        first) and its frame reported. iPad: the float builds it under the
-        inspector in the trailing stack, the same way, and reports its
-        frames with no orbit card too. ContentView seeds the start states
-        (macOS expanded only when the air is on, iPad collapsed) and the
-        DEBUG LightsLayout line names the card's frame."""
+    def testMacAndIPadOpenThePopoverFromTheBar(self):
+        """macOS and the iPad float (#889): neither the side column nor the
+        float holds an Atmosphere card, and neither reports its frame; the
+        Lights bar's Atmosphere button opens LightsAtmospherePopover, the
+        card's header over its rows, which forwards its fields' keyboard to
+        the owner (#725). ContentView turns the popover and the light menu on
+        by placement, and the DEBUG LightsLayout line names no Atmosphere
+        frame."""
         for rel in (SIDE_COLUMN, FLOAT):
             with self.subTest(rel):
-                view = self.body(rel, 'var body: some View')
-                inspector = view.find('LightsInspector(')
-                card = view.find('LightsAtmosphereCard(')
-                self.assertGreaterEqual(inspector, 0)
-                self.assertGreater(card, inspector, 'the card goes under the inspector')
-                chain = view[card:card + 400]
-                self.assertIn('presentation: .card', chain)
-                self.assertIn('start: atmosphereStart', chain)
-                self.assertIn('framesReader("atmosphere")', chain)
-                self.assertIn('.layoutPriority(1)', chain)
+                text = self.read(rel)
+                self.assertNotIn('LightsAtmosphereCard(', text)
+                self.assertNotIn('framesReader("atmosphere")', text)
         self.assertIn('LightsColumnFramesKey', self.read(SIDE_COLUMN))
         report = self.body(FLOAT, '.onPreferenceChange(LightsFloatFramesKey.self)')
-        self.assertIn('guard card != nil || inspector != nil || atmosphere != nil', report)
-        self.assertNotIn('guard let card = frames["card"]', report)
-        content = self.read(CONTENT_VIEW)
-        self.assertEqual(content.count('atmosphereStart: lightsAtmosphereStart'), 2)
-        start = self.body(CONTENT_VIEW, 'private var lightsAtmosphereStart: LightsAtmosphereStart')
-        ios, _, mac = start.partition('#else')
-        self.assertIn('return .collapsed', ios)
-        self.assertIn('return .expandedIfOn', mac)
+        self.assertIn('guard card != nil || inspector != nil else { return }', report)
+        bar = self.body(BAR, 'private var atmosphereButton: some View')
+        self.assertIn('.popover(isPresented: $showsAtmospherePopover', bar)
+        self.assertIn('LightsAtmospherePopover(controller: controller, style: style, onFieldFocus: onFieldFocus)',
+                      bar)
+        popover = self.body(CARD, 'struct LightsAtmospherePopover: View')
+        header = popover.find('presentation: .header')
+        self.assertGreaterEqual(header, 0)
+        self.assertGreater(popover.find('presentation: .rows'), header)
+        self.assertIn('.onPreferenceChange(LightsFieldFocusKey.self)', popover)
+        self.assertIn('onFieldFocus(false)', popover)
+        placement = self.body(BAR, 'static func atmosphereOpensPopover(')
+        self.assertIn('case .column, .floating: return true', placement)
+        lights_bar = self.body(CONTENT_VIEW, 'private var lightsBar: some View')
+        self.assertIn('atmosphereOpensPopover(placement: lightsPlacement)', lights_bar)
+        self.assertIn('showsLightMenu(placement: lightsPlacement)', lights_bar)
+        self.assertNotIn('atmosphereStart:', self.read(CONTENT_VIEW))
         log = self.body(CONTENT_VIEW, 'private func logLightsLayout(')
-        self.assertIn(' atmosphere=', log)
+        self.assertNotIn(' atmosphere=', log)
 
-    def testTheCollapsedCardIsOneHeaderRow(self):
-        """A collapsed card shows its hint as a header glyph (never the hint
-        text), so it is the 44 pt header the float's frames assume."""
-        card = self.body(CARD, 'private func card(')
-        self.assertIn('if !collapsed {', card)
-        self.assertNotIn('hintRow(', card)
-        header = self.body(CARD, 'private func header(')
-        self.assertIn('if showsChevron, collapsed, let glyph = state.collapsedGlyph', header)
-        metrics = self.body(FLOAT, 'enum LightsFloatMetrics')
-        self.assertRegex(metrics, r'static let atmosphereHeaderHeight: CGFloat = 44\b')
+    def testNoPresentationCollapses(self):
+        """#889: the card's collapsible `.card` presentation went with the
+        macOS column card and the iPad float card; what is left (section,
+        header, rows, the popover) never collapses, so it has no start
+        state and no collapsed hint glyph."""
+        card = self.read(CARD)
+        self.assertIsNone(type_body(card, 'private func card('))
+        self.assertRegex(card, r'case section, header, rows\b')
+        for name in ('collapsed', 'LightsAtmosphereStart', 'collapsedGlyph'):
+            with self.subTest(name):
+                self.assertNotIn(name, card)
+                self.assertNotIn(name, self.read(MODEL))
 
     def testTheCardWritesThroughTheTypedAirAPI(self):
         """Every write of the card goes through the typed air API (bridge
@@ -757,7 +780,7 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
         reads."""
         text = self.read(CARD)
         calls = set(re.findall(r'controller\.(\w+)\(', text))
-        self.assertEqual(calls, {'setAirIfChanged', 'setAir', 'setAtmosphere', 'airField', 'airValue'})
+        self.assertEqual(calls, {'setAirIfChanged', 'setAir', 'setAtmosphere', 'airField', 'airValue', 'setAirSeed'})
         for name in ('seams', 'perform(', 'writeRigNumbers', 'beginGesture('):
             with self.subTest(name):
                 self.assertNotIn(name, text)
@@ -839,8 +862,9 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
     def testTheDebugHookUsesTheCardsCalls(self):
         """The simulator hook's air tokens (DEBUG LightsAutoEdit) run the
         card's own calls (the bridge setter for a field, one command for the
-        switch), `air` drives the sheet's reveal path and the card's start
-        state, and both PYMOL_AUTOLIGHTS lines log the card's summary."""
+        switch), `air` drives the sheet's reveal path and opens the bar's
+        popover (#889), and both PYMOL_AUTOLIGHTS lines log the card's
+        summary."""
         inspector = os.path.join(SHARED, 'LightsInspector.swift')
         apply = self.body(inspector, 'static func apply(')
         self.assertIn('controller.setAir(parameter, value)', apply)
@@ -850,8 +874,8 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
         self.assertEqual(content.count('air=\\(air)'), 2)
         self.assertEqual(content.count('let air = AtmosphereCardState(lights)?.summary ?? "none"'), 2)
         self.assertEqual(content.count('atmosphereRevealRequest: lightsAtmosphereRevealRequest'), 2)
-        start = self.body(CONTENT_VIEW, 'private var lightsAtmosphereStart: LightsAtmosphereStart')
-        self.assertIn('if lightsAtmosphereExpandOverride { return .expanded }', start)
+        lights_bar = self.body(CONTENT_VIEW, 'private var lightsBar: some View')
+        self.assertIn('atmospherePopoverStartsOpen: lightsAtmosphereExpandOverride', lights_bar)
 
     def testNoUndo(self):
         """Light edits register no undo (the bar's Revert is the way back);

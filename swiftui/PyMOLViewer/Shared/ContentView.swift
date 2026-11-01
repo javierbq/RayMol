@@ -61,6 +61,9 @@ extension Notification.Name {
     static let raymolPerformToggleNotePreview = Notification.Name("raymol.notes.performTogglePreview")
     static let raymolPerformFontIncrease = Notification.Name("raymol.notes.performFontIncrease")
     static let raymolPerformFontDecrease = Notification.Name("raymol.notes.performFontDecrease")
+    // Posted by the iOS MetalViewport when a viewport touch gesture begins or
+    // ends (userInfo["gestureActive"]: Bool); drives the iPhone chrome fade (#391).
+    static let raymolViewportActivity = Notification.Name("raymol.viewport.activity")
 }
 
 #if os(iOS)
@@ -134,6 +137,15 @@ extension View {
             Color.clear.preference(key: PaneHeightKey.self, value: [tag: g.size.height])
         })
     }
+
+    /// Applies the iPhone chrome fade (#391) to a floating viewport control.
+    func phoneChromeFade(_ appearance: PhoneChromeFade.Appearance) -> some View {
+        // Scoped to the opacity alone, so a layout or colour change that lands in
+        // the same transaction (the tongue's chevron, the dock opening) is not
+        // animated with it (cf. #480).
+        animation(.easeInOut(duration: PhoneChromeFade.fadeDuration)) { $0.opacity(appearance.opacity) }
+            .allowsHitTesting(appearance.isHitTestable)
+    }
 }
 
 
@@ -149,10 +161,23 @@ private extension View {
     }
 }
 
+/// What the macOS mouse-mode legend shows (#677). Lights mode hides it so it
+/// can't cover the Lights side column in short windows; the user's persisted
+/// collapsed/expanded choice is untouched and applies again once the mode ends.
+enum MouseLegendPresentation: Equatable {
+    case hidden, collapsed, expanded
+
+    static func resolve(collapsed: Bool, interactionMode: InteractionMode) -> MouseLegendPresentation {
+        if interactionMode == .lights { return .hidden }
+        return collapsed ? .collapsed : .expanded
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
     @EnvironmentObject private var notes: AnalysisNotesStore
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     // "What's New" splash: auto-shows once after a version bump; also opened on
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
@@ -160,24 +185,34 @@ struct ContentView: View {
     // starts expanded (and the iPad inspector expanded). Always false in
     // normal runs.
     @State private var lightsInspectorExpandOverride = false
-    // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `air`, #726): the Atmosphere
-    // card starts expanded (macOS, iPad), and the phone sheet starts
-    // expanded and reveals its Atmosphere section through the header
-    // button's path: the request is 1 for each mode entry under the token,
-    // else 0 (LightsSheet's atmosphereRevealRequest). Always false and 0 in
-    // normal runs.
+    // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `air`, #726): the bar's
+    // Atmosphere popover starts open (macOS, iPad, #889), and the phone sheet starts
+    // expanded and reveals its Atmosphere section through the Lights bar
+    // entry's path: the request is 1 for each mode entry under the token,
+    // else 0 (LightsSheet's atmosphereRevealRequest; the Lights bar's
+    // Atmosphere entry bumps the same request). Always false in normal runs.
     @State private var lightsAtmosphereExpandOverride = false
     @State private var lightsAtmosphereRevealRequest = 0
-    // The phone light tools (#623). The sheet's height is seeded compact each
-    // time Lights mode opens (expanded under the DEBUG `expand`), never
-    // persisted. `lightsSheetMoving` is true only for the one snap after a
-    // release (the drawable is frozen meanwhile and the gizmo fades);
-    // `lightsFieldFocused` while an Orbit or Pitch field of the sheet or the
-    // side panel has the keyboard (the viewport then keeps its size). The
+    // The phone light tools (#623, #885). In portrait the Lights bar shows the
+    // light menu and the bottom sheet stays closed (`lightsEditorOpen`, false
+    // until "Edit light…", the Atmosphere entry or a DEBUG `expand`/`air`
+    // token opens it). The sheet's height is seeded compact each
+    // time Lights mode opens (expanded under the DEBUG `expand` or `air`, or
+    // when "Edit light…" opens it), never persisted. `lightsSheetMoving` is
+    // true only for the one snap after a release (the drawable is frozen
+    // meanwhile and the gizmo fades); `lightsFieldFocused` while an Orbit,
+    // Pitch or Atmosphere field of the sheet, the side panel, the iPad float
+    // or the bar's Atmosphere popover
+    // has the keyboard (the viewport then keeps its size, #623, #725). The
     // pane overrides bring the console or the sequence strip back beside the
-    // portrait sheet for the rest of the mode (LightsPaneRule). The header,
+    // portrait tools for the rest of the mode (LightsPaneRule). The header,
     // rows, room and side sizes are what the tools measured.
     @State private var lightsSheetDetent: LightsSheetDetent = .compact
+    /// The portrait full editor (#885): true while the bottom sheet is open.
+    @State private var lightsEditorOpen = false
+    /// The portrait sheet's identity: "Edit light…" moves it on, so the
+    /// editor opens fresh on the light's rows (LightsPortraitTools.editLight).
+    @State private var lightsEditorGeneration = 0
     @State private var lightsSheetMoving = false
     @State private var lightsFieldFocused = false
     @State private var lightsShowsConsole = false
@@ -222,7 +257,7 @@ struct ContentView: View {
     @State private var macConsoleDragAnchor: CGFloat? = nil
     // The macOS inspector width the USER chose, as a fraction of the window width
     // (#350: object names were unreadable at the fixed column width). 0 means
-    // "never resized", which selects the absolute 340pt default instead.
+    // "never resized", which selects the absolute default instead (PanelLayout).
     @AppStorage(PanelLayout.inspectorFracKey) private var inspectorFrac = 0.0
     // The inspector width the current macOS seam drag started from, in points.
     @State private var macInspectorDragAnchor: CGFloat? = nil
@@ -242,6 +277,11 @@ struct ContentView: View {
     // Transparent background for exported images (sets ray_opaque_background=0
     // just before the offscreen render). Persists across launches.
     @AppStorage("exportTransparent") private var exportTransparent = false
+    // Save Structure object picker (#220): the open request (drives the sheet) and
+    // the choice confirmed in it, held until the sheet has finished dismissing so
+    // the save panel / share sheet doesn't present over a sheet that is going away.
+    @State private var saveStructureRequest: SaveStructureRequest?
+    @State private var saveStructureConfirmed: (ext: String, choice: SaveStructureChoice)?
     @State private var showCustomSizeSheet = false
     @State private var customWidth = "3840"
     @State private var customHeight = "2160"
@@ -293,6 +333,24 @@ struct ContentView: View {
 
     var body: some View {
         layout
+            // The Lights inspector's Exposure row (#733): the same setting the
+            // Effects slider edits.
+            .environment(\.lightsExposure,
+                         .scene(values: engine.sceneState.values, run: { engine.runCommand($0) }))
+            // The first Timeline add over a movie no lane describes (#901). One
+            // alert here, not per TimelinePanel: the dock and the inspector can
+            // both show one. Dismissal clears the held add a beat later, so a
+            // Replace tap runs it first.
+            .alert("Replace this session's movie?", isPresented: Binding(
+                get: { engine.pendingTimelineAdd != nil },
+                set: { if !$0 { DispatchQueue.main.async { engine.pendingTimelineAdd = nil } } })) {
+                Button("Cancel", role: .cancel) {}
+                Button("Replace", role: .destructive) { engine.confirmMovieReplace() }
+            } message: {
+                Text("This session has a movie that wasn't made in the Timeline. "
+                    + "Adding to the Timeline rebuilds the movie from its clips, "
+                    + "which replaces the existing one.")
+            }
             // What's New splash (both platforms, single hook): once-per-launch
             // auto-show, the manual-open notification, and the sheet itself.
             .onAppear {
@@ -328,6 +386,19 @@ struct ContentView: View {
                               versionLabel: whatsNew.currentVersion) {
                     whatsNew.isPresented = false
                 }
+            }
+            .sheet(item: $saveStructureRequest, onDismiss: {
+                if let done = saveStructureConfirmed {
+                    saveStructureConfirmed = nil
+                    performSaveStructure(ext: done.ext, choice: done.choice)
+                }
+            }) { request in
+                SaveStructurePicker(request: request,
+                                    onCancel: { saveStructureRequest = nil },
+                                    onConfirm: { choice in
+                    saveStructureConfirmed = (request.ext, choice)
+                    saveStructureRequest = nil
+                })
             }
             #if RAYMOL_MPNN
             // Single lifecycle observer for Design mode, shared by macOS and iOS:
@@ -392,7 +463,8 @@ struct ContentView: View {
         // and a `ray` genuinely co-occur and the tray's Cancel must stay hittable.
         ProgressTray(items: ProgressItem.tray(weights: engine.weightsFetch,
                                               predictions: engine.predictionJobs,
-                                              designs: engine.designJobs)) { item in
+                                              designs: engine.designJobs,
+                                              morphs: engine.morphJobs)) { item in
             switch item.action {
             case .command(let cmd):   engine.runCommand(cmd)
             case .python(let src):    engine.runPython(src)
@@ -463,8 +535,12 @@ struct ContentView: View {
     #if os(macOS)
     // Minimizable mouse-mode legend: full card with a minimize button, or a
     // small mouse button when collapsed (state persists via @AppStorage).
+    // Lights mode hides it entirely so it can't cover the Lights side column (#677).
     @ViewBuilder private var mouseLegendCard: some View {
-        if mouseLegendCollapsed {
+        switch MouseLegendPresentation.resolve(collapsed: mouseLegendCollapsed, interactionMode: engine.interactionMode) {
+        case .hidden:
+            EmptyView()
+        case .collapsed:
             Button { withAnimation(.easeInOut(duration: 0.15)) { mouseLegendCollapsed = false } } label: {
                 Image(systemName: "computermouse")
                     .font(.system(size: 15))
@@ -475,7 +551,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .help("Show mouse controls")
             .padding(8)
-        } else {
+        case .expanded:
             // The minimize button lives in a reserved trailing gutter (top-right),
             // NOT overlaid on the panel: MousePanel's mode Picker uses
             // `maxWidth: .infinity`, so its `.menu` chevron would otherwise run
@@ -488,7 +564,12 @@ struct ContentView: View {
                     // Reserve space on the right so the picker chevron stops short
                     // of the corner where the minimize button sits.
                     .padding(.trailing, 22)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    // Fill the gutter with the same theme surface MousePanel
+                    // paints, so the strip under the "−" doesn't show as a
+                    // lighter material band beside the card (#906). The clip
+                    // rounds MousePanel's own square background too.
+                    .background(themeManager.active.panelBackground.color)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8)
                         .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
                 Button { withAnimation(.easeInOut(duration: 0.15)) { mouseLegendCollapsed = true } } label: {
@@ -507,7 +588,10 @@ struct ContentView: View {
             .padding(8)
             .onHover { hovering in
                 mouseLegendCollapseWork?.cancel()
-                guard !hovering else { return }
+                // Entering Lights removes the card (#677); a hover-exit caused by
+                // that removal must not minimize it, or Lights would change the
+                // persisted preference.
+                guard !hovering, engine.interactionMode != .lights else { return }
                 // Auto-minimize ~1s after the pointer leaves the expanded legend.
                 let work = DispatchWorkItem {
                     withAnimation(.easeInOut(duration: 0.15)) { mouseLegendCollapsed = true }
@@ -575,7 +659,7 @@ struct ContentView: View {
     }
 
     // The right (inspector / Theme Studio) column's current width: the share the
-    // user dragged the seam to, or the absolute 340pt default until they have
+    // user dragged the seam to, or the absolute default until they have
     // (#350) — clamped every layout pass so a window shrink can't squeeze the
     // viewport below its minimum width.
     private func macInspectorWidth(windowWidth: CGFloat) -> CGFloat {
@@ -663,10 +747,20 @@ struct ContentView: View {
         // 748pt inside a 684pt window, and NSWindow isn't on screen yet at first
         // layout. Its children are explicitly told to fill it, below.
         return GeometryReader { winGeo in
+        // #914: the window decides how the inspector can be shown — docked beside
+        // the viewport, auto-hidden, or (opened while narrow) over the whole window.
+        let narrow = PanelLayout.macInspectorIsNarrow(windowWidth: winGeo.size.width)
+        let inspector = PanelLayout.macInspectorPresentation(
+            windowWidth: winGeo.size.width, userShown: showObjectPanel,
+            narrowOpen: engine.macInspectorNarrowOpen)
+        // A full-width right column (below) covers the whole left column.
+        let leftCovered = (narrow && showThemeStudio)
+            || (!showThemeStudio && inspector == .fullWidth)
         VStack(spacing: 0) {
-            #if !RAYMOL_MAS_RESTRICTED
-            MCPDrivingBanner()
-            #endif
+            // (The MCP "Claude is controlling RayMol" banner is NOT laid out here:
+            // as a stack child it pushed the whole window down on every tool call,
+            // reshaping the Metal drawable (#908). It floats over the viewport —
+            // see macViewportStack.)
             // Left | right as a plain HStack, NOT an HSplitView: that split view's
             // system divider had a mouse-tracking band that SWALLOWED clicks on the
             // inspector tongue sitting on the seam (#325; bisected in the VM: x=679
@@ -735,35 +829,55 @@ struct ContentView: View {
             }
             } // end left-column VStack
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // #914: while a full-width panel covers this column, nothing in it may
+            // take keys or VoiceOver focus — Tab must not walk back into the hidden
+            // console, nor VoiceOver read the hidden rail. Applied BEFORE the
+            // overlays, so the panel on top stays live. The column (and its Metal
+            // viewport) stays mounted; see also resignCoveredTextFocus.
+            .disabled(leftCovered)
+            .accessibilityHidden(leftCovered)
             // Inspector CLOSED → its tongue rides the left column's trailing edge, so
             // there is still something to grab once the toolbar toggle is gone. Open →
             // the tongue moves onto the inspector's own leading edge (below). Hidden
             // while Theme Studio owns the right column: that panel has its own close
             // button. Mirrors the iPad landscape layout.
             .overlay(alignment: .trailing) {
-                if !showThemeStudio && !showObjectPanel {
+                if !showThemeStudio && inspector == .hidden {
                     panelTongue(shown: objectsBinding, axis: .vertical)
+                }
+            }
+            // #914: a window too narrow to dock the right column shows it OVER the
+            // left column instead, at the full window width, rather than squeezing
+            // it (its content then overflowed onto the viewport). An overlay, not a
+            // replacement, so the Metal viewport keeps its identity underneath.
+            // The tongue sits on the panel's leading edge to close it again.
+            .overlay {
+                if narrow && showThemeStudio {
+                    macThemeStudioPanel
+                } else if !showThemeStudio && inspector == .fullWidth {
+                    inspectorSwitcher()
+                        .overlay(alignment: .leading) {
+                            panelTongue(shown: objectsBinding, axis: .vertical)
+                        }
                 }
             }
 
             // Right column: objects + (chat). Only exists (and only occupies its
             // width) when at least one of its panels is shown — when both are off
-            // the layout collapses to just the left column. Width is 340pt until
+            // the layout collapses to just the left column. Width is the default until
             // the user drags the seam (#350); Theme Studio shares the SAME width so
             // toggling between the two never makes the right edge jump. The mouse
             // legend moved to the floating viewport overlay (above) so it stays
             // reachable regardless.
-            if showThemeStudio {
+            if showThemeStudio && !narrow {
                 // Theme studio takes over the right column; viewport stays live.
                 macInspectorDivider(windowWidth: winGeo.size.width)
-                ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
-                    .environmentObject(engine)
-                    .environmentObject(themeManager)
+                macThemeStudioPanel
                     .frame(width: macInspectorWidth(windowWidth: winGeo.size.width))
-            } else if showObjectPanel {
+            } else if !showThemeStudio && inspector == .docked {
                 // The seam the tongue centres on, and (#350) the drag handle that
                 // resizes the column. The Movie-tab transport is shrunk (TransportBar
-                // kT* consts) to fit the 340pt default rather than requiring more.
+                // kT* consts) to fit the default width rather than requiring more.
                 macInspectorDivider(windowWidth: winGeo.size.width)
                 inspectorSwitcher()
                     .frame(width: macInspectorWidth(windowWidth: winGeo.size.width))
@@ -775,6 +889,18 @@ struct ContentView: View {
             }
         }
         } // end VStack
+        // #914: every crossing of the dock width resets "opened while narrow", so
+        // shrinking a window auto-hides a docked panel (without touching the
+        // user's persisted side-panel flag) and widening it re-docks whatever
+        // that flag says. Shrinking further while full-width crosses nothing, so
+        // a panel the user opened stays open.
+        .onChange(of: narrow, initial: true) { _, isNarrow in
+            engine.macInspectorNarrow = isNarrow
+            engine.macInspectorNarrowOpen = false
+        }
+        .onChange(of: leftCovered) { _, covered in
+            if covered { resignCoveredTextFocus() }
+        }
         .overlay { busyOverlay }
         .alert("Fetch from PDB", isPresented: $showMacFetch) {
             TextField("PDB ID (e.g. 1ubq)", text: $macFetchID)
@@ -840,7 +966,29 @@ struct ContentView: View {
         }
         #endif
         } // end GeometryReader (window height for the console share)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // #914: OUTSIDE the GeometryReader (which reports no minimum of its own),
+        // so this is what the window enforces — see .windowResizability in PyMOLApp.
+        .frame(minWidth: PanelLayout.macMinWindowWidth,
+               maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // #914: a full-width panel just covered the left column. `.disabled` stops
+    // new focus going there but doesn't end an edit already in progress, so a
+    // focused console field would keep taking keystrokes — and Return would run
+    // them — invisibly under the panel. Any field focused at this point is in the
+    // covered column or in a panel view that was just replaced (docked Theme
+    // Studio → full-width), so drop the field editor either way.
+    private func resignCoveredTextFocus() {
+        guard let window = NSApp.keyWindow, window.firstResponder is NSText else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    // Theme Studio in the right column — docked, or full-width in a narrow
+    // window (#914).
+    private var macThemeStudioPanel: some View {
+        ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
+            .environmentObject(engine)
+            .environmentObject(themeManager)
     }
 
     private var macOSLayout: some View {
@@ -929,6 +1077,17 @@ struct ContentView: View {
             || engine.interactionMode == .lights
     }
 
+    // Top inset for the floating MCP banner (#908): clear the floating rail
+    // capsule (8pt pad + ~24pt pills) or a full-width mode bar (move / measure /
+    // lights / design, ~40pt) that sits on the viewport's top edge. With only the
+    // console/sequence docked above, the viewport's top edge is free.
+    private var mcpBannerTopInset: CGFloat {
+        let modeBar = engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode || engine.interactionMode == .lights
+        if modeBar { return 50 }
+        return macAnyTopPane ? 8 : 40
+    }
+
     // The viewport column in the macOS HSplitView: PredictBar (when active) + the
     // 3D Metal view + the Timeline dock. Extracted so macOSLayoutBase's body stays
     // within the type-checker's size limit — same pattern as macViewport itself.
@@ -952,6 +1111,14 @@ struct ContentView: View {
                         topPaneRail(floating: true).padding(.top, 8)
                     }
                 }
+                #if !RAYMOL_MAS_RESTRICTED
+                // Floating, so it takes no layout space (#908). Inset below
+                // whatever already owns the viewport's top edge so it never
+                // covers the rail's pills or a mode bar's controls.
+                .overlay(alignment: .top) {
+                    MCPDrivingBanner().padding(.top, mcpBannerTopInset)
+                }
+                #endif
             // The docked bottom transport was removed: movie playback lives
             // in the Movie tab, model stepping in the Object panel. Only the
             // full timeline editor still docks here (when expanded).
@@ -1059,12 +1226,29 @@ struct ContentView: View {
             if secondaryWindowOwnsKeys() { return event }
 
             let focus = textFocusFlags()
+            if let nudge = KeyRouting.lightNudge(
+                    keyCode: event.keyCode,
+                    modifiers: event.modifierFlags,
+                    lightsMode: engine.interactionMode == .lights,
+                    lightSelected: engine.lightsController.selectedIndex != nil,
+                    textFieldFocused: focus.focused) {
+                engine.lightsController.nudge(nudge)
+                return nil  // consume: in Lights mode the arrows move the light, not the frame
+            }
+            // "Send Key Bindings to Viewport While Typing" (#261): read live from
+            // UserDefaults (the menu Toggle writes it), default off. With it on,
+            // KeyRouting asks the engine whether the user defined an ALT-/CTSH-
+            // token before taking it from the focused field.
+            let viewportKeys = UserDefaults.standard.bool(
+                forKey: KeyRouting.viewportKeysWhileTypingKey)
             guard let token = KeyRouting.token(
                     keyCode: event.keyCode,
                     charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                     modifiers: event.modifierFlags,
                     textFieldFocused: focus.focused,
-                    textEditingActive: focus.editing) else { return event }
+                    textEditingActive: focus.editing,
+                    viewportKeysWhileTyping: viewportKeys,
+                    isUserBound: { engine.isUserBoundKey($0) }) else { return event }
             return engine.invokeKeyBinding(token) ? nil : event
         }
     }
@@ -1102,7 +1286,7 @@ struct ContentView: View {
     // reshapes the drawable on entering the mode.
     private var macLightsOverlay: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            lightsBar
+            lightsBar.lightGizmoTopChrome(engine.lightGizmoUI)
             lightsSideColumn.padding(.trailing, 10).padding(.bottom, 10)
         }
     }
@@ -1114,7 +1298,7 @@ struct ContentView: View {
     @ViewBuilder
     private var macViewport: some View {
         MetalViewport()
-            .frame(minWidth: 400, minHeight: 360)
+            .frame(minWidth: PanelLayout.macViewportMinWidth, minHeight: 360)
             .layoutPriority(1)
             // The light gizmo (#622): first, so the bar and the side column
             // in the next overlay draw above it.
@@ -1319,6 +1503,13 @@ struct ContentView: View {
     @State private var sceneRenameTarget: String? = nil
     @State private var sceneRenameText: String = ""
     @State private var showCameraPanel = false   // viewport Camera overlay (shared macOS/iOS)
+    // iPhone chrome fade (#391): the last viewport/chrome interaction, whether a
+    // viewport gesture is in progress, and the clock the fade is evaluated at
+    // (bumped by the idle task in viewportView so the dim happens on time).
+    // Seconds on the monotonic clock (ProcessInfo.systemUptime), see PhoneChromeFade.
+    @State private var chromeLastInteraction = ProcessInfo.processInfo.systemUptime
+    @State private var chromeGestureActive = false
+    @State private var chromeFadeNow = ProcessInfo.processInfo.systemUptime
 
     private func openNotesAndPost(_ name: Notification.Name) {
         inspectorTab = .notes
@@ -1516,9 +1707,10 @@ struct ContentView: View {
         #endif
     }
 
-    // Where the Lights tools go (#623, LightsToolsPlacement): by size class
-    // on iOS (the bottom sheet in phone portrait, the side panel on compact
-    // height, the float on iPad), the side column on macOS.
+    // Where the Lights tools go (#623, #885, LightsToolsPlacement): by size
+    // class on iOS (the light menu and on-demand bottom sheet in phone
+    // portrait, the side panel on compact height, the float on iPad), the side
+    // column on macOS.
     private var lightsPlacement: LightsToolsPlacement {
         #if os(iOS)
         return LightsToolsPlacement.resolve(compactWidth: hSize == .compact, compactHeight: vSize == .compact)
@@ -1526,8 +1718,10 @@ struct ContentView: View {
         return .column
         #endif
     }
-    // Phone portrait (the iPhoneLayout) in Lights mode: the tools dock in the
-    // bottom sheet and the console and sequence strip give way.
+    // Phone portrait (the iPhoneLayout) in Lights mode: the console, the
+    // sequence strip and the bottom panel give way to the portrait light tools
+    // (the light menu on the bar, and the bottom sheet while the full editor
+    // is open, #885).
     private var phoneLightsDocked: Bool {
         #if os(iOS)
         return hSize == .compact && vSize == .regular && engine.interactionMode == .lights && !iosFullScreen
@@ -1548,7 +1742,15 @@ struct ContentView: View {
         #if os(iOS)
         return isPhoneLandscape ? $landObjects : $showObjectPanel
         #else
-        return $showObjectPanel
+        // #914: in a window too narrow to dock, "shown" is the full-width panel.
+        // The user's choice is still written to the persisted flag, so widening
+        // the window keeps it (opened → docks; closed → stays closed).
+        return Binding(
+            get: { engine.macInspectorNarrow ? engine.macInspectorNarrowOpen : showObjectPanel },
+            set: { shown in
+                if engine.macInspectorNarrow { engine.macInspectorNarrowOpen = shown }
+                showObjectPanel = shown
+            })
         #endif
     }
 
@@ -1594,6 +1796,12 @@ struct ContentView: View {
     @Environment(\.verticalSizeClass) private var vSize
     @State private var panelFrac: CGFloat = 0.53
     @State private var committedFrac: CGFloat = 0.53
+    /// True while dragging the panel divider; resets on gesture end or cancel (#724).
+    @GestureState private var dividerDragging = false
+    /// The divider's drag froze the drawable and has not released it yet, so
+    /// a cancel or the divider leaving the layout (rotation) releases only a
+    /// freeze it set, never another feature's (#724).
+    @State private var dividerFroze = false
     @State private var panelCollapsed = false
     // iPhone: full-screen viewport mode (hides the bottom panel + sequence strip).
     // Currently always off — the explicit toggle was removed; collapse the rail +
@@ -1774,6 +1982,11 @@ struct ContentView: View {
                 (hSize == .regular && vSize == .regular) ? []      // iPad: standard safe area
                 : isPhoneLandscape ? .all                          // iPhone landscape: island letterbox handled inline
                 : [.bottom, .horizontal])                          // iPhone portrait: keep the rail/chrome below the status bar + island
+            // A field of the iPad float with the keyboard (#725): the size the
+            // layouts read holds too, so the panes sized from it (the portrait
+            // bottom inspector, the console) and the viewport between them keep
+            // their heights. The layouts' own rule covers what is inside them.
+            .ignoresSafeArea(lightsFieldFocused && lightsPlacement == .floating ? .keyboard : [], edges: .bottom)
             #if os(iOS)
             // Track the real per-side window safe-area inset (correct across a
             // landscapeLeft<->Right flip) for the landscape panel's trailing inset.
@@ -2105,8 +2318,9 @@ struct ContentView: View {
             if hSize == .compact {
                 withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode = (tab == 2) }
             }
-            // Entering the Movie tab = authoring; stop any model-inspection playback.
-            if tab == 2 { engine.pause(); engine.stopAllObjectStates() }
+            // Entering the Movie tab = authoring; stop any model-inspection playback
+            // and hand the objects back to the movie (releasing their pinned states).
+            if tab == 2 { engine.pause(); engine.stopAllObjectStates(releasing: true) }
         }
         // Programmatic entry (test hooks / "Open in movie"): flipping timelineMode
         // on iPhone jumps to the Movie tab that now HOSTS the timeline.
@@ -2263,10 +2477,27 @@ struct ContentView: View {
                             }
                         }
                     if !iosFullScreen {
-                        // Lights mode: the docked light sheet first; Theme Studio
-                        // and the inspector come back on exit.
+                        // Lights mode: the portrait light tools first (the
+                        // full-editor sheet when open, else a zero-height room
+                        // reader so the molecule stays unobstructed, #885);
+                        // Theme Studio and the inspector come back on exit.
                         if phoneLightsDocked {
-                            lightsSheet(room: lower.size)
+                            if LightsPortraitTools.showsSheet(placement: lightsPlacement,
+                                                              editorOpen: lightsEditorOpen) {
+                                lightsSheet(room: lower.size)
+                            } else {
+                                // While the editor is closed the inspector, which
+                                // speaks a refused 4th shadow (#672), is not on
+                                // screen; the gizmo's Shadow chip and the light
+                                // menu still refuse, so the refusal is spoken here
+                                // (once: the inspector is unmounted meanwhile).
+                                Color.clear.frame(height: 0)
+                                    .onAppear { lightsRoom = lower.size }
+                                    .onChange(of: lower.size) { _, s in lightsRoom = s }
+                                    .onReceive(engine.lightsController.shadowRefusalEvents) {
+                                        LightsInspectorState.announce(LightsInspectorState.shadowCapAnnouncement)
+                                    }
+                            }
                         } else if showThemeStudio {
                             ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
                                 .environmentObject(engine)
@@ -2543,8 +2774,8 @@ struct ContentView: View {
                         }
                 }
             }
-            // A light field with the keyboard (#623): the viewport and the
-            // side panel keep their size (only the side panel sets it).
+            // A light field with the keyboard (#623, #725): the viewport, the
+            // side panel and the float keep their size.
             .ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)
         } else {
             // PORTRAIT (iPad): console + sequence ABOVE the viewer; Objects +
@@ -2620,6 +2851,8 @@ struct ContentView: View {
                         .animation(.easeInOut(duration: 0.25), value: inspectorTab)
                 }
             }
+            // A light field with the keyboard (#725): the viewport keeps its size.
+            .ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)
         }
     }
 
@@ -2706,8 +2939,12 @@ struct ContentView: View {
                 tab.frame(maxHeight: .infinity).padding(.horizontal, 1)
             }
         }
+        // iPhone chrome fade (#391): every tongue site, so a Plus/Pro Max in
+        // landscape (regular width → the iPad-style layout) fades too; pinned
+        // (fully shown) on iPad and macOS.
         return strip.offset(x: seam && axis == .vertical ? -9 : 0,
                             y: seam && axis == .horizontal ? -9 : 0)
+            .phoneChromeFade(phoneChromeAppearance)
     }
 
     #if os(iOS)
@@ -2819,7 +3056,7 @@ struct ContentView: View {
     // AppShortcuts constant is what fires — and names it in the hover tooltip,
     // the pill's only surface that can show a hint.
     private func railTongue(icon: String?, label: String, shown: Binding<Bool>,
-                            shortcut: KeyboardShortcut? = nil) -> some View {
+                            shortcut: AppShortcuts? = nil) -> some View {
         let on = shown.wrappedValue
         return Button {
             withAnimation(.easeInOut(duration: 0.25)) { shown.wrappedValue.toggle() }
@@ -2852,7 +3089,7 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .keyboardShortcut(shortcut)
+        .keyboardShortcut(shortcut?.shortcut)
         .help("\(on ? "Hide" : "Show") the \(label) pane"
               + (shortcut.map { " (\(AppShortcuts.hint($0)))" } ?? ""))
         .accessibilityIdentifier("rail-\(label.lowercased())")
@@ -2964,6 +3201,21 @@ struct ContentView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text("There’s no animation yet. Open the Movie tab, pick a motion (e.g. Camera → Roll) and tap Build & Play — then Export Movie will render it.")
+            }
+            // #385: the previous cold-launch restore never finished (the app was
+            // killed or crashed mid-restore). Offer to start empty instead of
+            // retrying the same restore blindly on every launch.
+            // The setter ignores SwiftUI's dismissals: only the two buttons
+            // (or a file open) retire the prompt. Otherwise a layout swap (iPhone
+            // rotation) that tears down this alert's host would drop the prompt
+            // unanswered, and the next background would delete the session.
+            .alert("Start with an empty session?", isPresented: Binding(
+                get: { engine.interruptedRestorePrompt },
+                set: { _ in })) {
+                Button("Start Empty", role: .destructive) { engine.startEmptyAfterInterruptedRestore() }
+                Button("Try Again") { engine.retryInterruptedRestore() }
+            } message: {
+                Text("RayMol closed before your last session finished restoring. It may be too large to restore on this device. Start Empty discards the saved session.")
             }
             // The light gizmo (#622): early, so every overlay below (the side
             // column, the buttons, the readouts) draws above it. One site for
@@ -3098,6 +3350,36 @@ struct ContentView: View {
                 }
             }
             .overlay { busyOverlay }
+            // iPhone chrome fade (#391): a viewport gesture edge or tap restarts
+            // the idle clock; a camera / panel toggle, a structure loading or
+            // VoiceOver turning off counts as interaction too; the task bumps the
+            // fade clock at the idle deadline so the controls dim on time.
+            .onReceive(NotificationCenter.default.publisher(for: .raymolViewportActivity)) { note in
+                noteChromeInteraction(gestureActive: note.userInfo?["gestureActive"] as? Bool ?? false)
+            }
+            .onChange(of: showCameraPanel) { _, _ in noteChromeInteraction() }
+            .onChange(of: objectsBinding.wrappedValue) { _, _ in noteChromeInteraction() }
+            .onChange(of: engine.objects.count) { _, _ in noteChromeInteraction() }
+            .onChange(of: voiceOverEnabled) { _, _ in noteChromeInteraction() }
+            // A fresh viewport (an orientation change swaps layouts and rebuilds
+            // the MTKView mid-gesture) or a return from the background can miss a
+            // gesture's end edge: start shown with no gesture in progress.
+            .onAppear { noteChromeInteraction(gestureActive: false) }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                noteChromeInteraction(gestureActive: false)
+            }
+            .task(id: chromeLastInteraction) {
+                // Re-checked after each sleep, so the dim lands even if a wake-up
+                // comes early.
+                while let deadline = PhoneChromeFade.nextChange(
+                    now: ProcessInfo.processInfo.systemUptime, lastInteraction: chromeLastInteraction,
+                    gestureActive: chromeGestureActive, pinned: phoneChromePinned) {
+                    let wait = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                    if Task.isCancelled { return }
+                    chromeFadeNow = ProcessInfo.processInfo.systemUptime
+                }
+            }
     }
 
     // The floating transport. iPhone (compact): a rounded peek that expands in
@@ -3135,6 +3417,9 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 2)
+                .updating($dividerDragging) { _, state, _ in
+                    state = true
+                }
                 .onChanged { v in
                     // Freeze the Metal drawable for the duration of the drag so the
                     // renderer doesn't reallocate all offscreen targets every frame
@@ -3142,6 +3427,7 @@ struct ContentView: View {
                     // resize live (cheap SwiftUI); the viewport content just scales
                     // until release, when one reshape snaps it crisp.
                     engine.suppressDrawableResize = true
+                    dividerFroze = true
                     let d = landscape ? -v.translation.width : -v.translation.height
                     // Bottom panel can grow to near-full (0.92) so content like AI
                     // Chat can use all the space; the iPad side column stays ≤0.45.
@@ -3158,8 +3444,25 @@ struct ContentView: View {
                     }
                     // Resume live drawable sizing → exactly one reshape at the final size.
                     engine.suppressDrawableResize = false
+                    dividerFroze = false
                 }
         )
+        // A cancelled drag never reaches onEnded; the gesture state's reset does.
+        .onChange(of: dividerDragging) { dragging in
+            if !dragging { releaseDividerFreeze() }
+        }
+        // A rotation can remove the divider (and its onChange) mid-drag, so
+        // release on the way out too, as the macOS inspector seam does.
+        .onDisappear { releaseDividerFreeze() }
+    }
+
+    // End a divider drag that onEnded did not: release the drawable freeze it
+    // set and snap the panel back to its last committed size (#724).
+    private func releaseDividerFreeze() {
+        guard dividerFroze else { return }
+        dividerFroze = false
+        engine.suppressDrawableResize = false
+        if panelFrac != committedFrac { panelFrac = committedFrac }
     }
 
     // MARK: Gesture legend / first-run coaching
@@ -3334,16 +3637,16 @@ struct ContentView: View {
         #endif
         Divider()
         Menu {
-            Button("PDB (.pdb)") { iosShareStructure(ext: "pdb") }
-            Button("mmCIF (.cif)") { iosShareStructure(ext: "cif") }
-            Button("SDF (.sdf)") { iosShareStructure(ext: "sdf") }
-            Button("MOL (.mol)") { iosShareStructure(ext: "mol") }
-            Button("MOL2 (.mol2)") { iosShareStructure(ext: "mol2") }
-            Button("XYZ (.xyz)") { iosShareStructure(ext: "xyz") }
-            Button("PQR (.pqr)") { iosShareStructure(ext: "pqr") }
+            Button("PDB (.pdb)") { beginSaveStructure(ext: "pdb") }
+            Button("mmCIF (.cif)") { beginSaveStructure(ext: "cif") }
+            Button("SDF (.sdf)") { beginSaveStructure(ext: "sdf") }
+            Button("MOL (.mol)") { beginSaveStructure(ext: "mol") }
+            Button("MOL2 (.mol2)") { beginSaveStructure(ext: "mol2") }
+            Button("XYZ (.xyz)") { beginSaveStructure(ext: "xyz") }
+            Button("PQR (.pqr)") { beginSaveStructure(ext: "pqr") }
             Divider()
-            Button("VRML (.wrl)") { iosShareStructure(ext: "wrl") }
-            Button("POV-Ray (.pov)") { iosShareStructure(ext: "pov") }
+            Button("VRML (.wrl)") { beginSaveStructure(ext: "wrl") }
+            Button("POV-Ray (.pov)") { beginSaveStructure(ext: "pov") }
         } label: {
             Label("Share Structure", systemImage: "atom")
         }
@@ -3352,13 +3655,15 @@ struct ContentView: View {
         }
     }
 
-    // Write the whole scene to a structure/3D file in the requested format and
-    // hand it to the share sheet. cmd.save infers the format from the extension.
-    private func iosShareStructure(ext: String) {
+    // Write the chosen objects (everything by default) to a structure/3D file in
+    // the requested format and hand it to the share sheet. cmd.save infers the
+    // format from the extension.
+    private func iosShareStructure(ext: String, choice: SaveStructureChoice) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("RayMol_structure.\(ext)")
         try? FileManager.default.removeItem(at: url)
-        engine.runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
+        guard let code = SaveStructureSelection.saveCommand(path: url.path, choice: choice) else { return }
+        engine.runPython(code)
         if FileManager.default.fileExists(atPath: url.path) { presentShareSheet(url) }
     }
 
@@ -3632,10 +3937,10 @@ struct ContentView: View {
         // Auto-stop model/movie playback when entering the Movie tab or expanding
         // the timeline dock (you're authoring now, not inspecting the ensemble).
         .onChange(of: inspectorTab) { tab in
-            if tab == .movie { engine.pause(); engine.stopAllObjectStates() }
+            if tab == .movie { engine.pause(); engine.stopAllObjectStates(releasing: true) }
         }
         .onChange(of: engine.timelineMode) { on in
-            if on { engine.pause(); engine.stopAllObjectStates() }
+            if on { engine.pause(); engine.stopAllObjectStates(releasing: true) }
         }
     }
 
@@ -3652,7 +3957,7 @@ struct ContentView: View {
                 Button {
                     macOpenFile()
                 } label: { Label("Open File…", systemImage: "folder") }
-                .keyboardShortcut("o", modifiers: .command)
+                .keyboardShortcut(AppShortcuts.openFile)
                 Button {
                     macFetchID = ""; showMacFetch = true
                 } label: { Label("Fetch from PDB…", systemImage: "arrow.down.circle") }
@@ -3735,8 +4040,8 @@ struct ContentView: View {
         .disabled(isDesignLocked)
         .keyboardShortcut(AppShortcuts.measureTool)
 
-        // Lights (#619): raises the Lights bar. No shortcut: ⌃L is PyMOL's
-        // CTRL-L, and this row has no AppShortcuts constant to mirror.
+        // Lights (#619): raises the Lights bar. ⌃L since #873 (PyMOL's CTRL-L
+        // ligand zoom moved to CTRL-G).
         Button {
             engine.setInteractionMode(engine.interactionMode == .lights ? .viewing : .lights)
         } label: {
@@ -3747,6 +4052,7 @@ struct ContentView: View {
             }
         }
         .disabled(isDesignLocked)
+        .keyboardShortcut(AppShortcuts.lightsTool)
 
         #if RAYMOL_MPNN
         // Also gated on DesignAvailability: Design needs a minimum iOS version, and
@@ -3790,7 +4096,7 @@ struct ContentView: View {
         // A toggling MODE with a docked bar, exactly like every item above -- it takes a
         // selection plus options and a Run button, which is the shape Predict already has.
         // Experimental — shown only when RAYMOL_EXPERIMENTAL_BINDER_DESIGN is set.
-        if PyMOLEngine.binderDesignExperimentalEnabled {
+        if AppShortcuts.binderDesignTool.isAvailable {
         Button {
             engine.setBinderDesignMode(!engine.binderDesignMode)
         } label: {
@@ -3820,7 +4126,7 @@ struct ContentView: View {
         // register (#360), so the tooltip cannot drift from the menu.
         var parts = ["Move objects (\(AppShortcuts.hint(AppShortcuts.moveTool)))",
                      "Measure distances (\(AppShortcuts.hint(AppShortcuts.measureTool)))",
-                     "Light the scene"]
+                     "Light the scene (\(AppShortcuts.hint(AppShortcuts.lightsTool)))"]
         #if RAYMOL_MPNN
         if DesignAvailability.isSupported {
             parts.append("Design with MPNN (\(AppShortcuts.hint(AppShortcuts.designTool)))")
@@ -3901,16 +4207,16 @@ struct ContentView: View {
 
                 // Per-format structure submenu (mirrors the mobile export menu).
                 Menu {
-                    Button("PDB (.pdb)") { saveStructure(ext: "pdb") }
-                    Button("mmCIF (.cif)") { saveStructure(ext: "cif") }
-                    Button("SDF (.sdf)") { saveStructure(ext: "sdf") }
-                    Button("MOL (.mol)") { saveStructure(ext: "mol") }
-                    Button("MOL2 (.mol2)") { saveStructure(ext: "mol2") }
-                    Button("XYZ (.xyz)") { saveStructure(ext: "xyz") }
-                    Button("PQR (.pqr)") { saveStructure(ext: "pqr") }
+                    Button("PDB (.pdb)") { beginSaveStructure(ext: "pdb") }
+                    Button("mmCIF (.cif)") { beginSaveStructure(ext: "cif") }
+                    Button("SDF (.sdf)") { beginSaveStructure(ext: "sdf") }
+                    Button("MOL (.mol)") { beginSaveStructure(ext: "mol") }
+                    Button("MOL2 (.mol2)") { beginSaveStructure(ext: "mol2") }
+                    Button("XYZ (.xyz)") { beginSaveStructure(ext: "xyz") }
+                    Button("PQR (.pqr)") { beginSaveStructure(ext: "pqr") }
                     Divider()
-                    Button("VRML (.wrl)") { saveStructure(ext: "wrl") }
-                    Button("POV-Ray (.pov)") { saveStructure(ext: "pov") }
+                    Button("VRML (.wrl)") { beginSaveStructure(ext: "wrl") }
+                    Button("POV-Ray (.pov)") { beginSaveStructure(ext: "pov") }
                 } label: {
                     Label("Save Structure", systemImage: "atom")
                 }
@@ -4043,19 +4349,21 @@ struct ContentView: View {
         engine.saveSession(to: url)
     }
 
-    // Save the whole scene to a molecular or 3D file. cmd.save infers the format
-    // from the extension; the user types the extension (.pdb/.cif/.mol2/.sdf/.xyz
-    // /.mae/.pqr molecular, or .wrl/.pov 3D — glTF/COLLADA/STL aren't available
-    // on this libxml-off / NO_OPENGL build).
-    private func saveStructure(ext: String) {
+    // Save the chosen objects (everything by default) to a molecular or 3D file.
+    // cmd.save infers the format from the extension; the user types the extension
+    // (.pdb/.cif/.mol2/.sdf/.xyz/.mae/.pqr molecular, or .wrl/.pov 3D — glTF/COLLADA/STL
+    // aren't available on this libxml-off / NO_OPENGL build).
+    private func saveStructure(ext: String, choice: SaveStructureChoice) {
         let panel = NSSavePanel()
         if let t = UTType(filenameExtension: ext) { panel.allowedContentTypes = [t] }
         panel.allowsOtherFileTypes = true
         panel.nameFieldStringValue = "structure.\(ext)"
         panel.canCreateDirectories = true
         panel.title = "Save Structure (.\(ext))"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        engine.runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
+        guard panel.runModal() == .OK, let url = panel.url,
+              let code = SaveStructureSelection.saveCommand(path: url.path, choice: choice)
+        else { return }
+        engine.runPython(code)
     }
 
     private func shareImage() {
@@ -4085,6 +4393,30 @@ struct ContentView: View {
         picker.show(relativeTo: .zero, of: anchor, preferredEdge: .minY)
     }
     #endif
+
+    // MARK: - Save Structure object picker (#220, shared)
+
+    /// Entry point for every Save Structure / Share Structure menu item. Opens the
+    /// object picker when there is a real choice to make; otherwise saves straight
+    /// away, exactly as it always did.
+    private func beginSaveStructure(ext: String) {
+        guard SaveStructureSelection.supportsSelection(ext: ext),
+              let candidates = SaveStructureCandidates.query(engine: engine),
+              candidates.needsPicker
+        else {
+            performSaveStructure(ext: ext, choice: .everything)
+            return
+        }
+        saveStructureRequest = SaveStructureRequest(ext: ext, candidates: candidates)
+    }
+
+    private func performSaveStructure(ext: String, choice: SaveStructureChoice) {
+        #if os(macOS)
+        saveStructure(ext: ext, choice: choice)
+        #else
+        iosShareStructure(ext: ext, choice: choice)
+        #endif
+    }
 
     // MARK: - Measurement overlay (shared)
 
@@ -4212,14 +4544,52 @@ struct ContentView: View {
         .tint(themeManager.active.accent.color)
     }
 
-    // Lights-mode bar (#619): the chips and rig actions of LightsBar, styled like
-    // the bars above. Every placement (the macOS top overlay, the four iOS top
-    // stacks) names only this property, so ContentView's type-checker load stays
-    // flat. Done = leave the mode keeping the edits (Esc does the same).
+    // Lights-mode bar (#619): the chips (or, in phone portrait, on macOS and
+    // on the iPad float, the light menu, #885, #889) and rig actions of LightsBar, styled like
+    // the bars above. On macOS and the iPad float its Atmosphere button opens
+    // the popover (#889).
+    // Every placement (the macOS top overlay, the four iOS top stacks) names
+    // only this property, so ContentView's type-checker load stays flat.
+    // Done = leave the mode keeping the edits (Esc does the same).
     private var lightsBar: some View {
         LightsBar(controller: engine.lightsController,
                   style: lightsStyle,
+                  onAtmosphere: lightsAtmosphereEntry,
+                  atmospherePopover: LightsBarState.atmosphereOpensPopover(placement: lightsPlacement),
+                  atmospherePopoverStartsOpen: lightsAtmosphereExpandOverride,
+                  onFieldFocus: { lightsFieldFocused = $0 },
+                  lightMenu: LightsBarState.showsLightMenu(placement: lightsPlacement),
+                  onEditLight: lightsEditLightEntry,
                   onDone: { engine.setInteractionMode(.viewing) })
+    }
+
+    // The phone portrait light menu's "Edit light…" entry on the Lights bar
+    // (#885): opens the bottom sheet at its expanded height, on the light's
+    // rows (an earlier Atmosphere reveal is dropped). nil outside
+    // `.bottomSheet` (where the bar shows the chips instead).
+    private var lightsEditLightEntry: (() -> Void)? {
+        guard LightsPortraitTools.showsMenu(placement: lightsPlacement) else { return nil }
+        return {
+            LightsPortraitTools.editLight(detent: &lightsSheetDetent, editorOpen: &lightsEditorOpen,
+                                          revealRequest: &lightsAtmosphereRevealRequest,
+                                          generation: &lightsEditorGeneration)
+        }
+    }
+
+    // The phone's Atmosphere entry on the Lights bar (#795): haze and dust
+    // are scene-wide, so the entry sits with the other rig-wide controls,
+    // not in the selected light's header. It asks the phone sheet or side
+    // panel to reveal its Atmosphere section (LightsSheet's
+    // atmosphereRevealRequest), opening the portrait sheet first (#885). nil
+    // on macOS and the iPad float, whose bar opens the Atmosphere popover
+    // itself (#889).
+    private var lightsAtmosphereEntry: (() -> Void)? {
+        guard !LightsBarState.atmosphereOpensPopover(placement: lightsPlacement) else { return nil }
+        let placement = lightsPlacement
+        return {
+            LightsPortraitTools.revealAtmosphere(placement: placement, editorOpen: &lightsEditorOpen,
+                                                 revealRequest: &lightsAtmosphereRevealRequest)
+        }
     }
 
     // The Lights tools' colours (the bar, the side column), from the theme.
@@ -4240,8 +4610,7 @@ struct ContentView: View {
                          style: lightsStyle,
                          inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
                          sceneShadowsOn: engine.sceneShadowsOn,
-                         onEnableSceneShadows: { engine.enableSceneShadows() },
-                         atmosphereStart: lightsAtmosphereStart)
+                         onEnableSceneShadows: { engine.enableSceneShadows() })
     }
     #endif
 
@@ -4249,7 +4618,8 @@ struct ContentView: View {
     // geometry), with the selected light's Shadow chip. Placed on MetalViewport
     // by macViewport and viewportView, each naming only this property. The
     // chip's Shadows hint reads the scene poll's Shadows switch and its Turn On
-    // sets it, as the inspector's do; grid_mode (the poll's) hides the gizmo.
+    // sets it, as the inspector's do; grid_mode (the poll's) shows the gizmo
+    // in the cell under the pointer (#697).
     // While the phone sheet snaps (#623) the viewport reshapes once at the
     // end with its drawable frozen meanwhile, so the gizmo fades out for that
     // snap and returns after the one reshape.
@@ -4276,20 +4646,6 @@ struct ContentView: View {
         #endif
     }
 
-    // How the Atmosphere card (#726) starts, seeded each time the mode opens:
-    // on macOS expanded only when the air is on at entry (a short window
-    // keeps its inspector room otherwise); in the iPad float collapsed to
-    // its 44 pt header, so the default knobs stay free. Phones show it as a
-    // section of the sheet instead (no card).
-    private var lightsAtmosphereStart: LightsAtmosphereStart {
-        if lightsAtmosphereExpandOverride { return .expanded }
-        #if os(iOS)
-        return .collapsed
-        #else
-        return .expandedIfOn
-        #endif
-    }
-
     // MARK: Phone light tools (#623)
 
     #if os(iOS)
@@ -4303,10 +4659,11 @@ struct ContentView: View {
                                        bottomInset: windowBottomInset, expandedContent: content)
     }
 
-    // The two-height bottom sheet docked under the phone portrait viewport.
-    // Its edits go through the controller's typed API (no Python per tick);
-    // a grabber drag moves it over the viewport without resizing it, and the
-    // release snaps once with the drawable frozen (setLightsSheetMoving).
+    // The two-height bottom sheet docked under the phone portrait viewport
+    // while the full editor is open (#623, #885). Its edits go through the
+    // controller's typed API (no Python per tick); a grabber drag moves it
+    // over the viewport without resizing it, and the release snaps once with
+    // the drawable frozen (setLightsSheetMoving).
     private func lightsSheet(room: CGSize) -> some View {
         LightsSheet(controller: engine.lightsController, style: lightsStyle, placement: .bottom,
                     detent: $lightsSheetDetent, heights: lightsSheetHeights(room: room),
@@ -4314,7 +4671,9 @@ struct ContentView: View {
                     onEnableSceneShadows: { engine.enableSceneShadows() },
                     onMoving: { setLightsSheetMoving($0) },
                     onFieldFocus: { lightsFieldFocused = $0 },
-                    atmosphereRevealRequest: lightsAtmosphereRevealRequest)
+                    atmosphereRevealRequest: lightsAtmosphereRevealRequest,
+                    onClose: { lightsEditorOpen = false })
+            .id(lightsEditorGeneration)
             .onPreferenceChange(LightsSheetHeaderHeightKey.self) { noteLightsSheetHeader($0) }
             .onPreferenceChange(LightsSheetRowsHeightKey.self) { measured in
                 if measured > 0, abs(measured - lightsSheetRows) > 0.5 { lightsSheetRows = measured }
@@ -4357,12 +4716,12 @@ struct ContentView: View {
         LightsFloatingTools(controller: engine.lightsController, style: lightsStyle,
                             corner: lightsOrbitCornerBinding, chrome: viewportChrome,
                             inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
-                            atmosphereStart: lightsAtmosphereStart,
                             sceneShadowsOn: engine.sceneShadowsOn,
                             onEnableSceneShadows: { engine.enableSceneShadows() },
                             onFrames: { frames in
                                 if frames != lightsFloatFrames { lightsFloatFrames = frames }
-                            })
+                            },
+                            onFieldFocus: { lightsFieldFocused = $0 })
             .onDisappear { lightsFloatFrames = nil }
     }
     #endif
@@ -4403,13 +4762,15 @@ struct ContentView: View {
     }
 
     // Each mode change (entry and exit) reseeds the phone tools' view state:
-    // the panes give way again, the sheet starts compact (expanded under the
-    // DEBUG `expand`), and no motion or keyboard rule outlives the mode.
+    // the panes give way again, the portrait sheet starts closed (opened
+    // expanded under the DEBUG `expand` or `air`, #885), and no motion or
+    // keyboard rule outlives the mode.
     private func lightsModeChanged(_ mode: InteractionMode) {
         lightsShowsConsole = false
         lightsShowsSequence = false
         endLightsSheetMotion()
         lightsSheetDetent = mode == .lights ? lightsSheetSeed : .compact
+        lightsEditorOpen = mode == .lights && (lightsInspectorExpandOverride || lightsAtmosphereExpandOverride)
         // One reveal per entry under the DEBUG `air` token (0 otherwise).
         lightsAtmosphereRevealRequest = mode == .lights && lightsAtmosphereExpandOverride ? 1 : 0
     }
@@ -4442,10 +4803,11 @@ struct ContentView: View {
     }
 
     // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines
-    // (`sheet:air` / `side:air` while the phone shows the air alone).
+    // (`menu` while the portrait sheet is closed, #885; `sheet:air` /
+    // `side:air` while the phone shows the air alone).
     private func lightsToolsFields(detent: LightsSheetDetent) -> String {
         let airOnly = LightsSheet.showsAirOnly(engine.lightsController)
-        return "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner, airOnly: airOnly)) "
+        return "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner, airOnly: airOnly, editorOpen: lightsEditorOpen)) "
             + "touch=\(Int(LightsTouch.minimumTarget))"
     }
 
@@ -4459,6 +4821,12 @@ struct ContentView: View {
             .onChange(of: lightsPlacement, initial: true) { old, placement in
                 lightsPlacementSeen = placement
                 if old != placement { endLightsSheetMotion() }
+            }
+            .onChange(of: lightsPlacement) {
+                // A rotation builds a new sheet, which would act on the
+                // reveal the last bar tap asked for (#795; the DEBUG `air`
+                // token keeps its own).
+                if !lightsAtmosphereExpandOverride { lightsAtmosphereRevealRequest = 0 }
             }
         #if DEBUG
         observed.onChange(of: lightsLayoutLogKey) { _, key in logLightsLayout(key) }
@@ -4482,16 +4850,20 @@ struct ContentView: View {
     private var lightsLayoutLogKey: LightsLayoutLogKey? {
         guard engine.interactionMode == .lights, !iosFullScreen else { return nil }
         // With no light the phone shows the air alone (#726), at the compact
-        // height whatever the detent.
+        // height whatever the detent; in portrait the sheet shows only while
+        // the full editor is open (#885).
         let airOnly = LightsSheet.showsAirOnly(engine.lightsController)
         let tools = LightsSheetState.toolsSummary(placement: lightsPlacement, detent: lightsSheetDetent,
-                                                  corner: lightsOrbitCorner, airOnly: airOnly)
+                                                  corner: lightsOrbitCorner, airOnly: airOnly,
+                                                  editorOpen: lightsEditorOpen)
         if phoneLightsDocked {
-            // Not before the sheet has reported its room.
+            // Not before the sheet (or its zero-height placeholder) has reported its room.
             guard lightsRoom.height > 0 else { return nil }
             let heights = lightsSheetHeights(room: lightsRoom)
-            let sheet = airOnly ? LightsSheetModel.airOnlyFrame(heights: heights).slot
-                : heights.height(lightsSheetDetent)
+            let sheet: CGFloat = lightsEditorOpen
+                ? (airOnly ? LightsSheetModel.airOnlyFrame(heights: heights).slot
+                   : heights.height(lightsSheetDetent))
+                : 0
             let panes = LightsPaneRule.summary(console: consoleBinding.wrappedValue,
                                                sequence: sequenceBinding.wrappedValue)
             return LightsLayoutLogKey(tools: tools, sheet: Int(sheet.rounded()), panes: panes, room: lightsRoom)
@@ -4532,7 +4904,6 @@ struct ContentView: View {
                 let cards = (lightsFloatFrames ?? key.float).map { f in
                     " card=\(Int(f.card.minX)),\(Int(f.card.minY)),\(Int(f.card.width))x\(Int(f.card.height))"
                         + " inspector=\(Int(f.inspector.minX)),\(Int(f.inspector.minY)),\(Int(f.inspector.width))x\(Int(f.inspector.height))"
-                        + " atmosphere=\(Int(f.atmosphere.minX)),\(Int(f.atmosphere.minY)),\(Int(f.atmosphere.width))x\(Int(f.atmosphere.height))"
                 } ?? ""
                 NSLog("LightsLayout: tools=\(key.tools) scene=\(Int(scene.width.rounded()))x\(Int(scene.height.rounded())) sheet=\(sheet) panes=\(key.panes) covered=\(LightsFloatLayout.coveredSummary(covered))\(cards) touch=\(Int(LightsTouch.minimumTarget))")
             }
@@ -4579,8 +4950,10 @@ struct ContentView: View {
             if edits.revealsAir { lightsAtmosphereExpandOverride = true }
             if let corner = edits.corner { lightsOrbitCornerOverride = corner }
             let seed: LightsSheetDetent = edits.expands || edits.revealsAir ? .expanded : .compact
+            lightsEditorOpen = edits.expands || edits.revealsAir
             #else
             let seed = LightsSheetDetent.compact
+            lightsEditorOpen = false
             #endif
             engine.setInteractionMode(.lights)
             MainActor.assumeIsolated {
@@ -4629,6 +5002,30 @@ struct ContentView: View {
 
     // MARK: - Initialization
 
+    // iPhone chrome fade (#391): what the camera button and the panel tongue
+    // look like right now. Always fully shown off the iPhone (iPad, macOS), with
+    // VoiceOver on, or while the camera dock is open.
+    private var phoneChromeAppearance: PhoneChromeFade.Appearance {
+        PhoneChromeFade.appearance(now: chromeFadeNow, lastInteraction: chromeLastInteraction,
+                                   gestureActive: chromeGestureActive, pinned: phoneChromePinned)
+    }
+
+    private var phoneChromePinned: Bool {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom != .phone || voiceOverEnabled || showCameraPanel
+        #else
+        return true
+        #endif
+    }
+
+    // Restart the idle clock (any touch / gesture edge / chrome toggle).
+    private func noteChromeInteraction(gestureActive: Bool? = nil) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let gestureActive { chromeGestureActive = gestureActive }
+        chromeLastInteraction = now
+        chromeFadeNow = now
+    }
+
     // Bottom-left viewport shortcut to the Camera overlay.
     private var cameraButton: some View {
         Button { withAnimation(.easeOut(duration: 0.22)) { showCameraPanel.toggle() } } label: {
@@ -4645,6 +5042,7 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Camera settings")
         .accessibilityIdentifier("camera")
+        .phoneChromeFade(phoneChromeAppearance)
     }
 
     // The bottom-left chrome draws something (scene buttons or the camera
@@ -4718,15 +5116,19 @@ struct ContentView: View {
     // and re-asserting the theme here would clobber it (the theme apply fires on
     // the isReady onChange, i.e. AFTER the synchronous autosave restore).
     private func applyPersistedTheme() {
-        themeManager.apply(engine: engine,
-                           applyRenderToggles: !engine.suppressLaunchThemeRenderToggles)
+        let plan = engine.launchThemePlan
+        themeManager.apply(engine: engine, applyRenderToggles: plan.applyRenderToggles)
         // Outline is off by default in RayMol 1.6.1 and no theme enables it.
-        // Force it off unconditionally on launch — independent of the theme's
-        // render-toggle suppression AND of the (historically flaky) compiled core
-        // default — so a stale core / cached theme can never surface an outline
-        // the user didn't ask for. Users can still enable it live (Display ▸
-        // Effects); this only governs the default at launch.
-        engine.runCommand("set metal_outline, 0")
+        // Force it off on launch — independent of the theme's render-toggle
+        // suppression AND of the (historically flaky) compiled core default —
+        // so a stale core / cached theme can never surface an outline the user
+        // didn't ask for. Users can still enable it live (Display ▸ Effects);
+        // this only governs the default at launch. Skipped on a scripted launch
+        // (#671): the engine forced it before PYMOL_AUTOCMD ran, so the
+        // script's own value, if any, wins.
+        if plan.forceOutlineOff {
+            engine.runCommand("set metal_outline, 0")
+        }
         // Load ~/.raymolrc(.py) LAST, after the theme defaults above, so a
         // user's startup script can override them (e.g. a custom bg_color) —
         // matching vanilla PyMOL, where .pymolrc runs after all built-in
@@ -4789,9 +5191,13 @@ struct ContentView: View {
             "from pymol import raymolrc as _raymolrc; "
             + migrate
             + "_raymolrc.load()")
+        // The ALT-/CTSH- note (#261) depends on the View-menu toggle, so pass it.
+        let viewportKeys = UserDefaults.standard.bool(
+            forKey: KeyRouting.viewportKeysWhileTypingKey) ? "True" : "False"
         engine.runPython(
             "from pymol import raymol_keys as _raymol_keys; "
-            + "_raymol_keys.audit_shadowed(has_design=\(hasDesign))")
+            + "_raymol_keys.audit_shadowed(has_design=\(hasDesign)); "
+            + "_raymol_keys.audit_viewport_keys(toggle_on=\(viewportKeys))")
     }
 
     private func declineRaymolrcMigration() {
@@ -4802,6 +5208,223 @@ struct ContentView: View {
         Text("RayMol found an existing ~/.pymolrc and can copy it to ~/.raymolrc, RayMol's own startup script, so your customizations still run here.")
     }
     #endif
+}
+
+// MARK: - Save Structure object picker (#220)
+
+/// What a Save Structure should write, decided in the picker.
+enum SaveStructureChoice: Equatable {
+    /// Every object: the original `cmd.save(path)` with no selection argument.
+    case everything
+    /// A PyMOL selection expression naming just the chosen objects.
+    case subset(String)
+    /// Nothing is chosen. Never saved; the picker disables its confirm button.
+    case nothing
+}
+
+/// Pure helpers behind the picker: which formats it applies to, how a set of ticks
+/// becomes a selection expression, and the Python that saves it. Kept free of the
+/// engine so they can be unit tested.
+enum SaveStructureSelection {
+    /// VRML and POV-Ray export the rendered scene, not a selection, so a picker would
+    /// offer a choice the file ignores.
+    static func supportsSelection(ext: String) -> Bool {
+        !["wrl", "pov"].contains(ext.lowercased())
+    }
+
+    /// MOL holds one molecule: several chosen objects are merged into it. (XYZ and the
+    /// other multi-entry formats write one record per object.)
+    static func mergesObjects(ext: String) -> Bool {
+        ext.lowercased() == "mol"
+    }
+
+    /// Names the `%name` selector can carry: the characters PyMOL's own name
+    /// validation allows (`ObjectMakeValidName`: letters, digits and `+ - . ^ _`).
+    /// It only keeps a stray odd name from breaking the generated expression.
+    static func isSelectorSafe(_ name: String) -> Bool {
+        !name.isEmpty && name.unicodeScalars.allSatisfy {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0)
+                || "_.-+^".unicodeScalars.contains($0)
+        }
+    }
+
+    /// The choice for the ticked objects. Each name is written as `%name`, the
+    /// explicit object/selection reference, so names that start with a digit, or that
+    /// hold `+`, `-` or `.`, are not read as operators or atom keywords.
+    /// - Every object ticked gives `.everything` (the historical `cmd.save(path)`),
+    ///   whether or not `sele` is also ticked, since `sele` is a subset of them.
+    /// - Order follows `allObjects`, not the order of ticking, so the result is stable.
+    static func choice(selectedObjects: Set<String>, allObjects: [String],
+                       includeSelection: Bool) -> SaveStructureChoice {
+        let chosen = allObjects.filter { selectedObjects.contains($0) }
+        if !allObjects.isEmpty && chosen.count == allObjects.count { return .everything }
+        var parts = chosen.map { "%" + $0 }
+        if includeSelection { parts.append("%sele") }
+        return parts.isEmpty ? .nothing : .subset(parts.joined(separator: " or "))
+    }
+
+    /// A Python string literal for `value`. The destination path is user-typed in the
+    /// save panel and may hold quotes or backslashes, so it must not be interpolated raw.
+    static func pythonLiteral(_ value: String) -> String {
+        "'" + value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r") + "'"
+    }
+
+    /// The Python that writes `path`, or nil for `.nothing`.
+    static func saveCommand(path: String, choice: SaveStructureChoice) -> String? {
+        let head = "from pymol import cmd as _c\n"
+        switch choice {
+        case .nothing:
+            return nil
+        case .everything:
+            return head + "_c.save(\(pythonLiteral(path)))"
+        case .subset(let expression):
+            return head + "_c.save(\(pythonLiteral(path)), \(pythonLiteral(expression)))"
+        }
+    }
+}
+
+/// What the picker can offer: the molecular objects (no measurements, CGO, maps or
+/// groups) and whether `sele` currently holds atoms.
+struct SaveStructureCandidates: Equatable {
+    var objects: [String]
+    var hasSelection: Bool
+
+    /// With only one thing to save there is nothing to choose; skip the modal.
+    var needsPicker: Bool { objects.count + (hasSelection ? 1 : 0) > 1 }
+
+    /// Parses the JSON the query script writes. Returns nil if it is unusable, and the
+    /// caller then saves everything, as before the picker existed.
+    static func parse(_ data: Data) -> SaveStructureCandidates? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let names = json["objects"] as? [String] else { return nil }
+        return SaveStructureCandidates(
+            objects: names.filter(SaveStructureSelection.isSelectorSafe),
+            hasSelection: (json["sele"] as? Bool) ?? false)
+    }
+
+    /// Asks the core. `runPython` is synchronous, so the file is written by the time it
+    /// returns. Nil when the core is not up.
+    static func query(engine: PyMOLEngine) -> SaveStructureCandidates? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol_save_candidates_\(ProcessInfo.processInfo.processIdentifier).json")
+        try? FileManager.default.removeItem(at: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        engine.runPython("""
+        import json
+        from pymol import cmd as _c
+        _o = [n for n in (_c.get_names('public_objects') or []) if _c.get_type(n) == 'object:molecule']
+        try:
+            _s = 'sele' in (_c.get_names('selections') or []) and _c.count_atoms('sele') > 0
+        except Exception:
+            _s = False
+        open(\(SaveStructureSelection.pythonLiteral(url.path)), 'w').write(json.dumps({'objects': _o, 'sele': bool(_s)}))
+        """)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return parse(data)
+    }
+}
+
+struct SaveStructureRequest: Identifiable {
+    let id = UUID()
+    let ext: String
+    let candidates: SaveStructureCandidates
+}
+
+/// The modal: a checklist of the molecular objects (all ticked), an optional row for
+/// the active selection, Select All / None, and a Save button that stays disabled
+/// until something is ticked.
+struct SaveStructurePicker: View {
+    let request: SaveStructureRequest
+    let onCancel: () -> Void
+    let onConfirm: (SaveStructureChoice) -> Void
+
+    @State private var selected: Set<String>
+    @State private var includeSelection = false
+
+    init(request: SaveStructureRequest, onCancel: @escaping () -> Void,
+         onConfirm: @escaping (SaveStructureChoice) -> Void) {
+        self.request = request
+        self.onCancel = onCancel
+        self.onConfirm = onConfirm
+        _selected = State(initialValue: Set(request.candidates.objects))
+    }
+
+    private var choice: SaveStructureChoice {
+        SaveStructureSelection.choice(selectedObjects: selected,
+                                      allObjects: request.candidates.objects,
+                                      includeSelection: includeSelection)
+    }
+
+    private var checkedCount: Int { selected.count + (includeSelection ? 1 : 0) }
+
+    private func row(_ title: String, isOn: Binding<Bool>) -> some View {
+        Button { isOn.wrappedValue.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+                Text(title).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn.wrappedValue ? .isSelected : [])
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Save Structure (.\(request.ext))").font(.headline)
+            Text("Choose the objects to include in the file.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button("Select All") {
+                    selected = Set(request.candidates.objects)
+                    includeSelection = request.candidates.hasSelection
+                }
+                Button("None") { selected = []; includeSelection = false }
+                Spacer()
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(request.candidates.objects, id: \.self) { name in
+                        row(name, isOn: Binding(
+                            get: { selected.contains(name) },
+                            set: { on in
+                                if on { selected.insert(name) } else { selected.remove(name) }
+                            }))
+                    }
+                    if request.candidates.hasSelection {
+                        Divider()
+                        row("Current selection (sele)", isOn: $includeSelection)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(maxHeight: 280)
+            if SaveStructureSelection.mergesObjects(ext: request.ext) && checkedCount > 1 {
+                Text(".\(request.ext) files hold a single molecule, so the chosen objects will be merged into one.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save…") { onConfirm(choice) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(choice == .nothing)
+            }
+        }
+        .padding(20)
+        #if os(macOS)
+        .frame(width: 380)
+        #else
+        .presentationDetents([.medium, .large])
+        #endif
+    }
 }
 
 // MARK: - UI-test probe (#623)

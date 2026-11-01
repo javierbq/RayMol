@@ -65,6 +65,7 @@ import re
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import pymol
 import pymol.invocation
@@ -88,9 +89,11 @@ DEFAULT_LIGHT = {
     'aim_selection': '', 'beam': 45.0, 'softness': 0.4,
     'color': [1.0, 1.0, 1.0], 'warmth': 6500.0, 'intensity': 1.0,
     'highlight': 0.5, 'falloff': 2.0, 'shadow': False, 'outline': False,
+    'size': 0.0,
 }
 AIR_DEFAULTS = {'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35,
-                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0}
+                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0,
+                'dust_glow': 1.0, 'dust_opacity': 0.0}
 
 
 def L(name, orbit, pitch, beam, softness, intensity, highlight, **extra):
@@ -581,7 +584,8 @@ class TestKeywords(CommandsCase):
         self.assertIn("added 'rim'", text)
         rig = cmd.get_lights()
         self.assertIs(rig['enabled'], True)
-        self.assertEqual(rig['lights'], [dict(DEFAULT_LIGHT, name='rim')])
+        self.assertEqual(rig['lights'],
+                         [dict(DEFAULT_LIGHT, name='rim', shadow=True)])
         centre, size = closed_frame()
         for got, want in zip(rig['centre'], centre):
             self.assertAlmostEqual(got, want, places=5)
@@ -703,7 +707,7 @@ class TestQueries(CommandsCase):
             self.assertIn('key: camera, orbit -45, pitch 35, radius 4 '
                           '(%.1f A), aim centre' % (4.0 * result['size']),
                           text)
-            self.assertIn('beam 55, softness 0.5, color 1/1/1, warmth 4500, '
+            self.assertIn('beam 55, softness 0.5, size 0, color 1/1/1, warmth 4500, '
                           'intensity 1.15', text)
             self.assertIn('air: haze 0, dust 0, dust_size 0.35', text)
         text = do('lights')
@@ -724,7 +728,8 @@ class TestQueries(CommandsCase):
         result, text = output(cmd.atmosphere)
         self.assertEqual(result, cmd.get_lights()['air'])
         self.assertIn('atmosphere: haze 0.3, dust 0, dust_size 0.35, '
-                      'dust_speed 1, scatter 0.55, seed 7', text)
+                      'dust_speed 1, scatter 0.55, seed 7, dust_glow 1, '
+                      'dust_opacity 0', text)
         self.assertNotIn('shows only while', text)
 
     def testPinnedLightPrintsItsDerivedPlace(self):
@@ -813,6 +818,9 @@ class TestRigFields(CommandsCase):
             self.assertError(r"centre is captured from the molecules; "
                              r"'lights recenter'", cmd.lights,
                              centre=[0, 0, 0])
+            self.assertError(r"size is a light field: lights <light>, size=0\.3 "
+                             r"\(the rig's size is captured from the molecules; 'lights recenter' captures it again\)",
+                             cmd.lights, size=0.3)
             self.assertError(r'aim_point is set by aim=', cmd.lights,
                              aim_point=[1, 2, 3])
             self.assertError(r'haze is an atmosphere field: atmosphere '
@@ -828,6 +836,19 @@ class TestRigFields(CommandsCase):
             self.assertError(r'ambient is given twice', cmd.lights,
                              ambient=0.1, Ambient=0.2)
 
+    def testLightSizeField(self):
+        self.load()
+        cmd.lights('three_point')
+        cmd.lights('key', size=0.3)
+        self.assertAlmostEqual(cmd.get_lights()['lights'][0]['size'], 0.3)
+        # lights size=0.3 errors with both hints
+        msg = self.assertError(r'size is a light field', cmd.lights, size=0.3)
+        self.assertIn('recenter', msg)
+        self.assertIn('lights <light>, size=', msg)
+        # the listing shows size
+        _, text = output(cmd.lights, 'key')
+        self.assertIn('size 0.3', text)
+
 
 # --- atmosphere -------------------------------------------------------------
 
@@ -840,9 +861,10 @@ class TestAtmosphere(CommandsCase):
     def testEveryField(self):
         cmd.lights('three_point')
         want = {'haze': 0.3, 'dust': 0.45, 'dust_size': 0.4,
-                'dust_speed': 2.5, 'scatter': -0.35, 'seed': 42}
+                'dust_speed': 2.5, 'scatter': -0.35, 'seed': 42,
+                'dust_glow': 2.0, 'dust_opacity': 0.75}
         do('atmosphere haze=0.3, dust=0.45, dust_size=0.4, dust_speed=2.5, '
-           'scatter=-0.35, seed=42')
+           'scatter=-0.35, seed=42, dust_glow=2, dust_opacity=0.75')
         self.assertEqual(cmd.get_lights()['air'], want)
         cmd.atmosphere('off')
         cmd.atmosphere(**want)                  # Python numbers
@@ -850,14 +872,17 @@ class TestAtmosphere(CommandsCase):
 
     def testRangesAreInclusive(self):
         cmd.atmosphere(haze=1, dust=0, dust_size=0.05, dust_speed=10,
-                       scatter=-0.9, seed=1000000)
+                       scatter=-0.9, seed=1000000, dust_glow=0, dust_opacity=1)
         self.assertEqual(cmd.get_lights()['air'], {
             'haze': 1.0, 'dust': 0.0, 'dust_size': 0.05, 'dust_speed': 10.0,
-            'scatter': -0.9, 'seed': 1000000})
-        cmd.atmosphere(dust_size=2, scatter=0.9, seed=0)
+            'scatter': -0.9, 'seed': 1000000, 'dust_glow': 0.0,
+            'dust_opacity': 1.0})
+        cmd.atmosphere(dust_size=2, scatter=0.9, seed=0, dust_glow=4,
+                       dust_opacity=0)
         air = cmd.get_lights()['air']
-        self.assertEqual((air['dust_size'], air['scatter'], air['seed']),
-                         (2.0, 0.9, 0))
+        self.assertEqual((air['dust_size'], air['scatter'], air['seed'],
+                          air['dust_glow'], air['dust_opacity']),
+                         (2.0, 0.9, 0, 4.0, 0.0))
 
     def testOffResetsToTheTableDefaults(self):
         cmd.lights('three_point')
@@ -908,7 +933,8 @@ class TestAtmosphere(CommandsCase):
             self.assertError(r'seed=1000001 is out of range 0 to 1000000',
                              cmd.atmosphere, seed=1000001)
             self.assertError(r"unknown field 'fog' \(fields: haze, dust, "
-                             r"dust_size, dust_speed, scatter, seed\)",
+                             r"dust_size, dust_speed, scatter, seed, "
+                             r"dust_glow, dust_opacity\)",
                              cmd.atmosphere, fog=1)
             self.assertError(r'seed=7.5 is not a whole number',
                              cmd.atmosphere, seed='7.5')
@@ -969,6 +995,53 @@ class TestAtmosphere(CommandsCase):
         self.assertEqual(text, '')
 
 
+class TestAtmosphereDustLook810(CommandsCase):
+    """Issue #810: dust_glow and dust_opacity in the atmosphere command."""
+
+    def setUp(self):
+        super().setUp()
+        self.load()
+
+    def testSetBoth(self):
+        cmd.lights('three_point')
+        do('atmosphere dust_glow=2, dust_opacity=0.5')
+        air = cmd.get_lights()['air']
+        self.assertEqual(air['dust_glow'], 2.0)
+        self.assertEqual(air['dust_opacity'], 0.5)
+
+    def testValidation(self):
+        cmd.lights('three_point')
+        cmd.atmosphere(dust_glow=1.5, dust_opacity=0.2)
+        before = cmd.get_lights()['air']
+
+        for field, bad_val in (('dust_glow', 5),
+                               ('dust_opacity', 1.5),
+                               ('dust_glow', -0.1)):
+            msg = self.assertError(field, cmd.atmosphere, **{field: bad_val})
+            self.assertIn(field, msg)
+            self.assertEqual(cmd.get_lights()['air'], before)
+
+    def testOffResetsBoth(self):
+        cmd.lights('three_point')
+        cmd.atmosphere(dust_glow=2.0, dust_opacity=0.8)
+        cmd.atmosphere('off')
+        air = cmd.get_lights()['air']
+        self.assertEqual(air['dust_glow'], 1.0)
+        self.assertEqual(air['dust_opacity'], 0.0)
+
+    def testPrintoutListsBoth(self):
+        cmd.lights('three_point')
+        cmd.atmosphere(dust_glow=2.0, dust_opacity=0.5)
+        _, text = output(cmd.atmosphere)
+        self.assertIn('dust_glow 2', text)
+        self.assertIn('dust_opacity 0.5', text)
+
+    def testHelpMentionsBoth(self):
+        _, text = output(cmd.help, 'atmosphere')
+        self.assertIn('dust_glow', text)
+        self.assertIn('dust_opacity', text)
+
+
 # --- per-light edits (part 2) -----------------------------------------------
 
 @contextlib.contextmanager
@@ -1003,7 +1076,7 @@ class TestAddEditRemove(CommandsCase):
         rig = cmd.get_lights()
         self.assertIs(rig['enabled'], True)
         self.assertEqual(rig['lights'], [dict(
-            DEFAULT_LIGHT, name='rim', orbit=160.0, pitch=30.0,
+            DEFAULT_LIGHT, name='rim', orbit=160.0, pitch=30.0, shadow=True,
             color=list(cmd.get_color_tuple('cyan')), intensity=2.0)])
         centre, size = closed_frame()
         self.assertVec(rig['centre'], centre)
@@ -1021,6 +1094,70 @@ class TestAddEditRemove(CommandsCase):
         self.assertEqual(rig['lights'][0]['beam'], 20.0)
         self.assertIs(rig['lights'][1]['shadow'], True)
         self.assertEqual(rig['lights'][2]['softness'], 0.1)
+
+    def testAddCastsShadowByDefault(self):
+        # #799: a new light casts a shadow while fewer than 3 lights do
+        names = [cmd.lights('add') for i in range(3)]
+        self.assertEqual(names, ['key', 'fill', 'rim'])
+        self.assertEqual([l['shadow'] for l in cmd.get_lights()['lights']],
+                         [True, True, True])
+        # the fourth does not, says why, and is not an error
+        result, text = output(cmd.lights, 'add', quiet=0)
+        self.assertEqual(result, 'light4')
+        self.assertIn('casts no shadow', text)
+        self.assertIn('at most 3 lights do (key, fill, rim already do)', text)
+        lights = cmd.get_lights()['lights']
+        self.assertEqual([l['shadow'] for l in lights],
+                         [True, True, True, False])
+        self.assertIn('shadow off', text)
+        # quiet stays quiet
+        self.assertEqual(output(cmd.lights, 'add')[1], '')
+
+    def testAddShadowCountsEveryCastingLight(self):
+        cmd.lights('add', shadow=0)
+        cmd.lights('add', shadow=1)
+        cmd.lights('add', shadow=1)
+        cmd.lights('add')                       # the third caster
+        self.assertEqual([l['shadow'] for l in cmd.get_lights()['lights']],
+                         [False, True, True, True])
+        cmd.lights('add')                       # no room
+        self.assertIs(cmd.get_lights()['lights'][4]['shadow'], False)
+        cmd.lights('remove', 'fill')            # room again
+        cmd.lights('add')
+        self.assertIs(cmd.get_lights()['lights'][-1]['shadow'], True)
+
+    def testAddExplicitShadowWins(self):
+        cmd.lights('add', 'a', shadow=0)
+        cmd.lights('add', 'b')
+        do('lights add, c, shadow=0')
+        self.assertEqual([l['shadow'] for l in cmd.get_lights()['lights']],
+                         [False, True, False])
+        # an explicit shadow=1 at the cap is still the error it was
+        for name in ('d', 'e'):
+            cmd.lights('add', name)
+        self.assertError(r'lights: add: shadow=1: at most 3 lights cast '
+                         r'shadows', cmd.lights, 'add', shadow=1)
+
+    def testAddShadowLeavesOtherThingsAlone(self):
+        # presets, edits of existing lights and metal_shadows are unchanged
+        cmd.lights('three_point')
+        before = cmd.get_lights()
+        self.assertEqual([l['shadow'] for l in before['lights']],
+                         [True, False, False])
+        cmd.lights('fill', beam=30)
+        self.assertIs(cmd.get_lights()['lights'][1]['shadow'], False)
+        shadows = cmd.get('metal_shadows')
+        cmd.lights('add')
+        self.assertEqual(cmd.get('metal_shadows'), shadows)
+        self.assertEqual(
+            [l['shadow'] for l in cmd.get_lights()['lights']],
+            [True, False, False, True])
+
+    def testSetLightsKeepsAMissingShadow(self):
+        # a stored light without a shadow field keeps the old meaning (off)
+        cmd.set_lights({'version': 1, 'enabled': True,
+                        'lights': [{'name': 'key'}]})
+        self.assertIs(cmd.get_lights()['lights'][0]['shadow'], False)
 
     def testEdit(self):
         cmd.lights('three_point')
@@ -1619,7 +1756,7 @@ class TestErrors(CommandsCase):
                          'key', enabled=1)
         self.assertError(r'key: centre is captured', cmd.lights, 'key',
                          centre=[0, 0, 0])
-        self.assertError(r'key: size is captured', cmd.lights, 'key', size=3)
+        self.assertError(r'key: size=3 is out of range 0 to 1', cmd.lights, 'key', size=3)
         self.assertError(r'key: orbit= needs a value', cmd.lights, 'key',
                          orbit='')
 
@@ -1649,7 +1786,7 @@ class TestErrors(CommandsCase):
 
     def testCaps(self):
         for i in range(3):
-            cmd.lights('add', beam=10 + i)
+            cmd.lights('add', beam=10 + i, shadow=0)
         self.assertError(r'add: the rig already has 6 lights', cmd.lights,
                          'add', shadow=1)
         cmd.lights('fill', shadow=1)
@@ -2038,6 +2175,56 @@ class TestPlacement(PlacementCase):
                          r'grid mode.*use click=x/y', cmd.lights, 'key',
                          highlight='ball')
 
+    @contextlib.contextmanager
+    def unsized_viewport(self):
+        with mock.patch.object(_cmd, 'get_viewport', lambda *a: (0, 1)):
+            self.assertIsNone(lighting_commands._viewport_aspect(cmd))
+            yield
+
+    def testHighlightWithAnUnsizedViewport(self):
+        self.ball('s1', (-6.0, 0.0, 0.0), self.R)
+        c2 = (5.0, 3.0, -4.0)
+        self.ball('s2', c2, self.R)
+        self.frame()
+        with self.unsized_viewport():
+            _, text = output(cmd.lights, 'key', highlight='s2', radius=3,
+                             quiet=0)
+        V = vunit(vsub(CAMERA, c2))
+        A = vadd(c2, vscale(self.R, V))
+        P = self.assertPlaced('key', A, V, None)
+        self.assertAlmostEqual(vnorm(P), 30.0, places=3)
+        note = ("the viewport has no size yet, so the pick used the aspect of a "
+                "%dx%d window" % (pymol.invocation.options.win_x,
+                                  pymol.invocation.options.win_y))
+        self.assertIn(note, text)
+
+    def testClickWithAnUnsizedViewport(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        with mock.patch.object(metal_pick, 'surface_at',
+                               wraps=metal_pick.surface_at) as spy:
+            with self.unsized_viewport():
+                cmd.lights('key', click='0/0', radius=2)
+            self.assertVec(world_position('key'), (0.0, 0.0, 20.0), places=3)
+            spy.assert_called_once()
+            _, kwargs = spy.call_args
+            expected_aspect = (float(pymol.invocation.options.win_x) /
+                               float(pymol.invocation.options.win_y))
+            self.assertIn('aspect', kwargs)
+            self.assertEqual(kwargs['aspect'], expected_aspect)
+
+    def testSizedViewportPassesNoAspectToClick(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        with mock.patch.object(metal_pick, 'surface_at',
+                               wraps=metal_pick.surface_at) as spy:
+            _, text = output(cmd.lights, 'key', click='0/0', radius=2,
+                             quiet=0)
+            spy.assert_called_once()
+            _, kwargs = spy.call_args
+            self.assertNotIn('aspect', kwargs)
+            self.assertNotIn('no size yet', text)
+
     def testTarget(self):
         cmd.pseudoatom('t', name='A', pos=[1.0, 0.0, 0.0])
         cmd.pseudoatom('t', name='B', pos=[-1.0, 0.0, 0.0])
@@ -2092,6 +2279,40 @@ class TestPlacement(PlacementCase):
         self.assertEqual(light('key')['beam'], 33.0)
         cmd.lights('key', target='ball', beam=12)
         self.assertEqual(light('key')['beam'], 12.0)
+
+    def testClickAndHighlightBeamFitFloor(self):
+        # click= and highlight= fit the beam to a 10 A patch at the light's
+        # aim distance, but never collapse below 20 degrees (#723).
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        # with radius=8 (aim distance 80 - 2 = 78 A), the unclamped fit is
+        # ~16.8 degrees; the floor keeps the beam at 20.0
+        cmd.lights('key', click='0/0', radius=8)
+        key = light('key')
+        D = eye('key')['aim_distance']
+        unclamped = fitted_beam(10.0, D)
+        self.assertLess(unclamped, 20.0)
+        self.assertEqual(key['beam'], 20.0)
+
+        # highlight= on the ball also respects the 20-degree floor
+        cmd.lights('key', highlight='ball', radius=8)
+        key = light('key')
+        D = eye('key')['aim_distance']
+        unclamped = fitted_beam(10.0, D)
+        self.assertLess(unclamped, 20.0)
+        self.assertEqual(key['beam'], 20.0)
+
+    def testTargetFitNotFloored(self):
+        # target= fits to a selection with the normal 1-170 clamp, not
+        # floored at 20 degrees (#723).
+        cmd.pseudoatom('t', pos=[0.0, 0.0, 0.0])
+        self.frame(radius=8.0)
+        cmd.lights('key', target='t')
+        key = light('key')
+        D = eye('key')['aim_distance']
+        expected = fitted_beam(1.5, D)
+        self.assertLess(expected, 20.0)
+        self.assertAlmostEqual(key['beam'], expected, places=3)
 
     def testPinWithClick(self):
         self.ball('ball', (0.0, 0.0, 0.0), self.R)
@@ -2949,23 +3170,23 @@ RIG_OFF_FULL_FILE = os.path.join(SCENES, 'rig_off_full.json')
 # into the off rig.
 RIG_OFF_AIR = {'haze': 0.3, 'dust': 0.5, 'dust_size': 0.4, 'dust_speed': 1.0,
                'scatter': 0.55, 'seed': 7}
-# What the scene files' extra lines leave on the cmd module.
-SHIM_ATTRS = ('_l612_set', '_l612_preset', '_l612_kw')
+# What rig_off_full.json's extra lines leave on the cmd module.
+SHIM_ATTRS = ('_l612_kw',)
 
 
 @unittest.skipUnless(os.path.isfile(RENDER) and os.path.isfile(PDB),
                      'needs a RayMol checkout (scripts/lighting)')
 class TestSceneFiles(CommandsCase):
     """The scene files that drive the frozen harness (render.py) through the
-    commands. The harness runs a scene's lines before its rig block, so both
-    files wrap a function the rig block calls: lighting_612_rigs.json
-    wraps cmd.set_lights ("rig": "on") to apply a preset, and
+    commands. lighting_612_rigs.json applies each preset in its after_rig
+    lines, which run after the rig block (#745); it wraps nothing.
     rig_off_full.json wraps cmd.keyword['lights'][0] ("rig": "off") so that
-    `three_point` also pins key, aims fill at 'm' and outlines rim.
+    the rig block's `three_point` also pins key, aims fill at 'm' and
+    outlines rim.
 
     The CI workflow runs every test file in one process: a wrapper left
     behind would change later files (lighting_harness.py's off script), so
-    tearDown puts both functions back and deletes the attributes."""
+    tearDown puts the functions back and deletes the attributes."""
 
     @classmethod
     def setUpClass(cls):
@@ -3042,7 +3263,6 @@ class TestSceneFiles(CommandsCase):
 
     def testPresetsFile(self):
         render = self.render
-        extra = self.spec(PRESETS_FILE)['extra']
         jobs = render.scene_file_jobs(PRESETS_FILE)
         # every preset, in the order of `lights presets`, without and with
         # metal_raytrace
@@ -3057,9 +3277,10 @@ class TestSceneFiles(CommandsCase):
             self.assertEqual(
                 (job.rig, job.rep_lines, job.rt, job.shadows, job.size),
                 ('on', l1.rep_lines, l1.rt, l1.shadows, l1.size), job.tag)
-            self.assertEqual(job.extra, extra + [
-                "cmd._l612_preset = %r" % preset, "cmd.color('grey80', 'm')"],
-                job.tag)
+            self.assertEqual(job.extra, ["cmd.color('grey80', 'm')"], job.tag)
+            self.assertEqual(job.after_rig,
+                             ["cmd.set_lights(None)", "cmd.lights(%r)" % preset],
+                             job.tag)
 
     def testPresetsScenesRun(self):
         names = {p[0]: [l['name'] for l in p[3]] for p in PRESETS}
@@ -3079,9 +3300,8 @@ class TestSceneFiles(CommandsCase):
             colours = set()
             cmd.iterate('m', 'colours.add(color)', space={'colours': colours})
             self.assertEqual(colours, {grey80}, job.tag)
-            # wrapped once: the second run kept the original reachable
-            self.assertIs(cmd._l612_set, self.original_set_lights)
-            self.assertIsNot(cmd.set_lights, self.original_set_lights)
+            self.assertNotIn('_l612_set', vars(cmd), job.tag)
+            self.assertIs(cmd.set_lights, self.original_set_lights, job.tag)
             if preset == 'spotlight':
                 # its off-centre aim resolved to a point (run 1 == run 2)
                 self.assertEqual(light('spot')['aim'], 'point', job.tag)
@@ -3108,7 +3328,8 @@ class TestSceneFiles(CommandsCase):
             self.assertIsNone(lighting._lights_ray_notice(), job.tag)
             self.assertEqual([l['name'] for l in rig['lights']],
                              ['key', 'fill', 'rim'], job.tag)
-            self.assertEqual(rig['air'], RIG_OFF_AIR, job.tag)
+            self.assertEqual(rig['air'], dict(RIG_OFF_AIR, dust_glow=1.0,
+                                               dust_opacity=0.0), job.tag)
             self.assertEqual(rig['ambient'], 0.1, job.tag)
             key, fill, rim = rig['lights']
             # key pinned where three_point put it
@@ -3174,7 +3395,7 @@ class TestSceneFiles(CommandsCase):
             job = self.render.scene_file_jobs(path)[0]
             self.run_twice(job, os.path.join(self.tmp,
                                              os.path.basename(path)[:-5]))
-        self.assertIsNot(cmd.set_lights, lighting.set_lights)
+        self.assertIs(cmd.set_lights, lighting.set_lights)
         self.assertIsNot(cmd.keyword['lights'][0], lighting_commands.lights)
         self.restore()
         self.assertIs(cmd.set_lights, lighting.set_lights)

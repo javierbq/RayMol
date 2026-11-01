@@ -1,11 +1,19 @@
 // LightsBar.swift — the Lights mode bar (#619, spec §9).
 //
 // The bar shows the rig as a row of chips, one per light, each with the
-// light's identity dot (the colour the orbit view #621 and the gizmo #622 use
-// for it too; hollow while the light is behind the molecule, the gizmo's
+// light's dot (the colour the light casts, #798, which the orbit view #621 and
+// the gizmo #622 use for it too; hollow while the light is behind the molecule, the gizmo's
 // front/behind rule), and the rig-wide actions: add, remove, a preset, Re-centre,
-// on/off, Revert and Done. It floats at the top of the viewport on macOS and
-// docks at the bottom of the top stack on iOS (ContentView places it).
+// on/off, Revert and Done. In phone portrait (#885), on macOS and on the iPad
+// float (#889) a compact light menu replaces the chips, with the lights,
+// add/remove, Shadow, Pin, Colour, Lights On and, in phone portrait
+// (`onEditLight`), "Edit light…" (which opens the full bottom-sheet editor).
+// The bar also carries the scene's Atmosphere entry: on a phone (#795) a
+// button on the wide bar and an item in the overflow menu on the compact one,
+// each revealing the sheet's Atmosphere section; on macOS and the iPad float
+// (#889) a button on both layouts that opens the Atmosphere popover.
+// It floats at the top of the viewport on macOS and docks at the bottom of the
+// top stack on iOS (ContentView places it).
 //
 // Everything it shows comes from LightsController, and every press goes to
 // one of the controller's actions, which reach the rig through the engine's
@@ -16,27 +24,36 @@
 
 import SwiftUI
 
-// MARK: - Identity colours
+// MARK: - Marker colours
 
-extension LightPalette {
-    /// The identity colour of a slot (LightPalette.assign): blue, orange,
-    /// green, purple, pink, gold, in the order of the design sketches. Fixed
-    /// sRGB values, so a light reads the same on every platform and theme.
-    /// Out-of-range slots wrap.
-    static func color(_ slot: Int) -> Color {
-        let rgb = Self.rgb[((slot % count) + count) % count]
-        return Color(.sRGB, red: rgb.0, green: rgb.1, blue: rgb.2, opacity: 1)
+extension LightMarkerColour {
+    /// The marker's fill: the colour the light casts (#798), opaque sRGB.
+    var fillColor: Color { Color(.sRGB, red: fill.x, green: fill.y, blue: fill.z, opacity: 1) }
+
+    /// The marker's thin outline: black or white, whichever contrasts with the fill.
+    var outlineColor: Color { Color(.sRGB, red: outline.x, green: outline.y, blue: outline.z, opacity: 1) }
+}
+
+/// A light's dot (the chip's, the orbit card's and the inspector's header):
+/// the light's own colour with a hairline outline, so a white light still
+/// reads on a light or dark bar. `hollow` is the chip's "behind the
+/// molecule" ring.
+struct LightMarkerDot: View {
+    var marker: LightMarkerColour
+    var size: CGFloat
+    var hollow = false
+
+    var body: some View {
+        ZStack {
+            if hollow {
+                Circle().strokeBorder(marker.fillColor, lineWidth: 1.5)
+            } else {
+                Circle().fill(marker.fillColor)
+            }
+        }
+        .overlay(Circle().strokeBorder(marker.outlineColor.opacity(0.7), lineWidth: 0.75))
+        .frame(width: size, height: size)
     }
-
-    /// sRGB of each slot, in slot order.
-    static let rgb: [(Double, Double, Double)] = [
-        (0.23, 0.51, 0.96),   // blue
-        (0.96, 0.55, 0.15),   // orange
-        (0.24, 0.73, 0.36),   // green
-        (0.62, 0.38, 0.92),   // purple
-        (0.93, 0.36, 0.62),   // pink
-        (0.86, 0.69, 0.13),   // gold
-    ]
 }
 
 // MARK: - Style
@@ -58,6 +75,8 @@ struct LightsBarState: Equatable {
         var name: String
         var index: Int
         var slot: Int
+        /// What the dot is drawn in: the light's own colour (#798).
+        var marker = LightMarkerColour.neutral
         var isSelected: Bool
         /// The light is behind the molecule (`LightsController.isBehind`)
         /// when the state was made. The chip itself observes
@@ -74,6 +93,37 @@ struct LightsBarState: Equatable {
     /// The same status where the chip area is too narrow for `noLightsText`
     /// (iPhone portrait), where Presets sits in the overflow menu.
     static let noLightsShortText = "No lights"
+    /// The portrait light menu (#885), shown in place of the chips.
+    static let lightMenuIdentifier = "lights.menu"
+    static let lightMenuLabel = "Light"
+    static let lightMenuHint = "Pick a light, change its main settings, or open the full editor"
+    static let noLightTitle = "No light"
+    static let editLightTitle = "Edit light…"
+    static let editLightIdentifier = "lights.menu.edit"
+
+    static func lightMenuTitle(selected: String?) -> String {
+        selected ?? noLightTitle
+    }
+
+    /// VoiceOver's value for the light menu: the selected light and where it
+    /// is (the chips' front/behind value, #622), or `No light`.
+    static func lightMenuAccessibilityValue(selected: String?, behind: Bool) -> String {
+        guard let selected else { return noLightTitle }
+        return "\(selected), \(chipAccessibilityValue(behind: behind))"
+    }
+
+    static func lightMenuItemIdentifier(_ name: String) -> String {
+        "lights.menu.light.\(name)"
+    }
+
+    /// The menu's Shadow toggle cannot turn the selected light's shadow on:
+    /// it has none and `maxShadowed` other lights already cast one. The menu
+    /// then disables it under the inspector's cap notice, since the
+    /// inspector (which shows the notice after a refused press) is not on
+    /// screen while the portrait editor is closed.
+    static func shadowCapReached(isShadowed: Bool, shadowedCount: Int) -> Bool {
+        !isShadowed && shadowedCount >= LightsController.maxShadowed
+    }
 
     /// VoiceOver's name for a chip.
     static func chipAccessibilityLabel(_ name: String) -> String {
@@ -96,11 +146,47 @@ struct LightsBarState: Equatable {
     var canRecentre: Bool
     var canToggle: Bool
     var canRevert: Bool
+    var editCount: Int
+    var revertNeedsConfirmation: Bool
     var addHelp: String
     var removeHelp: String
     var powerLabel: String
     var powerHelp: String
     var presets: [LightPreset]
+    /// The scene's haze or dust draws (#795): lights the Atmosphere entry's
+    /// glyph, and its checkmark in the overflow menu.
+    var atmosphereIsOn: Bool
+
+    /// Whether the bar's Atmosphere entry (#795, #889) opens the Atmosphere
+    /// popover (macOS and the iPad float, which have no Atmosphere card)
+    /// rather than revealing the Atmosphere section of the phone sheet or
+    /// side panel. Atmosphere is scene-wide, so on every placement its entry
+    /// sits on the bar with the other rig-wide controls and not in the
+    /// selected light's header.
+    static func atmosphereOpensPopover(placement: LightsToolsPlacement) -> Bool {
+        switch placement {
+        case .column, .floating: return true
+        case .bottomSheet, .sidePanel: return false
+        }
+    }
+
+    /// Whether the bar shows the light menu in place of the chips: phone
+    /// portrait (#885), macOS and the iPad float (#889). iPhone landscape
+    /// keeps the chips.
+    static func showsLightMenu(placement: LightsToolsPlacement) -> Bool {
+        placement != .sidePanel
+    }
+
+    /// The overflow menu's item: the title carries the state a checkmark
+    /// would (a Button in a menu has no mark of its own).
+    static func atmosphereMenuTitle(isOn: Bool) -> String {
+        isOn ? "Atmosphere: On" : "Atmosphere: Off"
+    }
+
+    /// The menu item's glyph: the filled fog cloud while the air is on.
+    static func atmosphereMenuImage(isOn: Bool) -> String {
+        isOn ? "cloud.fog.fill" : AtmosphereCardState.systemImage
+    }
 
     @MainActor
     init(_ controller: LightsController) {
@@ -109,6 +195,7 @@ struct LightsBarState: Equatable {
         chips = lights.enumerated().map { index, light in
             Chip(name: light.name, index: index,
                  slot: controller.identitySlot(for: light.name),
+                 marker: LightMarkerColour(light),
                  isSelected: index == selected,
                  isBehind: controller.isBehind(light.name))
         }
@@ -120,7 +207,10 @@ struct LightsBarState: Equatable {
         canRecentre = controller.canRecentre
         canToggle = controller.canToggle
         canRevert = controller.canRevert
+        editCount = controller.editCount
+        revertNeedsConfirmation = controller.revertNeedsConfirmation
         presets = controller.presets
+        atmosphereIsOn = controller.airIsOn
         addHelp = lights.count >= LightsController.maxLights
             ? "A rig holds at most \(LightsController.maxLights) lights"
             : "Add a light"
@@ -144,17 +234,53 @@ struct LightsBar: View {
     @ObservedObject var controller: LightsController
     var style: LightsBarStyle
     var onDone: () -> Void
+    /// Reveals the Atmosphere section of the phone sheet or side panel
+    /// (#795); nil where the bar opens the popover instead (macOS, iPad).
+    var onAtmosphere: (() -> Void)?
+    /// The bar carries the Atmosphere button that opens the Atmosphere
+    /// popover (macOS and the iPad float, #889) on both layouts, in place of
+    /// `onAtmosphere`.
+    var atmospherePopover: Bool
+    /// True while a field of the Atmosphere popover has the keyboard: the
+    /// iPad's viewport then keeps its size (#725), as for the float's fields.
+    var onFieldFocus: (Bool) -> Void
+    /// The bar shows the compact light menu in place of the chips (phone
+    /// portrait #885, macOS and the iPad float #889).
+    var lightMenu: Bool
+    /// Opens the portrait full light editor (#885): the light menu's "Edit
+    /// light…" item. nil on macOS and the iPad float, whose inspector is
+    /// always on screen.
+    var onEditLight: (() -> Void)?
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
+
+    @State private var confirmRevert = false
+    @State private var showsAtmospherePopover = false
+
+    static let revertConfirmTitle = "Revert your light edits?"
+    static func revertConfirmLabel(_ count: Int) -> String { "Revert \(count) edits" }
 
     static let recentreHelp = "Re-centre: capture the centre and 1× size from the molecules"
     static let revertHelp = "Revert to the lights you had when you opened Lights mode"
     static let presetsHelp = "Replace the lights with a preset"
     static let doneHelp = "Keep these lights and leave Lights mode (Esc)"
 
-    init(controller: LightsController, style: LightsBarStyle, onDone: @escaping () -> Void) {
+    /// `lightMenu` defaults to showing the menu whenever there is an "Edit
+    /// light…" entry (phone portrait), as before #889.
+    /// `atmospherePopoverStartsOpen` is the DEBUG `air` token's (#726): the
+    /// popover opens with the bar.
+    init(controller: LightsController, style: LightsBarStyle, onAtmosphere: (() -> Void)? = nil,
+         atmospherePopover: Bool = false, atmospherePopoverStartsOpen: Bool = false,
+         onFieldFocus: @escaping (Bool) -> Void = { _ in }, lightMenu: Bool? = nil,
+         onEditLight: (() -> Void)? = nil, onDone: @escaping () -> Void) {
         self.controller = controller
         self.style = style
+        self.onAtmosphere = onAtmosphere
+        self.atmospherePopover = atmospherePopover
+        self.onFieldFocus = onFieldFocus
+        _showsAtmospherePopover = State(initialValue: atmospherePopover && atmospherePopoverStartsOpen)
+        self.lightMenu = lightMenu ?? (onEditLight != nil)
+        self.onEditLight = onEditLight
         self.onDone = onDone
     }
 
@@ -168,6 +294,12 @@ struct LightsBar: View {
         .frame(maxWidth: .infinity)
         .background(style.background)
         .tint(style.accent)
+        .confirmationDialog(Self.revertConfirmTitle, isPresented: $confirmRevert, titleVisibility: .visible) {
+            Button(Self.revertConfirmLabel(controller.editCount), role: .destructive) { controller.revert() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This puts back the lights you had when you opened Lights mode.")
+        }
     }
 
     // Everything on one row: icon and title, chips, the actions, Done.
@@ -188,16 +320,19 @@ struct LightsBar: View {
             removeButton(state)
             presetsMenu(state)
             recentreButton(state)
+            atmosphereButton
             powerButton(state)
             revertButton(state, showsRevertWord: true)
             doneButton
         }
     }
 
-    // iPhone portrait: no title; Presets, Re-centre and On/Off in one overflow
-    // menu. +, −, Revert and Done stay on the bar. With 44 pt targets (iOS)
-    // the frames carry the gaps, so the spacing drops to 2 and a 375 pt phone
-    // still shows about two chips.
+    // iPhone portrait (and a narrow macOS or iPad window): no title; the light
+    // menu replaces the chips (#885), and Presets, Re-centre, Atmosphere
+    // (phones only) and On/Off sit in one overflow menu. +, −, Revert and Done
+    // stay on the bar, and so does the popover's Atmosphere button (#889): a
+    // menu item cannot anchor the popover. With 44 pt targets (iOS) the frames carry the
+    // gaps, so the spacing drops to 2.
     private func compact(_ state: LightsBarState) -> some View {
         HStack(spacing: touchMinimum > 0 ? 2 : 10) {
             Image(systemName: "lightbulb.fill")
@@ -207,6 +342,7 @@ struct LightsBar: View {
             Spacer(minLength: 4)
             addButton(state)
             removeButton(state)
+            if atmospherePopover { atmosphereButton }
             overflowMenu(state)
             revertButton(state)
             doneButton
@@ -217,7 +353,9 @@ struct LightsBar: View {
 
     @ViewBuilder
     private func chipArea(_ state: LightsBarState) -> some View {
-        if let status = state.status {
+        if lightMenu {
+            lightMenu(state, onEdit: onEditLight)
+        } else if let status = state.status {
             ViewThatFits(in: .horizontal) {
                 statusText(status)
                 statusText(LightsBarState.noLightsShortText)
@@ -248,6 +386,114 @@ struct LightsBar: View {
                 }
             }
         }
+    }
+
+    private func lightMenu(_ state: LightsBarState, onEdit: (() -> Void)?) -> some View {
+        let title = LightsBarState.lightMenuTitle(selected: controller.selectedLight?.name)
+        return Menu {
+            ForEach(state.chips) { chip in
+                Button { controller.select(index: chip.index) } label: {
+                    if chip.isSelected {
+                        Label(chip.name, systemImage: "checkmark")
+                    } else {
+                        Text(chip.name)
+                    }
+                }
+                .accessibilityIdentifier(LightsBarState.lightMenuItemIdentifier(chip.name))
+            }
+            Divider()
+            Button { controller.add() } label: {
+                Label("Add Light", systemImage: "plus")
+            }
+            .disabled(!state.canAdd)
+            Button(role: .destructive) { controller.removeSelected() } label: {
+                Label(state.removeHelp, systemImage: "minus")
+            }
+            .disabled(!state.canRemove)
+            if let inspector = LightsInspectorState(controller) {
+                let shadowed = controller.rig?.lights.filter(\.shadow).count ?? 0
+                let capReached = LightsBarState.shadowCapReached(isShadowed: inspector.isShadowed,
+                                                                 shadowedCount: shadowed)
+                Section {
+                    Toggle(isOn: Binding(get: { inspector.isShadowed },
+                                         set: { on in
+                                             // The core keeps the cap: a refusal the
+                                             // count missed opens the editor on its
+                                             // notice (ContentView speaks it, once).
+                                             // On macOS the column's inspector is
+                                             // already showing it.
+                                             if controller.setShadow(on) == .refused {
+                                                 onEdit?()
+                                             }
+                                         })) {
+                        Label(LightsInspectorState.shadowLabel, systemImage: "shadow")
+                    }
+                    .disabled(!inspector.canEdit || capReached)
+                    Toggle(isOn: Binding(get: { inspector.isPinned },
+                                         set: { controller.setPinned($0) })) {
+                        Label(LightsInspectorState.pinLabel, systemImage: "pin")
+                    }
+                    .disabled(!inspector.canEdit)
+                    Menu {
+                        ForEach(inspector.swatches) { swatch in
+                            Button { controller.setColour(swatch.rgb) } label: {
+                                if swatch.isSelected {
+                                    Label(swatch.name, systemImage: "checkmark")
+                                } else {
+                                    Text(swatch.name)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Colour", systemImage: "paintpalette")
+                    }
+                    .disabled(!inspector.canEdit)
+                } header: {
+                    if capReached {
+                        Text(LightsInspectorState.shadowCapNotice)
+                    }
+                }
+            }
+            Divider()
+            Toggle(isOn: Binding(get: { state.isOn },
+                                 set: { controller.setEnabled($0) })) {
+                Label("Lights On", systemImage: "power")
+            }
+            .disabled(!state.canToggle)
+            if let onEdit {
+                Divider()
+                Button { onEdit() } label: {
+                    Label(LightsBarState.editLightTitle, systemImage: "slider.horizontal.3")
+                }
+                .disabled(controller.selectedLight == nil)
+                .accessibilityIdentifier(LightsBarState.editLightIdentifier)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if let chip = state.chips.first(where: \.isSelected) {
+                    LightMenuMarker(chip: chip, facing: controller.facing, rigOn: state.isOn)
+                }
+                Text(verbatim: title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 9))
+            }
+            .foregroundColor(style.text)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .overlay(Capsule().stroke(style.accent, lineWidth: 1.5))
+            .contentShape(Capsule())
+            .lightsTouchTarget(width: false)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+        .help(LightsBarState.lightMenuHint)
+        .accessibilityLabel(LightsBarState.lightMenuLabel)
+        .modifier(LightMenuAccessibilityValue(selected: controller.selectedLight?.name,
+                                              facing: controller.facing))
+        .accessibilityHint(LightsBarState.lightMenuHint)
+        .accessibilityIdentifier(LightsBarState.lightMenuIdentifier)
     }
 
     private func statusText(_ text: String) -> some View {
@@ -330,6 +576,28 @@ struct LightsBar: View {
             .accessibilityIdentifier("lights.recentre")
     }
 
+    /// The Atmosphere entry: the fog glyph, filled while the air is on. On
+    /// macOS and the iPad float (#889) it opens the Atmosphere popover (an
+    /// iPad popover, never a sheet, so the scene stays in view); on the
+    /// phone's wide bar
+    /// (iPhone landscape) it reveals the sheet's section. Draws nothing
+    /// without either, or outside Lights mode.
+    @ViewBuilder
+    private var atmosphereButton: some View {
+        if atmospherePopover {
+            LightsSheetAtmosphereButton(controller: controller, style: style,
+                                        identifier: AtmosphereCardIDs.barButton) {
+                showsAtmospherePopover.toggle()
+            }
+            .popover(isPresented: $showsAtmospherePopover, arrowEdge: LightsTouch.popoverBelowArrowEdge) {
+                LightsAtmospherePopover(controller: controller, style: style, onFieldFocus: onFieldFocus)
+                    .presentationCompactAdaptation(.popover)
+            }
+        } else if let onAtmosphere {
+            LightsSheetAtmosphereButton(controller: controller, style: style, action: onAtmosphere)
+        }
+    }
+
     private func powerButton(_ state: LightsBarState) -> some View {
         Button { controller.setEnabled(!state.isOn) } label: { icon("power", on: state.isOn).lightsTouchTarget() }
             .buttonStyle(.plain)
@@ -349,6 +617,17 @@ struct LightsBar: View {
             }
             .disabled(!state.canRecentre)
             .help(Self.recentreHelp)
+            if let onAtmosphere {
+                Button(action: onAtmosphere) {
+                    Label(LightsBarState.atmosphereMenuTitle(isOn: state.atmosphereIsOn),
+                          systemImage: LightsBarState.atmosphereMenuImage(isOn: state.atmosphereIsOn))
+                }
+                .help(AtmosphereCardIDs.sheetButtonHint)
+                .accessibilityLabel(AtmosphereCardIDs.sheetButtonLabel)
+                .accessibilityValue(state.atmosphereIsOn ? "On" : "Off")
+                .accessibilityHint(AtmosphereCardIDs.sheetButtonHint)
+                .accessibilityIdentifier(AtmosphereCardIDs.menuItem)
+            }
             Button { controller.setEnabled(!state.isOn) } label: {
                 Label(state.isOn ? "Turn Lights Off" : "Turn Lights On", systemImage: "power")
             }
@@ -361,17 +640,20 @@ struct LightsBar: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Presets, Re-centre and On/Off")
+        .help(onAtmosphere == nil ? "Presets, Re-centre and On/Off" : "Presets, Re-centre, Atmosphere and On/Off")
         .accessibilityLabel("More light actions")
         .accessibilityValue(state.powerLabel)
         .accessibilityIdentifier("lights.more")
     }
 
     private func revertButton(_ state: LightsBarState, showsRevertWord: Bool = false) -> some View {
-        Button { controller.revert() } label: {
+        Button {
+            if state.revertNeedsConfirmation { confirmRevert = true } else { controller.revert() }
+        } label: {
             if showsRevertWord {
                 // The word, not a bare undo glyph: Revert drops every edit made
-                // since the mode opened, not one step.
+                // since the mode opened, not one step (with a confirmation when
+                // more than one would be lost, #651).
                 HStack(spacing: 3) {
                     icon("arrow.uturn.backward")
                     Text("Revert").font(.system(size: 12, weight: .medium))
@@ -416,6 +698,36 @@ struct LightsBar: View {
     }
 }
 
+// MARK: - The light menu's dot
+
+/// The portrait light menu's dot (#885): the selected light's colour,
+/// hollow while it is behind the molecule. It observes `controller.facing`,
+/// as the chips do, so it follows a crossing under a turning camera.
+struct LightMenuMarker: View {
+    var chip: LightsBarState.Chip
+    @ObservedObject var facing: LightsFacingState
+    var rigOn: Bool
+
+    var body: some View {
+        LightMarkerDot(marker: chip.marker, size: 8, hollow: facing.isBehind(chip.name))
+            .opacity(rigOn ? 1 : 0.45)
+    }
+}
+
+/// The light menu's VoiceOver value (LightsBarState.lightMenuAccessibilityValue).
+/// It observes `controller.facing`, so the spoken front/behind state follows a
+/// crossing under a turning camera, as the dot does.
+struct LightMenuAccessibilityValue: ViewModifier {
+    var selected: String?
+    @ObservedObject var facing: LightsFacingState
+
+    func body(content: Content) -> some View {
+        let behind = selected.map { facing.isBehind($0) } ?? false
+        return content.accessibilityValue(LightsBarState.lightMenuAccessibilityValue(selected: selected,
+                                                                                     behind: behind))
+    }
+}
+
 // MARK: - A chip
 
 /// One light's chip: its identity dot and name. It observes
@@ -440,17 +752,9 @@ struct LightChipButton: View {
 
     var body: some View {
         let behind = facing.isBehind(chip.name)
-        let colour = LightPalette.color(chip.slot)
         Button(action: onSelect) {
             HStack(spacing: 4) {
-                ZStack {
-                    if behind {
-                        Circle().strokeBorder(colour, lineWidth: 1.5)
-                    } else {
-                        Circle().fill(colour)
-                    }
-                }
-                .frame(width: 8, height: 8)
+                LightMarkerDot(marker: chip.marker, size: 8, hollow: behind)
                 .opacity(rigOn ? 1 : 0.45)
                 Text(chip.name)
                     .font(.system(size: 12, weight: chip.isSelected ? .semibold : .regular))

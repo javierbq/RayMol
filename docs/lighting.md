@@ -120,7 +120,9 @@ chains with `;`. Keywords, presets and light names match ignoring case.
 
 - `lights add` adds a light. Without a name it takes the first unused of
   key, fill, rim, light4, light5, light6. The first light captures the frame
-  and turns the rig on.
+  and turns the rig on. The new light casts a shadow (`shadow=1`) while fewer
+  than 3 lights do; after that it casts none and the command says why. An
+  explicit `shadow=` wins. Presets and saved rigs are not changed.
 - `lights remove, <name>` removes one light. Removing the last turns the rig
   off.
 - `lights presets` lists the presets with their descriptions.
@@ -200,8 +202,9 @@ field, still accepted.
 | `intensity` | `int` | 0 to 4 | 1 | Brightness. Bright rigs roll off without whitening (see [Exposure and HDR](#exposure-and-hdr)). |
 | `highlight` | `spec` | 0 to 1 | 0.5 | Strength of the light's coloured specular highlight. |
 | `falloff` | | 0 to 2 | 2 | Brightness goes as (aim distance / distance)^falloff: 2 is inverse square, 0 none. |
-| `shadow` | | 0 or 1 | 0 | The light casts its own shadow (at most 3 lights do). |
+| `shadow` | | 0 or 1 | 0 | The light casts its own shadow (at most 3 lights do). `lights add` and the + button give a new light `shadow=1` while fewer than 3 lights cast shadows; `shadow=0` on `lights add` wins. |
 | `outline` | `cue` | 0 or 1 | 0 | Draw the beam's edge on the molecules. |
+| `size` | | 0 to 1, scene sizes | 0 | Light source radius in scene sizes; softens shadows in ray-traced Mac renders (`metal_raytrace 1`). No effect on raster renders or on iOS. |
 | `aim` | | `centre`, a point or a selection | centre | Where the light points: the rig centre, a world point `x/y/z` in Å, or a selection's centroid (resolved once). |
 | `anchor` | | `camera` or `pinned` | camera | Whether the light follows the camera or stays put in the scene. |
 | `pin` | | 0 or 1 | | `pin=1` pins the light where it is now; `pin=0` makes it a camera light again (stored as `anchor`). |
@@ -269,9 +272,17 @@ sticks.
 light on its radius as a camera light. When the picked point is on or beyond
 that radius, the radius is raised to put the light half a size past it, with
 a note; past 8 that is an error (re-centre first). The beam is fitted to a
-10 Å patch around the point unless `beam=` is given. One helper at a time;
+10 Å patch around the point (never below 20°, so a far light keeps a usable
+beam) unless `beam=` is given. One helper at a time;
 `orbit`, `pitch` and `position` cannot be given with `highlight=` or
 `click=`, and `aim` with no helper.
+
+`highlight=` and `click=` pick through the viewport. In a startup script
+(the app's PYMOL_AUTOCMD, a .pymolrc) that runs before the window's first
+layout, the viewport has no size yet; the pick then uses the aspect of the
+window PyMOL is configured to open (640 x 480 unless `-W`/`-H` say otherwise),
+with a note. The point picked can differ from what the sized window would pick
+when the selection or click is far from the centre.
 
 ```pymol
 lights three_point
@@ -358,6 +369,8 @@ atmosphere off
 | `dust_speed` | | 0 to 10 | 1 | How fast the dust drifts: 1 is real time, 0 holds it still. |
 | `scatter` | | -0.9 to 0.9 | 0.55 | Forward scattering (g): above 0, the air glows more where a beam points towards the camera. |
 | `seed` | | 0 to 1000000 | 0 | The dust pattern (a whole number). |
+| `dust_glow` | | 0 to 4 | 1 | How brightly a mote glows in a beam: 1 is the usual look, 0 hides the glints. |
+| `dust_opacity` | | 0 to 1 | 0 | How solid a mote is: 0 is see-through glints that only add light; above 0, a mote also hides what is behind it (an unlit mote is a faint dark speck). |
 
 ### How the air renders and redraws
 
@@ -368,20 +381,30 @@ atmosphere off
   `shadow=1` and `metal_shadows` on. Dust motes glint only inside beams.
 - The air spans the rig's frame, so showing, hiding or zooming never moves it
   (`lights recenter` does). It needs something shown: with nothing enabled,
-  or only overlays such as the Move gizmo, there is no air. It is not drawn
-  in `grid_mode` (#686).
+  or only overlays such as the Move gizmo, there is no air. In `grid_mode` the
+  air is drawn per cell, each cell shadowed by its own casters (#686).
+- A transparent-background export (`ray_opaque_background` 0) takes its
+  alpha from depth, so by default haze and dust over empty background are
+  cut out with it. `set metal_light_air_alpha, 1` keeps them: alpha there is
+  the larger of the depth matte, the air's luminance and the motes' coverage
+  (`1 - cover`). The colour in the PNG is the air's own light, not divided by
+  that alpha. Off by default, so exports are unchanged unless you ask (#684).
 - Haze alone is still: only dust moves. The live view redraws for the dust
   only while the rig is on with dust and `dust_speed` above 0, the dust clock
-  is not pinned, no movie plays, nothing is in grid mode and something is
-  shown. The app then redraws at most 30 times a second, and only while it is
-  active and its window visible. In Low Power Mode, or at a serious or
-  critical thermal state, the dust holds still.
+  is not pinned, no movie plays and something is shown. The app then redraws at
+  most 30 times a second, and only while it is active and its window visible. In
+  Low Power Mode, or at a serious or critical thermal state, the dust holds
+  still.
 - **The dust clock.** `metal_light_air_time` 0 or more pins it to that many
   seconds (before `dust_speed`), for repeatable renders. Below 0 (the
   default), exports and a playing movie use movie time (frame N at
   (N - 1) / `movie_fps` seconds), so a movie export is repeatable; an
-  offscreen still with no movie uses time 0 (but see #688); the live view
-  uses the wall clock.
+  offscreen still with no movie uses time 0, whatever the state of a
+  multi-state object (stepping states animates the dust only when a movie is
+  defined, #688); the live view uses the wall clock. In a scene movie, a
+  change of `dust_speed` between scenes keeps the dust moving smoothly: the
+  animator writes `metal_light_air_phase` so the dust time is the speed
+  integrated over the movie.
 - The air pass runs at half resolution by default on the Mac and on iOS
   (`metal_light_air_resolution`), and the haze takes one shadow tap per step
   (`metal_light_air_shadow_filter`); see [Settings](#settings).
@@ -389,14 +412,18 @@ atmosphere off
 ### Backlit haze
 
 Haze above about 0.3 with a light behind the molecule (a rim or back light
-aimed near the camera) can wash the picture out: the air only adds light, and
-forward scattering is strongest looking into the beam. Lower the haze, move
-the light, or lower the exposure (`set metal_exposure, 0.6`): under HDR,
-exposure scales the air with the lit scene, and the molecule keeps its
-colour and contrast. The haze itself is unchanged: it still has no
-extinction (#683, open; see [Known limits](#known-limits)). With the 8-bit
-knee (`metal_light_hdr 2`), the frame clips to white instead. The app's
-Atmosphere card shows a hint while this applies.
+aimed near the camera) can still wash the picture out: forward scattering is
+strongest looking into the beam. The haze has Beer-Lambert extinction (#683):
+it dims what lies behind it by `exp(-sigma d)` (`sigma` the haze density, `d`
+the path through the air along the view ray), and the light it scatters is
+dimmed by the haze in front of it, so the haze's light is bounded and the
+molecule sits darker than its glow. The empty background is never dimmed.
+Haze 0 renders exactly as before; above 0 the molecule is darker than it was
+before #683 (an intentional look change). Lower the haze, move the light, or
+lower the exposure (`set metal_exposure, 0.6`): under HDR, exposure scales
+the air with the lit scene, and the molecule keeps its colour and contrast.
+With the 8-bit knee (`metal_light_hdr 2`), bright pixels can still reach
+white. The app's Atmosphere card shows a hint while this applies.
 
 ```pymol
 lights three_point
@@ -405,11 +432,37 @@ set metal_exposure, 0.5
 set metal_exposure, 1
 ```
 
+### Dust glow and opacity
+
+Floating dust motes have two controls beyond their size and drift speed:
+`dust_glow` and `dust_opacity` (#810).
+
+- **Dust glow.** `dust_glow` (0 to 4, default 1) scales the light a lit mote
+  adds. At 1, motes catch light with their usual brightness; at 0, glints are
+  hidden. Motes still glow only inside beams. Because mote light goes through
+  the same exposure and tone mapping as the rest of the air, high glow with
+  haze and a backlight clips sooner (see [Backlit haze](#backlit-haze)).
+- **Dust opacity.** `dust_opacity` (0 to 1, default 0) sets how solid a mote
+  is. At 0 (the default), motes are see-through glints that only add light.
+  Above 0, each mote covers what lies behind it (both scene colour and motes
+  behind, though not the haze's own light) by its coverage times `dust_opacity`
+  before its own light is added. An unlit mote reads as a faint dark speck. This
+  is the one case the dust dims a pixel, and it covers the empty background too.
+- Under an HDR rig the cover works in scene units, as the haze's extinction
+  does: it scales the light behind the mote before the tone curve. A pure
+  white background sits at the curve's white point, so a half-opaque mote
+  over it is much fainter than half grey; at 1 a mote is solid. Mid tones
+  dim roughly in proportion.
+- With `metal_light_air_alpha 1`, opaque motes count toward a transparent
+  export's alpha (`1 - cover`), over the empty background too.
+
 ## Shadows
 
 Any light can cast its own shadow (`shadow=1`, or **Shadow** in the
 inspector), in its own colour: a red light's shadow is where the red light
-does not reach.
+does not reach. A light added with `lights add` or the + button casts a
+shadow from the start while fewer than 3 lights do, whatever `metal_shadows`
+is (see below).
 
 - Each shadowed light gets its own shadow map, for the first three shadowed
   lights in rig order (a rig holds at most 3), filtered over 3x3 texels.
@@ -426,11 +479,37 @@ does not reach.
   the map size divided by the larger of the grid's columns and rows (rounded
   down), so a large grid has coarser shadows.
 - Bezier tube cartoons neither cast nor receive studio shadows (#663).
-- With `metal_raytrace 1`, what a traced reflection shows is lit by the
-  studio lights but not studio-shadowed (#664).
+- With `metal_raytrace 1`, what a traced reflection shows is lit and
+  shadowed by the studio lights (#664, #846).
 - `metal_light_shadow_size` sets each map's texels per side: 0 is the
   platform default (2048 on the Mac, 1024 on iOS); other values are clamped
   to 256 to 4096 (256 to 2048 on iOS) and rounded down to a power of two.
+
+### Soft shadows (Mac, ray tracing)
+
+A light's `size` is its source radius in scene sizes (multiples of the rig's
+`size`, like `radius`), from 0 to 1, default 0 (sharp). On a Mac with Metal ray
+tracing on (`metal_raytrace 1`), a light with `shadow` on, the scene's
+`metal_shadows` on and `size > 0` gets its shadow on opaque surfaces from
+shadow rays traced towards a disc of that radius around the light (an area
+light), instead of its shadow map. Small size: sharp shadow; large size: soft
+penumbra.
+
+- **Tracing and sample budget.** Tracing runs 8 rays per traced light per pixel
+  live at `metal_rt_scale`, and 16 rays per light in exports. Traced reflection
+  hits trace the shadowed lights too, with 1 ray per light live and 4 in exports.
+- **Denoising.** The pass uses frame-stable rotated Hammersley disc samples
+  combined with the ambient-occlusion pass's 5×5 depth-aware bilateral blur to
+  smooth penumbrae across object surfaces.
+- **Opaque casters and receivers only.** Opaque geometry casts and receives the
+  traced soft shadows. Transparent surfaces (OIT glass and jelly) and the haze
+  keep the shadow maps, and a transparent caster does not darken a traced soft
+  shadow (with `metal_rt_transparent` on, its shadow from a light of size 0
+  still comes from the map).
+- **Raster renders and iOS keep hard maps.** On iPhone and iPad, and on any
+  raster render without ray tracing, `size` has no visible effect: shadows stay
+  sharp from their shadow maps (as the iOS inspector notes). Size 0 renders
+  identically everywhere.
 
 ```pymol
 lights three_point
@@ -456,9 +535,14 @@ channel; there is no float render target.
   differently from before.
 - **No rig, a rig that is off, or `metal_light_hdr 2`:** exposure is the
   whole-frame multiplier it always was.
-- `metal_tonemap` (**Filmic tone-map** in the Scene panel's Effects) applies
-  its ACES curve after the rig's curve, at exposure 1, since the exposure is
-  already applied.
+- `metal_tonemap` (**Filmic tone-map** in the Scene panel's Effects): under
+  a rig with HDR on, ACES replaces the rig's curve T (#735). It maps the lit
+  scene in scene units, after the exposure, on the largest channel as T
+  does, so a bright highlight keeps its hue instead of going pastel; AO, the
+  cast shadow and the air use its inverse. What the rig does not light (the
+  background, labels) is left as it is, as with ACES off. Without a
+  rig, with a rig that is off, or at `metal_light_hdr 2`, ACES is the
+  whole-frame per-channel pass it always was.
 - `metal_light_hdr`: 0 is the platform default (HDR on the Mac and on iOS;
   the iOS value is provisional until #623's device run); 1 HDR; 2 the 8-bit
   soft knee, exactly as before HDR; any other value reads as 0. It is read
@@ -486,14 +570,27 @@ and [Known limits](#known-limits).
 
 ### macOS
 
-**Entering.** Choose **Enter Lights Mode** in the **Tools** menu, or
+**Entering.** Choose **Enter Lights Mode** in the **Tools** menu (⌃L), or
 **Lights** in the toolbar's tools menu. Lights mode is an interaction mode,
-like Move and Measure: entering it leaves the others.
+like Move and Measure: entering it leaves the others. PyMOL's own ⌃L, "zoom
+next ligand", is ⌃G in RayMol (#873).
 
-**The Lights bar.** It floats at the top of the viewport and shows a chip per
-light (with the light's identity colour, hollow while the light is behind
-the molecule), add and remove buttons, **Presets**, **Re-centre**, the
-**Lights on** / **Lights off** switch, **Revert** and **Done**.
+**The Inspector's Lighting group.** Outside Lights mode, the Scene
+inspector's Lighting group has a **Studio lights** switch and an **Open
+Lights tool** button (#878). The switch runs `lights on`, or `lights add`
+when the rig has no lights, and `lights off` keeps the rig. While the rig is
+on, the Ambient, Direct, Reflect and Specular rows are greyed out with a note,
+because the rig's `ambient` and `classic` replace them.
+
+**The Lights bar.** It floats at the top of the viewport. On the left, a
+light menu shows the selected light's dot and name with a chevron (#889). The
+dot is the colour the light casts, its Colour tinted by its Warmth, with a
+thin outline so a white light still reads; it is hollow while the light is
+behind the molecule. The menu picks a light, adds or removes one, toggles
+Shadow and Pin, picks a colour swatch and turns the rig on or off. Then come
+add and remove buttons, **Presets**, **Re-centre**, the **Atmosphere**
+button (see [The Atmosphere card](#the-atmosphere-card)), the **Lights on** /
+**Lights off** switch, **Revert** and **Done**.
 
 - **Re-centre** captures the centre and 1x size from the molecules again,
   as `lights recenter` does.
@@ -509,7 +606,8 @@ the inspector share it. Every edit shows in all of them, and in the
 the rig seen from above, with the camera at the bottom and +90 to the right,
 beside a pitch arc for the selected light.
 
-- Drag a lamp to change its orbit only, in 15 degree steps. A tap selects a
+- Drag a lamp to change its orbit only; it follows the pointer smoothly, to the
+  degree. VoiceOver and keyboard steps move it 15 degrees. A tap selects a
   light.
 - Drag the square on the selected light's ring, or pinch the plan, to change
   the radius only, in steps of 0.5x. The beam keeps its angle.
@@ -519,8 +617,8 @@ beside a pitch arc for the selected light.
 **The inspector.** It sits under the orbit view and holds the selected
 light's exact values: **Orbit** and **Pitch** (a dial, a field and a stepper:
 the stepper moves 5 degrees, and the Up and Down arrow keys in a field 1
-degree), sliders for **Radius**, **Intensity**, **Warmth**, **Beam** and
-**Softness**, colour swatches and a picker, the **Shadow** and **Pin**
+degree), sliders for **Radius**, **Intensity**, **Warmth**, **Beam**,
+**Softness** and **Size**, colour swatches and a picker, the **Shadow** and **Pin**
 toggles, **Revert this light** and **Delete**. A Shadow press on a fourth
 light says that at most 3 lights cast shadows; when the scene's **Shadows**
 switch is off, a hint offers **Turn On**.
@@ -533,17 +631,22 @@ molecule.
   and behind.
 - The selected light shows its beam: drag the outer ring to set the beam,
   the inner ring to set the softness, and the aim dot to re-aim the light at
-  the surface under the pointer.
+  the surface under the pointer. Double-click the aim dot (double-tap on
+  iPad and iPhone) to aim the light back at the rig centre (`lights <name>,
+  aim=centre`).
 - Scroll over a knob to change its radius.
 - Option-click the molecule to place a highlight there (the `click=`
   helper: the mirror rule, or a rim light near the outline).
 - A **Shadow** chip beside the selected knob toggles its shadow.
+- In grid mode the gizmo is drawn in the cell under the pointer (on iPad
+  and iPhone, the cell you last touched). A drag stays in the cell it began
+  in (#697).
 
 ### The Atmosphere card
 
 The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
 **Dust size** and **Dust speed**, each a slider with a typed field, and
-**Scatter (g)** under a disclosure. The dust seed is set only with
+**Scatter (g)**, **Dust glow** and **Dust opacity** under a disclosure. The dust seed is set only with
 `atmosphere seed=` (#740). Ranges and defaults are the `atmosphere` command's.
 
 - **The switch.** The card's header holds an on/off switch. Off runs
@@ -561,13 +664,13 @@ The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
   the lights off, "The air shows only while the lights are on."; and with
   haze above about 0.3 and a light behind the molecule, "Haze above about 0.3
   with a light behind the molecule can wash the picture out. Lower the haze or
-  move the light." (see [Backlit haze](#backlit-haze)). A collapsed card shows
-  the hint as a glyph in its header.
-- **Where it sits.** On macOS, a third card under the inspector in the side
-  column; it starts expanded when the air is on as you enter Lights mode. On
-  iPad, under the inspector, collapsed to its header. On iPhone, a section
-  after the inspector's rows in the sheet and in the landscape side panel; an
-  **Atmosphere** button in the sheet's header opens it. With no light, the
+  move the light." (see [Backlit haze](#backlit-haze)).
+- **Where it sits.** On macOS and iPad, a popover off the **Atmosphere**
+  button on the Lights bar (#889): the fog glyph, filled while the air is on,
+  with a dot while a hint applies. On iPhone, a section
+  after the inspector's rows in the sheet and in the landscape side panel; the
+  **Atmosphere** entry on the Lights bar reveals it (in portrait, opening the
+  editor sheet first). With no light, the
   iPhone shows a compact air-only sheet (the card's header, its hint and its
   rows), so the switch is reachable before the first light.
 
@@ -575,12 +678,19 @@ The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
 
 The light tools are placed by size class, not by device:
 
-- **iPhone (portrait), and iPad Slide Over:** a two-height sheet docked
-  under the viewport. Compact, it shows the plan beside Pitch, Intensity and
-  a Colour button; pulled up (More), the plan and the pitch arc stay pinned
-  and every inspector row scrolls below them.
+- **iPhone (portrait), and iPad Slide Over:** the Lights bar carries a
+  compact light menu in place of the chips (#885): the selected light's dot
+  and name with a chevron. The menu picks a light, adds or removes one,
+  toggles Shadow and Pin, picks a colour swatch, turns the rig on or off, and
+  opens the full editor with **Edit light…**. The editor is a two-height
+  sheet under the viewport with a Close button: compact, it shows the plan
+  beside Pitch, Intensity and a Colour button; pulled up (More), the plan and
+  the pitch arc stay pinned and every inspector row scrolls below them. With
+  the editor closed the molecule stays fully visible.
 - **iPhone in landscape:** the same tools in the trailing side panel.
-- **iPad:** the orbit view floats over the viewport in a corner
+- **iPad:** the Lights bar carries the same light menu, without **Edit
+  light…** (the inspector is always on screen), and the **Atmosphere** button,
+  as on the Mac (#889). The orbit view floats over the viewport in a corner
   (bottom-leading by default; drag its header to move it to another corner,
   which is remembered), and the inspector sits at the top trailing corner,
   starting collapsed to its header.
@@ -614,8 +724,7 @@ iOS](#performance-and-ios).
   outline, anchor, aim and the rig's on/off switch change at the cut.
 - **Limits.** The loop-wrap of a looping movie, from the last scene back to
   the first, does not blend the rig (#656). Recalling a scene with animation
-  in the live view switches the rig at once while the camera moves (#661).
-  The dust jumps when `dust_speed` differs between two scenes (#687).
+  blends the rig with the camera (dust speed changes when the move ends, #661).
 
 ```pymol
 lights three_point
@@ -649,9 +758,10 @@ When it traces an image while the rig is on, it prints one line per command:
 - In the app, image exports render with Metal, so they keep the studio look,
   including **Ray-traced (AO + shadows)** (Metal ray tracing), and so does a
   `png` typed in the app's console without `ray=1`.
-- The MCP `capture_viewport` tool renders with the CPU ray tracer, so its
-  image has no studio lights; while the rig is on it adds a `Note:` with the
-  notice after the image (#643).
+- The MCP `capture_viewport` tool renders with Metal in the app too (#643), so
+  its image keeps the studio look. In a session with no Metal view it falls
+  back to the CPU ray tracer and, while the rig is on, adds a `Note:` with
+  the notice after the image.
 
 ```text
 lights three_point
@@ -671,12 +781,14 @@ until #623's device run.
 | `metal_light_shadow_size` | Texels per side of each studio shadow map. Other values are clamped to 256 to 4096 (256 to 2048 on iOS) and rounded down to a power of two. | `0`: 2048 on the Mac, 1024 on iOS | no |
 | `metal_light_air_resolution` | The air pass's resolution: 1 full, 2 half; anything else reads as 0. | `0`: half on the Mac, half on iOS | no |
 | `metal_light_air_time` | Below 0 the dust follows its clock; 0 or more pins the clock to that many seconds, for repeatable renders. | `-1` | no |
+| `metal_light_air_phase` | Seconds added to the dust time while the movie clock drives the dust, so `dust_speed` changes between scenes do not jump; written per frame by the scene-movie animator. | `0` | no |
 | `metal_light_air_shadow_filter` | The haze's shadow lookup per step: 1 one tap, 2 the 3x3 lookup; anything else reads as 0. Dust motes always use the 3x3. | `0`: one tap on the Mac, one tap on iOS | no |
+| `metal_light_air_alpha` | Whether the air counts toward alpha in a transparent-background export: 1 on, so haze and dust over empty background stay in the PNG; anything else is off and the matte is depth only, which cuts the air out there. | `0`: off | no |
 | `metal_light_hdr` | The rig's colour: 1 HDR (exposure and a hue-preserving tone curve), 2 the 8-bit soft knee as before HDR; anything else reads as 0. | `0`: HDR on the Mac, HDR on iOS | no |
 | `metal_gpu_timing` | Debug readout of GPU frame times: 0 off, 1 a summary about once a second, 2 every frame (see [Performance and iOS](#performance-and-ios)). | `0` | no |
 | `metal_shadows` | The scene's Shadows switch; studio shadows need it on. | `on` | yes |
 | `metal_exposure` | Exposure: under a rig with HDR, it scales the lit scene and the air; otherwise the whole frame. | `1` | yes |
-| `metal_tonemap` | The filmic (ACES) tone curve, after the rig's own. | `off` | yes |
+| `metal_tonemap` | The filmic (ACES) tone curve: under a rig with HDR it is the rig's curve, in scene units (#735); otherwise a whole-frame pass. | `off` | yes |
 
 The `metal_light_*` settings and `metal_gpu_timing` are read only while they
 matter (a rig on, a shadowed light, the air drawn) and are not part of a
@@ -711,6 +823,7 @@ the statistics afresh.
 - `metal_light_air_shadow_filter` (1, one tap);
 - `metal_light_hdr 2` (the 8-bit knee);
 - fewer shadowed lights.
+- Traced soft shadows (`size > 0`, #741) run on RT-capable Macs only; size 0 costs nothing, and iOS keeps the shadow maps.
 
 **Launch switches.** For calibrating the dust's redraw rate, the app reads
 two environment variables once at launch:
@@ -727,47 +840,32 @@ The iOS defaults (1024 shadow maps, half-resolution air, one tap, HDR on,
 
 Open follow-ups of the lighting work (#610) that you may notice:
 
-- **Shadows.** Bezier tube cartoons neither cast nor receive studio shadows
-  (#663). Traced reflection hits are not studio-shadowed (#664) and take the
-  `default` material's light response (#709). Shadows have one softness, set
-  by the 3x3 filter; soft shadows from a light's size are planned (#741,
-  #742).
-- **Overlays.** The Lights-mode overlays never cast, but the Move gizmo and
-  gadgets still enter PyMOL's classic Metal shadow pre-pass and the
-  ray-tracing structure (#662), and a rig created while the Move gizmo is
-  shown frames it too (#669). The frame also counts enabled objects whose
-  representations are all hidden (#690).
-- **The air.** The haze only adds light (it has no extinction), so haze
-  above about 0.3 with a light behind the molecule washes the picture out;
-  lower the exposure, the haze or the light (#683, see [Backlit
-  haze](#backlit-haze)). No air in grid mode (#686). Transparent-background
-  exports drop the air over the empty background (#684). Animated dust
-  redraws the whole scene on every tick (#685). An offscreen still of a
-  multi-state object with no movie takes its dust time from the state
-  (#688). The dust jumps when `dust_speed` is blended across scenes (#687).
-  The dust seed has no control in the Atmosphere card (#740).
-- **Materials and HDR.** The studio diffuse lights a material's plain base
-  colour, not its procedural pattern (#710). Glass glints on sphere impostors
-  do not show (#713). The materials' own classic terms pass their 8-bit knee
-  before the rig's curve (#731); the traced rig composite keeps some classic
-  terms in display units (#729); ambient occlusion is composited after the
-  tone curve (#732). Bloom, EDR output, 16-bit export and ACES in scene units
-  are not done (#735). Measurement dashes take the rig's lighting (#738).
-- **Scenes and movies.** The loop-wrap of a looping movie (#656) and an
-  animated scene recall in the live view (#661) do not blend the rig.
-- **Placement.** A highlight placed on a small patch can fit the beam to a
-  few degrees (#723); set `beam=` to widen it.
-- **The app.** The gizmo's ring handles can land off-screen or under the bars
-  (#693). A plain click in Lights mode still picks atoms (#696). The gizmo is
-  not projected per cell in grid mode (#697). On iPad, an open camera dock can
-  lift the orbit card onto the key knob (#718), and typing in the inspector
-  can resize the viewport (#725). On iOS, the inspector's Orbit and Pitch
-  steppers are under 44 pt (#720), and on small rings the 44 pt ring band
-  covers the whole interior (#721). The Scene panel's Exposure help text does
-  not say what exposure scales under a rig (#733).
-- **Exports and MCP.** The MCP `capture_viewport` tool renders with the CPU
-  ray tracer, without the studio look (#643). Metal exports do not draw ramp
-  gadgets or `bg_gradient` (#689).
+- **Shadows.** On iOS and raster renders, shadows have one softness, set by
+  the 3x3 filter; traced soft shadows are Mac RT-only (#741).
+- **The air.** The haze has Beer-Lambert extinction (#683): it dims the
+  molecule behind it by `exp(-sigma d)` and the light it scatters is dimmed by
+  the haze in front of it, so the in-scattered light is bounded and the molecule
+  keeps contrast against the background; the empty background is never dimmed.
+  At haze above 0 the molecule is darker than before #683 (intentional look
+  change; haze 0 renders exactly as before). Strong backlit haze can still
+  brighten the frame; lower the exposure, the haze or the light (see [Backlit
+  haze](#backlit-haze)). The extinction reads the opaque depth only:
+  a transparent surface over the empty background is not dimmed, and one
+  over opaque geometry is dimmed with the geometry behind it (#683).
+  Transparent-background exports drop the air over the empty background
+  unless `metal_light_air_alpha` is on (#684).
+- **HDR.** Bloom (#859), EDR output (#860) and 16-bit export (#861) are not
+  planned for this release.
+- **Measurement dashes are lit (#738).** Distance, angle and dihedral dashes
+  are cylinder geometry, so under a rig they take its lighting like sticks
+  do, not display-referred like labels and lines (owner decision). A
+  pure-green dash reads as a lit green, not (0, 255, 0). With
+  `dash_as_cylinders` or `render_as_cylinders` off they are lines and stay
+  unlit.
+- **Placement.** A highlight fitted to a small patch keeps a beam of at least
+  20 degrees (#723); set `beam=` to change it.
+- **The app.** On iOS, on small rings the 44 pt ring band covers the whole
+  interior (#721).
 
 ## Regenerating the gallery
 
@@ -817,3 +915,10 @@ differ fails, which catches a command the renderer ignored. Nothing judged by
 eye is automated. The exit code is 0 when every requested image rendered and
 every check passed, 1 when an image or a check failed, and 2 for a refusal
 or a usage error. The images are never committed.
+
+The air's pixel checks (`scripts/lighting/check_air.py l2 DIR`, on the
+harness's renders of `scripts/lighting/scenes/lighting_618.json`) are frozen
+on one reference machine (#858): a Mac mini (Mac16,10, Apple M4, 24 GB) on
+macOS 27.0.1 with Xcode 27.1, at master 51beba79a. Its `rt_match` and `reach`
+rows move with the GPU, so re-render on that machine before re-freezing a
+threshold; `check_air.py`'s header has the details.

@@ -850,8 +850,9 @@ pymol::Result<ExecutiveRMSInfo> ExecutiveFit(PyMOLGlobals* G,
     int cycles, int quiet, pymol::zstring_view object, int state1, int state2,
     int matchmaker);
 
-#ifdef _PYMOL_LIB
 int* ExecutiveGetRepsInSceneForObject(PyMOLGlobals* G, const char* name);
+
+#ifdef _PYMOL_LIB
 int* ExecutiveGetRepsForObject(PyMOLGlobals* G, const char* name);
 #endif
 

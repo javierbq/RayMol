@@ -343,30 +343,386 @@ final class AppShortcutsTests: XCTestCase {
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.predictTool), "⌃P")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.binderDesignTool), "⌃B")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.boxSelect), "⌃S")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.lightsTool), "⌃L")  // #873
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.consolePane), "⌘1")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sequencePane), "⌘2")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sidePanel), "⌘3")
         XCTAssertEqual(
             AppShortcuts.hint(KeyboardShortcut("k", modifiers: [.command, .shift, .option, .control])),
             "⌃⌥⇧⌘K")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.openFile), "⌘O")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.fetchPDB), "⇧⌘O")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.saveSession), "⌘S")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.saveSessionAs), "⇧⌘S")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.exportImage), "⇧⌘E")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.copyImage), "⌘C")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.editTimeline), "⌥⌘M")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.insertNoteViewLink), "⌥⌘L")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.toggleNotePreview), "⌥⌘P")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.increaseNoteFontSize), "⌥⌘+")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.decreaseNoteFontSize), "⌥⌘-")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.aiControl), "⌃⌘M")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.keyboardShortcuts), "⌘/")
     }
 
-    /// Every ⌃-letter shortcut must be mirrored in the Python launch audit
+    /// Every ⌃ shortcut without ⌘ must be mirrored in the Python launch audit
     /// (modules/pymol/raymol_keys.py APP_SHORTCUTS), which warns when a
     /// ~/.raymolrc binding shadows a menu command. Pin the set here so a new ⌃
-    /// entry fails this test until the audit table learns it. ⌘ entries need no
-    /// mirror — KeyRouting passes ⌘ straight through to the menus.
+    /// (or ⌃⇧) entry fails this test until the audit table learns it. Entries
+    /// carrying ⌘ (including ⌃⌘M) need no mirror — KeyRouting passes ⌘ straight
+    /// through to the menus.
     func testControlShortcutsMatchPythonAuditTable() {
-        let ctrl = AppShortcuts.all.filter { $0.modifiers.contains(.control) }
+        let ctrl = AppShortcuts.all.filter {
+            $0.modifiers.contains(.control) && !$0.modifiers.contains(.command)
+        }
         XCTAssertEqual(Set(ctrl.map { String($0.key.character) }),
-                       ["m", "e", "d", "p", "b", "s"])
+                       ["m", "e", "d", "p", "b", "s", "l"])
     }
 
     /// The pane toggles are one plain-⌘ family (#361): immune to raymolrc
     /// shadowing, and consistent with each other as the issue asks.
     func testPaneTogglesAreCommandFamily() {
         for s in [AppShortcuts.consolePane, AppShortcuts.sequencePane, AppShortcuts.sidePanel] {
-            XCTAssertEqual(s.modifiers, .command)
+            XCTAssertEqual(s.shortcut.modifiers, .command)
         }
+    }
+
+    /// Every .swift file under swiftui/PyMOLViewer as (file name, text), with
+    /// comment lines blanked (line numbers kept) so a doc comment quoting a
+    /// shortcut cannot count as a registration.
+    private func appSources() throws -> [(file: String, text: String)] {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()          // PyMOLViewerTests
+            .deletingLastPathComponent()          // swiftui
+            .appendingPathComponent("PyMOLViewer")
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
+                                                   options: [.skipsHiddenFiles])
+        var out: [(file: String, text: String)] = []
+        while let url = files?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            let lines = try String(contentsOf: url, encoding: .utf8)
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : $0 }
+            out.append((url.lastPathComponent, lines.joined(separator: "\n")))
+        }
+        return out
+    }
+
+    /// The cheat sheet (#368) is only complete if no shortcut is registered
+    /// around the table: every `.keyboardShortcut(` in the app takes an
+    /// `AppShortcuts` case (dialog Return/Esc buttons and the rail tongue's
+    /// forwarded case excepted), and nothing outside PyMOLApp.swift builds a
+    /// `KeyboardShortcut` of its own. The regex runs over whole files, so a
+    /// call split across lines is still checked.
+    func testEveryShortcutInTheAppComesFromTheTable() throws {
+        let regex = try NSRegularExpression(pattern: #"\.keyboardShortcut\(([^)]*)\)"#)
+        var calls = 0
+        for (file, text) in try appSources() {
+            func lineOf(_ range: NSRange) -> Int {
+                (text as NSString).substring(to: range.location)
+                    .components(separatedBy: "\n").count
+            }
+            if file != "PyMOLApp.swift" {
+                let ctor = (text as NSString).range(of: "KeyboardShortcut(")
+                XCTAssertEqual(ctor.location, NSNotFound,
+                               "\(file):\(lineOf(ctor)) constructs a KeyboardShortcut outside AppShortcuts")
+            }
+            let all = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, range: all) {
+                calls += 1
+                guard let r = Range(match.range(at: 1), in: text) else { continue }
+                let arg = text[r].trimmingCharacters(in: .whitespacesAndNewlines)
+                // The one forwarded case: railTongue's `shortcut: AppShortcuts?`.
+                let forwarded = file == "ContentView.swift" && arg == "shortcut?.shortcut"
+                XCTAssertTrue(arg.hasPrefix("AppShortcuts.") || forwarded
+                              || [".cancelAction", ".defaultAction"].contains(arg),
+                              "\(file):\(lineOf(match.range)) registers a shortcut outside AppShortcuts: \(arg)")
+            }
+        }
+        // A wrong path would scan nothing and pass; there are 30+ calls today.
+        XCTAssertGreaterThanOrEqual(calls, 20)
+    }
+
+    /// The reverse direction: a table entry no call site registers would put a
+    /// dead key on the sheet.
+    func testEveryTableEntryIsRegistered() throws {
+        let source = try appSources().map(\.text).joined(separator: "\n")
+        for c in AppShortcuts.allCases {
+            let call = ".keyboardShortcut(AppShortcuts.\(c))"
+            XCTAssertTrue(source.contains(call), "No call site registers \(call)")
+        }
+    }
+
+    /// The sheet renders every entry exactly once, in its group, groups in
+    /// `Section` order, with the viewport keys last.
+    func testSheetListsEveryEntryGrouped() {
+        let sections = AppShortcuts.sheetSections(includeUnavailable: true)
+        XCTAssertEqual(
+            sections.map(\.title),
+            AppShortcuts.Section.allCases.map(\.title) + [AppShortcuts.viewportSectionTitle]
+        )
+
+        let nonViewportRows = sections.dropLast().flatMap(\.rows)
+        let expectedRows = AppShortcuts.allCases.map {
+            ShortcutSheetRow(keys: AppShortcuts.hint($0), title: $0.title)
+        }
+        XCTAssertEqual(nonViewportRows, expectedRows)
+
+        for c in AppShortcuts.allCases {
+            guard let section = sections.first(where: { $0.title == c.section.title }) else {
+                XCTFail("Missing section for \(c.section.title)")
+                continue
+            }
+            XCTAssertTrue(
+                section.rows.contains(where: { $0.title == c.title }),
+                "Section \(section.title) does not contain row \(c.title)"
+            )
+        }
+
+        guard let lastSection = sections.last else {
+            XCTFail("No sections in sheetSections")
+            return
+        }
+        XCTAssertEqual(lastSection.rows, AppShortcuts.viewportKeys)
+        let keys = Set(lastSection.rows.map(\.keys))
+        XCTAssertTrue(keys.contains("Esc"))
+        XCTAssertTrue(keys.contains("⇥"))
+        XCTAssertTrue(keys.contains("⇧⇥"))
+    }
+
+    /// Outside tests the sheet hides what this build does not register (⌃D
+    /// without RAYMOL_MPNN, ⌃B without the experimental flag, ⌃⌘M on MAS).
+    func testSheetShowsOnlyAvailableEntries() {
+        let defaultSections = AppShortcuts.sheetSections()
+        let nonViewportRows = defaultSections.dropLast().flatMap(\.rows)
+        let expectedRows = AppShortcuts.allCases.filter(\.isAvailable).map {
+            ShortcutSheetRow(keys: AppShortcuts.hint($0), title: $0.title)
+        }
+        XCTAssertEqual(nonViewportRows, expectedRows)
+        XCTAssertEqual(KeyboardShortcutsView().sections, AppShortcuts.sheetSections())
+    }
+
+    /// ⌘/ is unused elsewhere in the table, is not the system Help-search key
+    /// (⇧⌘/ i.e. ⌘?), and as a ⌘ chord is never routed to a set_key binding.
+    func testCheatSheetShortcutIsFree() {
+        XCTAssertEqual(AppShortcuts.keyboardShortcuts.shortcut, KeyboardShortcut("/", modifiers: .command))
+        for c in AppShortcuts.allCases where c != .keyboardShortcuts {
+            XCTAssertNotEqual(c.shortcut.key.character, "/", "Case \(c) also uses key /")
+        }
+        XCTAssertNotEqual(AppShortcuts.keyboardShortcuts.shortcut, KeyboardShortcut("?", modifiers: .command))
+        XCTAssertNotEqual(AppShortcuts.keyboardShortcuts.shortcut, KeyboardShortcut("/", modifiers: [.command, .shift]))
+        XCTAssertNil(KeyRouting.token(keyCode: 44, charactersIgnoringModifiers: "/", modifiers: .command, textFieldFocused: false, textEditingActive: false))
+    }
+
+    /// Help ▸ Keyboard Shortcuts opens one reusable NSPanel hosting the sheet
+    /// view (an NSPanel is what ContentView's key monitors yield Esc to), and
+    /// Esc closes it. Not a visual check: it only proves the window plumbing.
+    @MainActor
+    func testPanelShowsReusesAndClosesOnEsc() throws {
+        KeyboardShortcutsPanel.show()
+        let panel = try XCTUnwrap(KeyboardShortcutsPanel.panel)
+        defer { panel.close() }
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertEqual(panel.title, "Keyboard Shortcuts")
+        XCTAssertTrue(panel.contentViewController is NSHostingController<KeyboardShortcutsView>)
+
+        // A real Esc key-down through the panel's event path, not a direct
+        // cancelOperation call: the hosted SwiftUI view is first responder.
+        let esc = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        panel.sendEvent(esc)
+        XCTAssertFalse(panel.isVisible, "Esc should close the panel")
+
+        KeyboardShortcutsPanel.show()
+        XCTAssertTrue(KeyboardShortcutsPanel.panel === panel, "the panel is reused, not rebuilt")
+        XCTAssertTrue(panel.isVisible)
+    }
+}
+
+/// KeyRouting.lightNudge: the arrows that nudge the selected light (#700).
+final class LightNudgeRoutingTests: XCTestCase {
+    private func nudge(_ key: UInt16, _ mods: NSEvent.ModifierFlags = [],
+                       lights: Bool = true, selected: Bool = true,
+                       text: Bool = false) -> LightNudge? {
+        KeyRouting.lightNudge(keyCode: key, modifiers: mods, lightsMode: lights,
+                              lightSelected: selected, textFieldFocused: text)
+    }
+
+    func testArrowsMapToOrbitAndPitch() {
+        let table: [(UInt16, LightParameter, Double)] = [
+            (123, .orbit, -1), (124, .orbit, 1), (125, .pitch, -1), (126, .pitch, 1),
+        ]
+        for (key, parameter, sign) in table {
+            XCTAssertEqual(nudge(key), LightNudge(parameter: parameter, delta: sign * 1))
+            XCTAssertEqual(nudge(key, .shift), LightNudge(parameter: parameter, delta: sign * 10))
+        }
+    }
+
+    func testArrowFunctionAndNumericPadFlagsStillNudge() {
+        let arrow: NSEvent.ModifierFlags = [.function, .numericPad]
+        XCTAssertEqual(nudge(124, arrow), LightNudge(parameter: .orbit, delta: 1))
+        XCTAssertEqual(nudge(126, arrow.union(.shift)), LightNudge(parameter: .pitch, delta: 10))
+    }
+
+    func testNotLightsModeNoSelectionOrTextFieldIsNil() {
+        XCTAssertNil(nudge(124, lights: false))
+        XCTAssertNil(nudge(124, selected: false))
+        XCTAssertNil(nudge(124, text: true))
+    }
+
+    func testCommandControlOptionAreNotNudges() {
+        XCTAssertNil(nudge(124, .command))
+        XCTAssertNil(nudge(124, .control))
+        XCTAssertNil(nudge(124, .option))
+        XCTAssertNil(nudge(124, [.option, .shift]))
+    }
+
+    func testNonArrowKeysAreNil() {
+        for key: UInt16 in [116, 0, 53, 48] { XCTAssertNil(nudge(key)) }
+    }
+}
+
+/// "Send Key Bindings to Viewport While Typing" (#261): the toggle × focus ×
+/// user-bound matrix for the ALT-/CTSH- combos that Tier A otherwise yields to
+/// the focused command line. Pure routing only: no real key was pressed and no
+/// engine was consulted (the isUserBound answer is injected).
+final class KeyRoutingViewportKeysWhileTypingTests: XCTestCase {
+
+    private enum Combo: CaseIterable {
+        case altLetter, altDigit, ctshLetter
+
+        var keyCode: UInt16 { switch self { case .altLetter: return 0   // A
+                                            case .altDigit: return 18   // 1
+                                            case .ctshLetter: return 0 } }
+        var chars: String { switch self { case .altLetter: return "a"
+                                          case .altDigit: return "1"
+                                          case .ctshLetter: return "a" } }
+        var mods: NSEvent.ModifierFlags { switch self { case .altLetter, .altDigit: return [.option]
+                                                        case .ctshLetter: return [.control, .shift] } }
+        var token: String { switch self { case .altLetter: return "ALT-A"
+                                          case .altDigit: return "ALT-1"
+                                          case .ctshLetter: return "CTSH-A" } }
+    }
+
+    /// Routes `combo`; `userBound` stands in for the engine's answer and every
+    /// token the router asks about is recorded in `asked`.
+    private func route(_ combo: Combo, toggle: Bool, focused: Bool, userBound: Bool,
+                       editing: Bool = false, asked: UnsafeMutablePointer<[String]>? = nil) -> String? {
+        var seen: [String] = []
+        let result = KeyRouting.token(
+            keyCode: combo.keyCode, charactersIgnoringModifiers: combo.chars,
+            modifiers: combo.mods, textFieldFocused: focused || editing,
+            textEditingActive: editing, viewportKeysWhileTyping: toggle,
+            isUserBound: { seen.append($0); return userBound })
+        asked?.pointee = seen
+        return result
+    }
+
+    /// Every cell of toggle × focused × user-bound × modifier class.
+    func testFullMatrix() {
+        for combo in Combo.allCases {
+            for toggle in [false, true] {
+                for focused in [false, true] {
+                    for bound in [false, true] {
+                        // Only one cell is stolen from the text field: toggle on,
+                        // field focused, and a user-defined binding. Everywhere else
+                        // the old rule stands: an unfocused field always routes,
+                        // a focused one always yields.
+                        let expected: String? = (!focused || (toggle && bound)) ? combo.token : nil
+                        XCTAssertEqual(
+                            route(combo, toggle: toggle, focused: focused, userBound: bound),
+                            expected,
+                            "\(combo) toggle=\(toggle) focused=\(focused) userBound=\(bound)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// An empty focused field and a field mid-edit behave the same for Tier A.
+    func testEditingFieldBehavesLikeFocusedField() {
+        for combo in Combo.allCases {
+            XCTAssertEqual(route(combo, toggle: true, focused: true, userBound: true, editing: true),
+                           combo.token)
+            XCTAssertNil(route(combo, toggle: true, focused: true, userBound: false, editing: true))
+            XCTAssertNil(route(combo, toggle: false, focused: true, userBound: true, editing: true))
+        }
+    }
+
+    /// The default (no toggle argument) is the pre-#261 behaviour.
+    func testDefaultsKeepTheOldYield() {
+        for combo in Combo.allCases {
+            XCTAssertNil(KeyRouting.token(
+                keyCode: combo.keyCode, charactersIgnoringModifiers: combo.chars,
+                modifiers: combo.mods, textFieldFocused: true, textEditingActive: false))
+        }
+    }
+
+    /// The router asks about the exact canonical token, and only when it matters:
+    /// toggle on, field focused. Ordinary typing never reaches the engine.
+    func testBindingTableIsAskedLazilyAboutTheCanonicalToken() {
+        for combo in Combo.allCases {
+            var asked: [String] = []
+            _ = route(combo, toggle: true, focused: true, userBound: false, asked: &asked)
+            XCTAssertEqual(asked, [combo.token])
+            _ = route(combo, toggle: false, focused: true, userBound: true, asked: &asked)
+            XCTAssertEqual(asked, [], "toggle off must not consult the binding table")
+            _ = route(combo, toggle: true, focused: false, userBound: true, asked: &asked)
+            XCTAssertEqual(asked, [], "an unfocused field needs no table lookup")
+        }
+        // Plain typing (no modifiers) never asks either.
+        var asked: [String] = []
+        _ = KeyRouting.token(keyCode: 0, charactersIgnoringModifiers: "a", modifiers: [],
+                             textFieldFocused: true, textEditingActive: true,
+                             viewportKeysWhileTyping: true,
+                             isUserBound: { asked.append($0); return true })
+        XCTAssertEqual(asked, [])
+    }
+
+    /// Text-editing shortcuts keep working with the toggle on, even when the
+    /// user has bound the same token: Tier B is unaffected.
+    func testTextEditingChordsStillYieldWithToggleOn() {
+        func tok(_ keyCode: UInt16, _ chars: String?, _ mods: NSEvent.ModifierFlags) -> String? {
+            KeyRouting.token(keyCode: keyCode, charactersIgnoringModifiers: chars,
+                             modifiers: mods, textFieldFocused: true, textEditingActive: true,
+                             viewportKeysWhileTyping: true, isUserBound: { _ in true })
+        }
+        XCTAssertNil(tok(123, nil, [.option]))            // ⌥← word-left
+        XCTAssertNil(tok(124, nil, [.option]))            // ⌥→ word-right
+        XCTAssertNil(tok(123, nil, [.shift]))             // ⇧← extend selection
+        XCTAssertNil(tok(115, nil, [.shift]))             // ⇧Home
+        XCTAssertNil(tok(0, "a", [.control]))             // ⌃A begin of line
+        XCTAssertNil(tok(14, "e", [.control]))            // ⌃E end of line
+        XCTAssertNil(tok(40, "k", [.control]))            // ⌃K kill line
+    }
+
+    /// Option+Shift and Control+Option letters have no token at all, so the
+    /// toggle never makes them fire, bound or not.
+    func testUnrepresentableCombosStayNilWithToggleOn() {
+        for mods: NSEvent.ModifierFlags in [[.option, .shift], [.control, .option]] {
+            XCTAssertNil(KeyRouting.token(
+                keyCode: 0, charactersIgnoringModifiers: "a", modifiers: mods,
+                textFieldFocused: true, textEditingActive: false,
+                viewportKeysWhileTyping: true, isUserBound: { _ in true }))
+        }
+    }
+
+    /// ⌘ still belongs to the menus.
+    func testCommandStillPassesThroughWithToggleOn() {
+        XCTAssertNil(KeyRouting.token(
+            keyCode: 0, charactersIgnoringModifiers: "a", modifiers: [.option, .command],
+            textFieldFocused: true, textEditingActive: false,
+            viewportKeysWhileTyping: true, isUserBound: { _ in true }))
+    }
+
+    /// The persisted key the menu Toggle, the monitor and the audit share, and
+    /// that an absent key reads as off.
+    func testPreferenceKeyDefaultsToOff() {
+        XCTAssertEqual(KeyRouting.viewportKeysWhileTypingKey, "raymol.keys.viewportWhileTyping")
+        let suite = UserDefaults(suiteName: "KeyRoutingViewportKeysTests")!
+        suite.removePersistentDomain(forName: "KeyRoutingViewportKeysTests")
+        XCTAssertFalse(suite.bool(forKey: KeyRouting.viewportKeysWhileTypingKey))
     }
 }

@@ -49,9 +49,12 @@ from pymol import testing
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, os.pardir))
 METAL_MM = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.mm')
+METAL_H = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.h')
 SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 BLOCK_H = os.path.join(ROOT, 'layer1', 'LightRigBlock.h')
 SHADING_H = os.path.join(ROOT, 'layer1', 'LightShading.h')
+DIST_DASH = os.path.join(ROOT, 'layer2', 'RepDistDash.cpp')
+CGO_GL = os.path.join(ROOT, 'layer1', 'CGOGL.cpp')
 
 
 def _load_shader_sources():
@@ -70,19 +73,34 @@ _sources = _load_shader_sources()
 shader_literals = _sources.shader_literals
 strip_comments = _sources._strip_comments
 
+# Finite bit tests that fast math cannot fold (#739), in kMaterialSrc and
+# copied into kRTSrc.
+FINITE_HELPERS = ('light_finite', 'light_finite3')
 # HDR colour's tone helpers (#624), in kMaterialSrc and copied into kRTSrc.
 TONE_HELPERS = ('light_tone_scalar', 'light_tone_scalar_inverse', 'light_tone',
                 'light_tone_inverse')
+# ACES curve helpers (#735), in kMaterialSrc and copied into kRTSrc and kPostSrc.
+ACES_HELPERS = ('light_aces_scalar', 'light_aces_scalar_inverse', 'light_aces',
+                'light_aces_inverse', 'light_curve_scalar', 'light_curve',
+                'light_curve_inverse')
 # Every helper of the light block, in kMaterialSrc.
 HELPERS = ('light_response_neutral', 'light_response', 'light_visibility',
-           'light_terms_view', 'light_terms') + TONE_HELPERS + (
+           'light_terms_view', 'light_terms') + FINITE_HELPERS + (
+           TONE_HELPERS) + ACES_HELPERS + (
            'light_finish', 'light_outline', 'light_apply', 'light_glass_glints',
            'light_glass_cover')
 # The ray tracer's copies (kRTSrc cannot take kMaterialSrc): the structs, and
 # the helpers its reflection hits need. No light_outline (overlays never
-# enter ray tracing), no light_apply, no light_response (needs MaterialU).
+# enter ray tracing), no light_apply, no light_response (needs MaterialU;
+# #709 uses rt_hit_response from the per-occurrence material table instead).
+# #664 adds verbatim copies of light_shadow_lookup, light_visibility_shadowed
+# and light_terms_view_shadowed.
 RT_COPIES = ('light_response_neutral', 'light_visibility', 'light_terms_view',
-             'mat_soft_knee') + TONE_HELPERS + ('light_finish',)
+             'light_shadow_lookup', 'light_visibility_shadowed',
+             'light_terms_view_shadowed',
+             'mat_soft_knee', 'mat_glass_cover', 'mat_hash', 'mat_noise',
+             'mat_fbm', 'mat_turb', 'mat_octave_fade',
+             'light_glass_glints', 'light_glass_cover') + FINITE_HELPERS + TONE_HELPERS + ACES_HELPERS + ('light_finish',)
 # The function constants a light helper may read (#624): kLightHdr alone,
 # through light_finish, light_glass_glints and light_glass_cover's helpers.
 # Every library function that reaches it comes from a specialiser that sets
@@ -109,12 +127,13 @@ EXPECTED_RIG_FRAGMENTS = {
                              'cyl_impostor_fragment_oit'},
 }
 # The impostors' rig helpers: (library, rig copy, classic helper, the base
-# colour light_apply takes).
+# albedo light_apply takes, mat_impostor_rig_albedo, #710).
 IMPOSTOR_RIG_HELPERS = (
+    # #710: the rig lights the material's albedo (mat_impostor_rig_albedo)
     ('kSphereImpostorSrc', 'sphere_shade_material_rig', 'sphere_shade_material',
-     'in.color.rgb'),
+     'mat_impostor_rig_albedo(in.color.rgb, n, pt, mat)'),
     ('kCylinderImpostorSrc', 'cyl_shade_material_rig', 'cyl_shade_material',
-     'base'),
+     'mat_impostor_rig_albedo(base, n, pt, mat)'),
 )
 # A fragment shades colour with the classic lights when it calls one of these.
 LIT_MARKERS = ('vbo_material_shade', 'sphere_shade_material',
@@ -322,7 +341,8 @@ class TestLightBlock(LightMSLCase):
         # helpers; it must not carry its own)
         self.assertIn('kBezierTubeRigSrc', self.msl)
         # (kRTSrc carries copies, which TestRayTracedReflections pins as
-        # verbatim)
+        # verbatim; #732: kPostSrc carries verbatim copies of FINITE_HELPERS
+        # and TONE_HELPERS for HDR AO, which lighting_hdr_msl.py pins)
         for name, literal in self.msl.items():
             if name in ('kMaterialSrc', 'kRTSrc'):
                 continue
@@ -331,8 +351,13 @@ class TestLightBlock(LightMSLCase):
             for struct in STRUCTS:
                 self.assertNotRegex(code, r'\bstruct\s+%s\b' % struct, name)
             for fn in msl_functions(literal):
+                if name == 'kPostSrc' and fn in FINITE_HELPERS + TONE_HELPERS + ACES_HELPERS:
+                    continue
                 self.assertFalse(fn.startswith('light_'),
                                  '%s defines %s' % (name, fn))
+        post = [fn for fn in msl_functions(self.msl['kPostSrc'])
+                if fn.startswith('light_')]
+        self.assertEqual(sorted(post), sorted(FINITE_HELPERS + TONE_HELPERS + ACES_HELPERS))
         rt = [fn for fn in msl_functions(self.msl['kRTSrc'])
               if fn.startswith('light_')]
         self.assertEqual(sorted(rt), sorted(c for c in RT_COPIES
@@ -352,13 +377,14 @@ class TestLightBlock(LightMSLCase):
                                 '%s binds something other than the rig at '
                                 'buffer(9): %r' % (lib, m.group(0).strip()))
         # The tube's rig library: buffer(9) is the rig, as a plain argument,
-        # and it declares no function constant of its own. The classic tube
-        # uses neither.
+        # in the rig fragment and its studio-shadow copy (#663), and it declares
+        # no function constant of its own. The classic tube uses neither.
         code = strip_comments(self.msl['kBezierTubeRigSrc'])
         self.assertNotIn('function_constant', code)
         nines = re.findall(r'[^\n,(]*\[\[\s*buffer\(9\)[^\]]*\]\]', code)
-        self.assertEqual(len(nines), 1, nines)
-        self.assertRegex(nines[0], TUBE_RIG_ARGUMENT)
+        self.assertEqual(len(nines), 2, nines)
+        for arg in nines:
+            self.assertRegex(arg, TUBE_RIG_ARGUMENT)
         code = strip_comments(self.msl['kBezierTubeSrc'])
         self.assertNotIn('function_constant', code)
         self.assertNotRegex(code, r'buffer\(9\)')
@@ -432,7 +458,8 @@ class TestLightBlock(LightMSLCase):
                 # Blinn-Phong in the light's colour, at the light's own
                 # highlight strength times the material's
                 'constfloat3H=Ld+V;',
-                't.specular+=rad*(rig.L[i].misc.x*r.highlight*pow(saturate(dot(N,normalize(H))),shin));',
+                'constfloatndh=saturate(dot(N,normalize(H)));',  # #712
+                't.specular+=rad*(rig.L[i].misc.x*r.highlight*pow(ndh,shin));',  # #712
                 'constfloatshin=max(rig.head.y*r.sharpness,1.0);',
                 # two-sided, toward the viewer
                 'if(dot(N,V)<0.0)N=-N;'):
@@ -591,91 +618,61 @@ class TestLitFragments(LightMSLCase):
                                               '', 1), name)
 
     def testImpostorGlassFamilyTakesTheRig(self):
-        """Glass sticks split the rig as the VBO glass does; jelly sticks
-        take light_apply on top of the composite, before the refraction,
-        inside the lit branch. The sphere impostors' glass family goes
-        through sphere_glass_rig (testSphereGlassSplitsTheRig)."""
-        cyl = fragments(self.msl['kCylinderImpostorSrc'])['cyl_impostor_fragment_oit'][1]
-        glass = cyl[:cyl.index('} else if (kMatGlass)')]
-        jelly = cyl[cyl.index('} else if (kMatGlass)'):cyl.index('} else {')]
-        cover = glass.index('mat_glass_cover(')
-        terms = glass.index('light_terms(')
-        self.assertLess(glass.index('mat_glass_shade('), terms)
-        self.assertLess(terms, cover)
-        self.assertRegex(glass[terms:cover],
-                         r'light_terms\(rig,\s*base,\s*n,\s*pt,\s*'
-                         r'light_response\(mat\)\)')
-        self.assertRegex(glass[terms:cover],
-                         r'body\s*\+=\s*base\s*\*\s*'
-                         r'kMatGlassBaseAttenuation\s*\*\s*\w+\.diffuse')
-        self.assertRegex(glass[terms:cover],
-                         r'hi\s*\+=\s*light_glass_glints\(\w+\.specular\)\s*\*\s*'
-                         r'\(kMatGlassReflection\s*\*\s*saturate\(mat\.p\[0\]\)\)')
-        outline = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*'
-                            r'light_outline\(rgb,\s*pt,\s*rig\);', glass)
-        self.assertIsNotNone(outline)
-        self.assertGreater(outline.start(), glass.index('rgb = g.rgb;'))
-        self.assertNotIn('light_apply(', glass)
-        lit = statements_after(jelly, 'if (lit)')
-        apply_ = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*light_apply\('
-                           r'rgb,\s*base,\s*n,\s*pt,\s*rig,\s*'
-                           r'light_response\(mat\)\);', lit)
-        self.assertIsNotNone(apply_)
-        self.assertLess(lit.index('mat_impostor_composite('), apply_.start())
-        self.assertLess(apply_.start(), lit.index('mat_glass_refraction('))
-        self.assertNotIn('light_terms(', jelly)
+        """Glass sticks and (since #635) glass spheres split the rig as the
+        VBO glass does; jelly sticks and spheres take light_apply on top of
+        the composite, before the refraction, inside the lit branch."""
+        for lib, frag_name, base_var in (
+                ('kCylinderImpostorSrc', 'cyl_impostor_fragment_oit', 'base'),
+                ('kSphereImpostorSrc', 'sphere_impostor_fragment_oit', 'base')):
+            frag = fragments(self.msl[lib])[frag_name][1]
+            glass = frag[:frag.index('} else if (kMatGlass)')]
+            jelly = frag[frag.index('} else if (kMatGlass)'):frag.index('} else {')]
+            cover = glass.index('mat_glass_cover(')
+            terms = glass.index('light_terms(')
+            self.assertLess(glass.index('mat_glass_shade('), terms, frag_name)
+            self.assertLess(terms, cover, frag_name)
+            self.assertRegex(glass[terms:cover],
+                             r'light_terms\(rig,\s*%s,\s*n,\s*pt,\s*'
+                             r'light_response\(mat\)\)' % base_var, frag_name)
+            self.assertRegex(glass[terms:cover],
+                             r'body\s*\+=\s*%s\s*\*\s*'
+                             r'kMatGlassBaseAttenuation\s*\*\s*\w+\.diffuse' % base_var, frag_name)
+            self.assertRegex(glass[terms:cover],
+                             r'hi\s*\+=\s*light_glass_glints\(\w+\.specular\)\s*\*\s*'
+                             r'\(kMatGlassReflection\s*\*\s*saturate\(mat\.p\[0\]\)\)', frag_name)
+            outline = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*'
+                                r'light_outline\(rgb,\s*pt,\s*rig\);', glass)
+            self.assertIsNotNone(outline, frag_name)
+            self.assertGreater(outline.start(), glass.index('rgb = g.rgb;'), frag_name)
+            self.assertNotIn('light_apply(', glass, frag_name)
+            lit = statements_after(jelly, 'if (lit)')
+            jelly_base = r'(?:base|in\.color\.rgb)'
+            apply_ = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*light_apply\('
+                               r'rgb,\s*%s,\s*n,\s*pt,\s*rig,\s*'
+                               r'light_response\(mat\)\);' % jelly_base, lit)
+            self.assertIsNotNone(apply_, frag_name)
+            self.assertLess(lit.index('mat_impostor_composite('), apply_.start(), frag_name)
+            self.assertLess(apply_.start(), lit.index('mat_glass_refraction('), frag_name)
+            self.assertNotIn('light_terms(', jelly, frag_name)
 
     def testSphereGlassSplitsTheRig(self):
-        """The sphere impostors' glass family (jelly spheres, and the clear
-        or frosted glass spheres other reps emit) takes the rig through
-        sphere_glass_rig, on top of the composite and before the refraction.
-        Jelly takes light_apply. Clear and frosted glass split it as the VBO
-        and cylinder glass do (Q1): the diffuse into the body at
-        kMatGlassBaseAttenuation, the highlights through the glint curve and
-        the Reflection knob; folded and kneed as mat_impostor_composite folds
-        this path's own glints, with the same glass shading call, then the
-        outlines."""
+        """#635: the sphere impostors' clear and frosted glass branch is the
+        cylinder's (the coverage split through mat_glass_cover), so the old
+        folded helpers sphere_glass_rig / _shadowed are gone."""
         sphere = msl_functions(self.msl['kSphereImpostorSrc'])
-        branch = fragments(self.msl['kSphereImpostorSrc'])[
-            'sphere_impostor_fragment_oit'][1].split('} else {')[0]
-        lit = statements_after(branch, 'if (lit)')
-        call = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*sphere_glass_rig\('
-                         r'rgb,\s*in\.color\.rgb,\s*n,\s*pt,\s*u,\s*mat,\s*'
-                         r'envMap,\s*envSmp,\s*rig\);', lit)
-        self.assertIsNotNone(call)
-        self.assertLess(lit.index('mat_impostor_composite('), call.start())
-        self.assertLess(call.start(), lit.index('mat_glass_refraction('))
-        self.assertNotIn('light_apply(', branch)
-        self.assertNotIn('light_terms(', branch)
-        helper = squash(sphere['sphere_glass_rig'][1])
-        jelly = helper.index('if(mat.mode==kMatMode_jelly)returnlight_apply('
-                             'rgb,base,n,pt,rig,light_response(mat));')
-        for expr in ('constLightTermsrigLight=light_terms(rig,base,n,pt,light_response(mat));',
-                     'body+=base*kMatGlassBaseAttenuation*rigLight.diffuse;',
-                     'hi+=light_glass_glints(rigLight.specular)*'
-                     '(kMatGlassReflection*saturate(mat.p[0]));',
-                     # #624: through the rig's seam at the frame's exposure
-                     # (mat_soft_knee, as before, with kLightHdr false)
-                     'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);'):
-            self.assertGreater(helper.index(expr), jelly, expr)
-        # drift guard: the glass shading is mat_impostor_composite's glass
-        # branch with the fragment's arguments (m -> mat, N -> n, the key
-        # light from SphereU, V = +z)
-        composite = squash(msl_functions(self.msl['kMaterialImpostorSrc'])
-                           ['mat_impostor_composite'][1])
-        self.assertIn('inttaps=(m.mode==kMatMode_frosted_glass)?int(max(1.0,m.p[5])):1;',
-                      composite)
-        # (#615: both glass calls end with the material's classic scale)
-        self.assertIn('float3body=mat_glass_shade(base,N,V,m.rough,m.p[0],taps,keyDir,'
-                      'envMap,envSmp,hi,mat_classic_light(m));'
-                      'returnmat_soft_knee(body+hi);', composite)
-        self.assertIn('inttaps=(mat.mode==kMatMode_frosted_glass)?int(max(1.0,mat.p[5])):1;',
-                      helper)
-        self.assertIn('float3body=mat_glass_shade(base,n,float3(0.0,0.0,1.0),mat.rough,'
-                      'mat.p[0],taps,float3(u.klx,u.kly,u.klz),envMap,envSmp,hi,'
-                      'mat_classic_light(mat));', helper)
-        self.assertIn('mat_impostor_composite(in.color.rgb,n,pt,u.lAmbient,u.lDirect,'
-                      'u.lReflect,float3(u.klx,u.kly,u.klz),mat,', squash(lit))
+        self.assertNotIn('sphere_glass_rig', sphere)
+        self.assertNotIn('sphere_glass_rig_shadowed', sphere)
+        frag = fragments(self.msl['kSphereImpostorSrc'])['sphere_impostor_fragment_oit'][1]
+        glass = frag[:frag.index('} else if (kMatGlass)')]
+        # Key statements from cylinder glass branch appear in sphere glass branch
+        for stmt in ('const float3 base = in.color.rgb;',
+                     'mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,',
+                     'body += base * kMatGlassBaseAttenuation * rigLight.diffuse;',
+                     'hi += light_glass_glints(rigLight.specular) *',
+                     'rgb = g.rgb;',
+                     'if (kLightRig) rgb = light_outline(rgb, pt, rig);',
+                     'mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho)'):
+            self.assertIn(squash(stmt), squash(glass), stmt)
 
     def testGlassSplitsTheRig(self):
         """Clear and frosted glass: the rig's diffuse lights the body at its
@@ -1066,7 +1063,7 @@ class TestBezierTube(LightMSLCase):
                                 if 'kBezierTube' in lib),
                          ['[[kMaterialSrcstringByAppendingString:kBezierTubeSrc]'
                           'stringByAppendingString:kBezierTubeRigSrc]',
-                          'kBezierTubeSrc'])
+                          'kBezierTubeSrc', 'kBezierTubeSrc'])
 
     def testTubeRigCopiesMatch(self):
         """Drift guards: each rig function is the classic one plus exactly
@@ -1117,6 +1114,27 @@ class TestBezierTube(LightMSLCase):
                          ';returnfloat4(rgb,in.color.a);}')
         stripped = re.sub(r'\n[ \t]*rgb\s*=\s*light_apply\([^;]*\);', '', body)
         self.assertEqual(squash(stripped), squash(classic_body))
+        # the studio-shadow copy (#663): the rig fragment plus the maps
+        # arguments, light_apply_shadowed, and nothing else
+        shadow_sig, shadow_body = self.rig['bezier_tube_fragment_rig_shadow']
+        self.assertEqual(
+            squash(sig).replace('bezier_tube_fragment_rig(',
+                                'bezier_tube_fragment_rig_shadow(')[:-1]
+            + ',depth2d_array<float>lightShadowMaps[[texture(7)]],samplerlightShadowSmp[[sampler(7)]])',
+            squash(shadow_sig))
+        shadow_light = re.findall(
+            r'\n[ \t]*rgb\s*=\s*light_apply_shadowed\(([^;]*)\);', shadow_body)
+        self.assertEqual(len(shadow_light), 1)
+        self.assertEqual(
+            squash(shadow_light[0]),
+            squash('rgb, in.color.rgb, nrm, in.posEye, rig, lightShadowMaps, '
+                   'lightShadowSmp, light_response_neutral()'))
+        shadow_tail = shadow_body[shadow_body.index('light_apply_shadowed('):]
+        self.assertEqual(squash(shadow_tail[shadow_tail.index(';'):]),
+                         ';returnfloat4(rgb,in.color.a);}')
+        shadow_stripped = re.sub(
+            r'\n[ \t]*rgb\s*=\s*light_apply_shadowed\([^;]*\);', '', shadow_body)
+        self.assertEqual(squash(shadow_stripped), squash(stripped))
 
     def testTubeRigReadsNoFunctionConstant(self):
         """Neither tube rig function nor any helper they reach reads a
@@ -1131,14 +1149,17 @@ class TestBezierTube(LightMSLCase):
         material = msl_functions(self.msl['kMaterialSrc'])
         constant = re.compile(r'\bkLightRig\b|\bkLightShadow\b|\bkMat[A-Z]\w*'
                               r'|function_constant')
-        for name in ('bezier_tube_vertex_rig', 'bezier_tube_fragment_rig'):
+        for name in ('bezier_tube_vertex_rig', 'bezier_tube_fragment_rig',
+                     'bezier_tube_fragment_rig_shadow'):
             sig, body = self.rig[name]
             self.assertNotRegex(sig + body, constant, name)
         seen = set()
         readers = set()
         todo = re.findall(r'\b((?:light|mat)_\w+)\s*\(',
-                          self.rig['bezier_tube_fragment_rig'][1])
+                          self.rig['bezier_tube_fragment_rig'][1] +
+                          self.rig['bezier_tube_fragment_rig_shadow'][1])
         self.assertIn('light_apply', todo)
+        self.assertIn('light_apply_shadowed', todo)
         while todo:
             name = todo.pop()
             if name in seen:
@@ -1189,6 +1210,9 @@ class TestBezierTube(LightMSLCase):
                               r'\s*/\*lightHdr\*/ false\)')
         self.assertRegex(rig, r'bezierTubeRigFunction\(\s*lib, @"bezier_tube_fragment_rig",'
                               r'\s*/\*lightHdr\*/ h == 1\)')
+        # the shadow variant built in the loop (#663)
+        self.assertRegex(rig, r'bezierTubeRigFunction\(\s*lib, @"bezier_tube_fragment_rig_shadow",'
+                              r'\s*/\*lightHdr\*/ h == 1\)')
         # the classic descriptor, tessellation included, field for field
         lines = descriptor_lines(rig)
         self.assertEqual(lines, descriptor_lines(classic))
@@ -1199,35 +1223,53 @@ class TestBezierTube(LightMSLCase):
             self.assertIn('psd.fragmentFunction = ffn;', body)
         self.assertRegex(rig, r'_bezierTubeRigPipeline\[h\] =\s*\[_device '
                               r'newRenderPipelineStateWithDescriptor:psd error:&err\];')
+        self.assertRegex(rig, r'_bezierTubeRigShadowPipeline\[h\] =\s*\[_device '
+                              r'newRenderPipelineStateWithDescriptor:psd error:&err\];')
         # only the pipeline state is kept
         for released in ('[psd release];', '[vfn release];', '[ffn release];',
-                         '[lib release];'):
+                         '[sfn release];', '[lib release];'):
             self.assertIn(released, rig)
         # released with the classic tube, and retried, at every rebuild
         rebuild = cpp_function(self.mm, 'RendererMetal::rebuildDrawPipelines')
         self.assertIn('[_bezierTubeRigPipeline[h] release];', rebuild)
         self.assertIn('_bezierTubeRigPipeline[h] = nil;', rebuild)
+        self.assertIn('[_bezierTubeRigShadowPipeline[h] release];', rebuild)
+        self.assertIn('_bezierTubeRigShadowPipeline[h] = nil;', rebuild)
         self.assertIn('for (int h = 0; h < 2; ++h)', rebuild)
         self.assertIn('_bezierTubeRigTried = false;', rebuild)
         dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
         self.assertIn('[_bezierTubeRigPipeline[0] release];', dtor)
         self.assertIn('[_bezierTubeRigPipeline[1] release];', dtor)
+        self.assertIn('[_bezierTubeRigShadowPipeline[0] release];', dtor)
+        self.assertIn('[_bezierTubeRigShadowPipeline[1] release];', dtor)
 
     def testTubeDrawPicksTheRigOnlyWhenOn(self):
         body = cpp_function(self.mm, 'RendererMetal::drawBezierTubes')
         # today's guards, before anything rig-related
         build = body.index('buildBezierTubeRigPipeline();')
-        for guard in (r'if\s*\(\s*_shadowMode\s*\)\s*return\s*;',
-                      r'if\s*\(\s*_peelMode\s*\)\s*return\s*;',
-                      r'if\s*\(\s*!_bezierTubePipeline\s*\)\s*return\s*;'):
-            m = re.search(guard, body)
-            self.assertIsNotNone(m, guard)
-            self.assertLess(m.start(), build, guard)
-        # starts as the classic pipeline: with the rig off, today's draw
-        self.assertRegex(body, r'id<MTLRenderPipelineState>\s+tubePipeline\s*='
-                               r'\s*_bezierTubePipeline\s*;')
+        # #488 peel guard before everything
+        peel = re.search(r'if\s*\(\s*_peelMode\s*\)\s*return\s*;', body)
+        self.assertIsNotNone(peel)
+        self.assertLess(peel.start(), build)
+        # #663: depth-only shadow branch before the classic pipeline
+        # (with the rig off, a colour draw is today's classic tube)
+        code_body = strip_comments(body)
+        shadow_branch = re.search(
+            r'id<MTLRenderPipelineState>\s+tubePipeline\s*=\s*nil\s*;\s*'
+            r'if\s*\(\s*_shadowMode\s*\)\s*\{\s*'
+            r'buildBezierTubeShadowPipeline\(\);\s*'
+            r'if\s*\(\s*!_bezierTubeShadowPipeline\s*\)\s*return\s*;\s*'
+            r'tubePipeline\s*=\s*_bezierTubeShadowPipeline\s*;\s*\}'
+            r'\s*else\s*\{\s*'
+            r'buildBezierTubePipeline\(\);\s*'
+            r'if\s*\(\s*!_bezierTubePipeline\s*\)\s*return\s*;\s*'
+            r'tubePipeline\s*=\s*_bezierTubePipeline\s*;\s*\}', code_body)
+        self.assertIsNotNone(shadow_branch)
+        self.assertLess(shadow_branch.start(),
+                        code_body.index('buildBezierTubeRigPipeline();'))
         self.assertRegex(body, r'bool\s+tubeRig\s*=\s*false\s*;')
-        block = re.search(r'if\s*\(\s*_lightRigOn\s*\)\s*\{', body)
+        # #663: rig block guarded by _lightRigOn && !_shadowMode
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*!_shadowMode\s*\)\s*\{', body)
         self.assertIsNotNone(block)
         end = match_brace(body, block.end() - 1)
         inside = body[block.end():end]
@@ -1238,9 +1280,22 @@ class TestBezierTube(LightMSLCase):
         self.assertIn('tubePipeline = rigTube;', inside)
         self.assertIn('tubeRig = true;', inside)
         self.assertIn('_lightRigWarned = true;', inside)
+        # #663: shadow variant only on the rig tube, under lightShadowsReady(), inside the rig block
+        shadow_rig = re.search(r'if\s*\(\s*tubeRig\s*&&\s*lightShadowsReady\(\)\s*\)\s*\{', inside)
+        self.assertIsNotNone(shadow_rig)
+        shadow_inside = inside[shadow_rig.end():match_brace(inside, shadow_rig.end() - 1)]
+        self.assertRegex(shadow_inside,
+                         r'id<MTLRenderPipelineState>\s+shadowTube\s*=\s*'
+                         r'_bezierTubeRigShadowPipeline\[_lightHdrOn\s*\?\s*1\s*:\s*0\];')
+        self.assertIn('tubePipeline = shadowTube;', shadow_inside)
         self.assertEqual(len(re.findall(r'tubeRig\s*=\s*true', body)), 1)
         self.assertEqual(re.findall(r'setRenderPipelineState:(\w+)\]', body),
                          ['tubePipeline'])
+        # #663: _shadowDepthState only under _shadowMode
+        self.assertRegex(body, r'if\s*\(\s*_shadowMode\s*\)\s*'
+                               r'\[_encoder\s+setDepthStencilState:_shadowDepthState\];\s*'
+                               r'else\s*'
+                               r'\[_encoder\s+setDepthStencilState:bezierDepthState\(\)\];')
         # the rig is bound after the classic lighting and before the draw
         bind = re.search(r'if\s*\(\s*tubeRig\s*\)\s*bindLightRig\(', body)
         self.assertIsNotNone(bind)
@@ -1250,6 +1305,96 @@ class TestBezierTube(LightMSLCase):
         code = strip_comments(self.mm)
         self.assertEqual(len(re.findall(r'(?<!::)buildBezierTubeRigPipeline\(\);',
                                         code)), 1)
+
+    def testTubeShadowPipelineIsDepthOnly(self):
+        """#663: the tube's depth-only pipeline for casting studio shadows
+        and the classic shadow pre-pass."""
+        build = cpp_function(self.mm, 'RendererMetal::buildBezierTubeShadowPipeline')
+        # tried once
+        self.assertRegex(build, r'^\{\s*if\s*\(\s*_bezierTubeShadowTried\s*\)\s*'
+                                r'return\s*;\s*_bezierTubeShadowTried\s*=\s*true\s*;')
+        self.assertRegex(build, r'newLibraryWithSource:kBezierTubeSrc\s+options:')
+        self.assertIn('newFunctionWithName:@"bezier_tube_vertex"]', build)
+        self.assertNotIn('fragmentFunction', build)
+        self.assertNotIn('bezier_tube_fragment', build)
+        # depth-only attachments: rasterSampleCount 1, Depth32Float, no stencil, no color
+        self.assertIn('psd.rasterSampleCount = 1;', build)
+        self.assertIn('psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;', build)
+        self.assertNotIn('stencilAttachmentPixelFormat', build)
+        self.assertNotIn('colorAttachments', build)
+        # vertex descriptor and tessellation fields match classic
+        self.assertIn('psd.maxTessellationFactor = 64;', build)
+        self.assertIn('psd.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionConstant;', build)
+        self.assertIn('psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;', build)
+        self.assertIn('psd.tessellationOutputWindingOrder = MTLWindingClockwise;', build)
+        self.assertIn('psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;', build)
+        self.assertIn('psd.vertexDescriptor = vd;', build)
+        self.assertIn('psd.vertexFunction = vfn;', build)
+        # field for field the classic tube's descriptor (vertex layout and
+        # tessellation), but for the depth-only pass's attachments: the map
+        # depth comes from the same tessellation as the lit tube
+        classic = cpp_function(self.mm, 'RendererMetal::buildBezierTubePipeline')
+        attachments = ('psd.colorAttachments[', 'psd.rasterSampleCount=',
+                       'psd.depthAttachmentPixelFormat=',
+                       'psd.stencilAttachmentPixelFormat=')
+        self.assertEqual(
+            [l for l in descriptor_lines(build) if not l.startswith(attachments)],
+            [l for l in descriptor_lines(classic) if not l.startswith(attachments)])
+        self.assertIn('[psd release];', build)
+        self.assertIn('[vfn release];', build)
+        self.assertIn('[lib release];', build)
+        # header members
+        header = strip_comments(read(METAL_H))
+        self.assertRegex(header, r'id<MTLRenderPipelineState>\s+_bezierTubeShadowPipeline\s*=\s*nil;')
+        self.assertRegex(header, r'bool\s+_bezierTubeShadowTried\s*=\s*false;')
+        self.assertRegex(header, r'void\s+buildBezierTubeShadowPipeline\(\);')
+        # destructor release
+        dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
+        self.assertIn('[_bezierTubeShadowPipeline release];', dtor)
+
+
+class TestMeasurementDashes(LightMSLCase):
+    """#738: measurement dashes (the DistSet dash representation) are lit
+    geometry under a rig, by owner decision, not display-referred overlays.
+    On Metal a dash is a cylinder impostor, so it takes the rig through the
+    cylinder pipelines pinned in TestImpostorPipelines; these pin the chain
+    that puts it there."""
+
+    def testDashIsACylinderByDefault(self):
+        for path in (DIST_DASH, CGO_GL):
+            if not os.path.isfile(path):
+                self.fail('%s is missing from the checkout' % path)
+        code = strip_comments(read(DIST_DASH))
+        # dash_as_cylinders and render_as_cylinders both default on
+        info = read(os.path.join(ROOT, 'layer1', 'SettingInfo.h'))
+        self.assertRegex(info, r'REC_b\(\s*684,\s*dash_as_cylinders\s*,\s*global\s*,\s*1\s*\)')
+        self.assertRegex(info, r'REC_b\(\s*691,\s*render_as_cylinders\s*,\s*global\s*,\s*1\s*\)')
+        self.assertRegex(code, r'dash_as_cylinders\s*=\s*SettingGet<bool>\(G,\s*cSetting_render_as_cylinders\)'
+                               r'\s*&&\s*SettingGet<bool>\(G,\s*cSetting_dash_as_cylinders\)')
+        # the cylinder arm wraps the dashes in the cylinder shader, with no
+        # CGO_GL_LIGHTING disable (that is the line arm's)
+        arm = code[code.index('if (dash_as_cylinders) {\n      CGO* tmpCGO'):]
+        arm = arm[:arm.index('} else {')]
+        self.assertIn('GL_CYLINDER_SHADER', arm)
+        self.assertIn('CGOConvertShaderCylindersToCylinderShader', arm)
+        self.assertNotIn('CGO_GL_LIGHTING', arm)
+
+    def testDashReachesTheRigCylinderPipeline(self):
+        via = cpp_function(read(CGO_GL), 'drawCylinderImpostorsViaMetal')
+        self.assertIn('G->Renderer->drawCylinderImpostors(call);', via)
+        # the dash's radius is a uniform; nothing here switches the rig off
+        self.assertIn('call.uniRadius = I->metalCylUniRadius;', via)
+        self.assertNotRegex(via, r'(?i)light|rig|unlit')
+        # drawCylinderImpostors picks the rig by the frame alone, not by the
+        # draw call, so a dash (uniRadius > 0) is lit exactly like a stick
+        body = cpp_function(self.mm, 'RendererMetal::drawCylinderImpostors')
+        self.assertRegex(body, r'const bool cylRig\s*=\s*_lightRigOn\s*&&\s*'
+                               r'!_shadowMode\s*&&\s*!_peelMode;')
+        self.assertNotRegex(re.search(r'const bool cylRig[^;]*;', body).group(0),
+                            r'uniRadius')
+        # and the cylinder fragment they run is a lit, rig-taking one
+        self.assertIn('cyl_impostor_fragment',
+                      EXPECTED_RIG_FRAGMENTS['kCylinderImpostorSrc'])
 
 
 class TestLayout(LightMSLCase):
@@ -1319,7 +1464,7 @@ class TestSceneRender(LightMSLCase):
         self.assertEqual(body.count('SceneLightsFrame('), 1)
         self.assertEqual(body.count('setLightRig('), 1)
         self.assertEqual(body.count('setLightingParams('), 1)
-        shadow_pass = body.index('beginShadowPass()')
+        shadow_pass = body.index('beginShadowPass(')
         for call in ('SceneLightsFrame(', 'setLightingParams(', 'setLightRig('):
             self.assertLess(body.index(call), shadow_pass, call)
             self.assertLess(body.index(call), body.index('SceneRenderAll('), call)
@@ -1366,7 +1511,7 @@ class TestRayTracedReflections(LightMSLCase):
             self.assertEqual(squash(body), squash(mbody), name)
         # and nothing that paints or needs the material table
         for name in ('light_outline', 'light_apply', 'light_response',
-                     'light_terms', 'light_glass_glints', 'light_glass_cover'):
+                     'light_terms'):
             self.assertNotIn(name, self.rt_functions, name)
             self.assertNotRegex(self.rt_code, r'\b%s\s*\(' % name, name)
 
@@ -1376,34 +1521,77 @@ class TestRayTracedReflections(LightMSLCase):
         self.assertIsNotNone(constant)
         self.assertEqual(constant.group(1), '1')
         self.assertRegex(self.rt_code, r'kRTTrans\s*\[\[\s*function_constant\(0\)')
+        self.assertRegex(self.rt_code, r'constant\s+bool\s+kRTLightShadow\s*\[\[\s*'
+                                       r'function_constant\(3\)\s*\]\];')
         self.assertNotRegex(self.rt_code, r'\bkLightRig\b')
         frags = fragments(self.rt)
-        self.assertEqual(sorted(frags), ['rt_ao', 'rt_composite'])
+        self.assertEqual(sorted(frags), ['rt_ao', 'rt_composite', 'rt_light_soft'])
         sig, body = frags['rt_composite']
         self.assertRegex(sig, RT_RIG_ARGUMENT)
+        self.assertRegex(sig, r'depth2d_array<float>\s+lightShadowMaps\s*\[\[\s*'
+                              r'texture\(5\)\s*,\s*function_constant\(kRTLightShadow\)\s*\]\]')
         self.assertNotRegex(frags['rt_ao'][0] + frags['rt_ao'][1],
-                            r'LightRigU|kRTLightRig|\brig\b|rt_rig_hit')
-        # buffer(13) is the rig's alone
-        self.assertEqual(len(re.findall(r'buffer\(13\)', self.rt_code)), 1)
+                            r'LightRigU|kRTLightRig|\brig\b|rt_rig_hit|lightShadowMaps|kRTLightShadow|_shadowed')
+        # buffer(13) is the rig's alone (in rt_composite and rt_light_soft)
+        self.assertEqual(len(re.findall(r'buffer\(13\)', self.rt_code)), 2)
         # every rig statement under the constant, and what is left is free of
         # the rig: the classic specialisation is today's composite
         guards = RT_RIG_GUARD.findall(body)
         self.assertEqual(len(guards), 2)
         classic = remove_rig_statements(body, RT_RIG_GUARD)
-        self.assertFalse(re.findall(r'\brig\b|rt_rig_hit|light_\w+|LightTerms',
+        # #732, #852, #735: the HDR AO and cast shadow statement calls the curve and its inverse
+        # (the uniform aoHdr, not the rig, chooses it); take exactly that one out
+        hdr_ao = re.compile(r'if\s*\(\s*u\.aoHdr\s*>\s*0\.5\s*&&\s*ao\s*\*\s*shade\s*<\s*1\.0\s*\)\s*'
+                            r'col\s*=\s*light_curve\(light_curve_inverse\(col,\s*u\.aoAces\)\s*\*\s*\(ao\s*\*\s*shade\),\s*u\.aoAces\);')
+        self.assertEqual(len(hdr_ao.findall(classic)), 1)
+        classic = hdr_ao.sub('', classic, count=1)
+        # #741: traced soft shadows
+        soft_ao = re.compile(r'if\s*\(\s*kRTLightSoft\s*&&\s*light_finite3\(softR\)\s*\)\s*\{.*?\}', re.S)
+        self.assertEqual(len(soft_ao.findall(classic)), 1)
+        classic = soft_ao.sub('', classic, count=1)
+        self.assertFalse(re.findall(r'\brig\b|rt_rig_hit|light_\w+|LightTerms|rt_hit_albedo|rt_hit_material|RTHitMaterial',
                                     classic))
         # 1: the opaque hit, after its classic colour, before the fog
         hit = re.search(r'reflCol\s*=\s*hc\s*\*\s*min\(inten,\s*1\.0\)\s*\+\s*specv;\s*'
-                        r'if\s*\(\s*kRTLightRig\s*\)\s*reflCol\s*=\s*rt_rig_hit\('
-                        r'rig,\s*u,\s*reflCol,\s*hc,\s*hitP,\s*hn,\s*R\);\s*'
+                        r'if\s*\(\s*kRTLightRig\s*\)\s*\{\s*'
+                        r'const\s+float3\s+ha\s*=\s*rt_hit_albedo\(hc,\s*hn,\s*R,\s*hitP,\s*rt_hit_material\(mats,\s*hmi,\s*u\.matCount\),\s*'
+                        r'u\.projOrtho\s*>\s*0\.5\s*\?\s*pxSize\s*:\s*pxSize\s*\*\s*\(dEye0\s*\+\s*res\.distance\)\);\s*'
+                        r'reflCol\s*=\s*kRTLightSoft\s*\?\s*'
+                        r'rt_rig_hit_soft\(rig,\s*u,\s*soft,\s*accel,\s*mask,\s*rot,\s*reflCol,\s*ha,\s*hitP,\s*hn,\s*R,\s*'
+                        r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\)\s*:\s*'
+                        r'\(kRTLightShadow\s*\?\s*'
+                        r'rt_rig_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*reflCol,\s*ha,\s*hitP,\s*hn,\s*R,\s*'
+                        r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\)\s*:\s*'
+                        r'rt_rig_hit\(rig,\s*u,\s*reflCol,\s*ha,\s*hitP,\s*hn,\s*R,\s*'
+                        r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\)\);\s*\}\s*'
                         r'reflCol\s*=\s*mix\(reflCol,\s*envCol,', body)
         self.assertIsNotNone(hit)
         # 2: the transparent layer in front of it (kRTTrans), likewise
-        layer = re.search(r'float3\s+tcol\s*=\s*tc\.rgb\s*\*\s*min\(inten,\s*1\.0\)\s*'
-                          r'\+\s*specv;\s*if\s*\(\s*kRTLightRig\s*\)\s*tcol\s*=\s*'
-                          r'rt_rig_hit\(rig,\s*u,\s*tcol,\s*tc\.rgb,\s*tr\.origin\s*\+\s*'
-                          r'R\s*\*\s*th\.distance,\s*hn,\s*R\);\s*tcol\s*=\s*mix\(tcol,'
-                          r'\s*envCol,', body)
+        layer = re.search(r'float\s+ta\s*=\s*saturate\(tc\.a\);\s*'
+                          r'if\s*\(\s*kRTLightRig\s*\)\s*\{\s*'
+                          r'const\s+int\s+tmi\s*=\s*int\(tocc\[q\]\);\s*'
+                          r'const\s+RTHitMaterial\s+tm\s*=\s*rt_hit_material\(tmats,\s*tmi,\s*u\.tMatCount\);\s*'
+                          r'const\s+LightResponse\s+tresp\s*=\s*rt_hit_response\(tmats,\s*tmi,\s*u\.tMatCount\);\s*'
+                          r'const\s+float3\s+tp\s*=\s*tr\.origin\s*\+\s*R\s*\*\s*th\.distance;\s*'
+                          r'if\s*\(\s*tm\.family\s*==\s*kRTFamilyGlass\s*&&\s*tm\.mode\s*!=\s*kMatMode_jelly\s*\)\s*\{\s*'
+                          r'const\s+float4\s+gc\s*=\s*kRTLightSoft\s*\?\s*'
+                          r'rt_rig_glass_hit_soft\(rig,\s*u,\s*soft,\s*accel,\s*mask,\s*rot,\s*tcol,\s*tc\.rgb,\s*tp,\s*hn,\s*R,\s*tresp,\s*ta,\s*tm\.p\[0\]\)\s*:\s*'
+                          r'\(kRTLightShadow\s*\?\s*'
+                          r'rt_rig_glass_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*tcol,\s*tc\.rgb,\s*tp,\s*hn,\s*R,\s*tresp,\s*ta,\s*tm\.p\[0\]\)\s*:\s*'
+                          r'rt_rig_glass_hit\(rig,\s*u,\s*tcol,\s*tc\.rgb,\s*tp,\s*hn,\s*R,\s*tresp,\s*ta,\s*tm\.p\[0\]\)\);\s*'
+                          r'tcol\s*=\s*gc\.rgb;\s*'
+                          r'ta\s*=\s*gc\.a;\s*'
+                          r'\}\s*else\s*\{\s*'
+                          r'const\s+float3\s+talb\s*=\s*rt_hit_albedo\(tc\.rgb,\s*hn,\s*R,\s*tp,\s*tm,\s*'
+                          r'u\.projOrtho\s*>\s*0\.5\s*\?\s*pxSize\s*:\s*pxSize\s*\*\s*\(dEye0\s*\+\s*th\.distance\)\);\s*'
+                          r'tcol\s*=\s*kRTLightSoft\s*\?\s*'
+                          r'rt_rig_hit_soft\(rig,\s*u,\s*soft,\s*accel,\s*mask,\s*rot,\s*tcol,\s*talb,\s*tp,\s*hn,\s*R,\s*tresp\)\s*:\s*'
+                          r'\(kRTLightShadow\s*\?\s*'
+                          r'rt_rig_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*tcol,\s*talb,\s*tp,\s*hn,\s*R,\s*tresp\)\s*:\s*'
+                          r'rt_rig_hit\(rig,\s*u,\s*tcol,\s*talb,\s*tp,\s*hn,\s*R,\s*tresp\)\);\s*'
+                          r'\}\s*\}\s*'
+                          r'tcol\s*=\s*mix\(tcol,\s*envCol,\s*saturate\(th\.distance\s*/\s*120\.0\)\);\s*'
+                          r'reflCol\s*=\s*mix\(reflCol,\s*tcol,\s*ta\);', body)
         self.assertIsNotNone(layer)
         # both inside the reflection block, which matCount 0 skips
         block = body.index('if (u.matCount > 0.5)')
@@ -1413,47 +1601,201 @@ class TestRayTracedReflections(LightMSLCase):
     def testRigHitShading(self):
         """A hit: model to eye by the inverse modelview's transposed rotation
         (as the environment lookup does), the reflected ray's own view
-        vector, the neutral response (#615 needs MaterialU), then light_finish
+        vector, the hit's material response r (#709), then light_finish
         at the frame's exposure (the knee, or T under #624's kLightHdr); and
         nothing reads a function constant but light_finish's kLightHdr."""
         self.assertIn('rt_rig_hit', self.rt_functions)
+        self.assertIn('rt_rig_hit_shadowed', self.rt_functions)
         sig, body = self.rt_functions['rt_rig_hit']
+        self.assertRegex(sig, r'LightResponse\s+r\s*\)\s*$')
         code = squash(body)
         for expr in ('constfloat3x3toEye=transpose(float3x3(u.invModelview[0].xyz,'
                      'u.invModelview[1].xyz,u.invModelview[2].xyz));',
                      'constfloat3pEye=toEye*(pModel-u.invModelview[3].xyz);',
                      'constfloat3nEye=toEye*nModel;',
                      'constfloat3V=-normalize(toEye*R);',
-                     'constLightTermst=light_terms_view(rig,base,nEye,pEye,V,'
-                     'light_response_neutral());',
-                     'returnlight_finish(shaded+base*t.diffuse+t.specular,rig.tone.x);'):
+                     'constLightTermst=light_terms_view(rig,base,nEye,pEye,V,r);',
+                     'returnlight_finish(shaded+base*t.diffuse+t.specular,rig.tone);'):
             self.assertIn(expr, code, expr)
         constant = re.compile(r'\bkRT\w+|\bkLight\w+|function_constant')
-        seen, todo = set(), ['rt_rig_hit']
+        seen, todo = set(), ['rt_rig_hit', 'rt_rig_hit_shadowed', 'rt_hit_response',
+                             'rt_rig_glass_hit', 'rt_rig_glass_hit_shadowed', 'rt_hit_albedo']
         while todo:
             name = todo.pop()
             if name in seen:
                 continue
             seen.add(name)
             body = self.rt_functions[name][1]
-            if name == 'light_finish':
-                # its one constant, kLightHdr (#624), set by both RT builders
-                self.assertEqual(len(HDR_CONSTANT.findall(body)), 1)
+            if name in ('light_finish', 'light_glass_glints',
+                        'rt_rig_glass_hit', 'rt_rig_glass_hit_shadowed'):
+                # their one kLightHdr (#624; #855's glass hits), set by both RT builders
+                self.assertEqual(len(HDR_CONSTANT.findall(body)), 1, name)
                 body = HDR_CONSTANT.sub('', body)
-            # (the tone constants are plain constants, not function ones)
-            body = re.sub(r'\bkLightTone(?:Knee|White)\b', '', body)
+            # (the tone, ACES, RT row stride (#712) and RT family constants are plain constants, not function ones)
+            body = re.sub(r'\bkLightTone(?:Knee|White)\b|\bkLightAces(?:[A-E]|Clip)\b', '', body)
+            body = re.sub(r'\bkRTFamily(?:Procedural|Glass)\b|\bkRTMatRow\b', '', body)  # #712
             self.assertNotRegex(body, constant, name)
             todo += [c for c in re.findall(r'\b((?:light|mat|rt)_\w+)\s*\(',
                                            self.rt_functions[name][1])
                      if c in self.rt_functions]
-        self.assertLessEqual({'light_terms_view', 'light_finish', 'mat_soft_knee',
+        self.assertLessEqual({'light_terms_view', 'light_terms_view_shadowed',
+                              'light_shadow_lookup', 'light_visibility_shadowed',
+                              'light_finish', 'mat_soft_knee',
                               'light_response_neutral', 'light_visibility',
                               'light_tone', 'light_tone_scalar'}, seen)
+
+    def testHitTakesItsMaterialResponse(self):
+        """#709: Traced reflection hits take their material's studio light response."""
+        self.assertIn('rt_hit_response', self.rt_functions)
+        sig, body = self.rt_functions['rt_hit_response']
+        self.assertRegex(sig, r'\(device\s+const\s+float4\*\s+mats,\s*int\s+mi,\s*float\s+matCount\)')
+        self.assertIn('return light_response_neutral();', body)
+        code = squash(body)
+        self.assertIn('if(mi<0||float(mi)>=matCount)returnlight_response_neutral();', code)
+        self.assertIn('constfloat4a=mats[kRTMatRow*mi];', code)  # #712
+        self.assertIn('constfloat4b=mats[kRTMatRow*mi+1];', code)  # #712
+        self.assertIn('constfloat4e=mats[kRTMatRow*mi+4];', code)  # #712
+        self.assertIn('r.diffuse=b.x;', code)
+        self.assertIn('r.highlight=b.y;', code)
+        self.assertIn('r.sharpness=b.z;', code)
+        self.assertIn('r.tint=b.w;', code)
+        self.assertIn('r.wrap=a.w;', code)
+        self.assertIn('r.highlight2=e.x;', code)  # #712
+        self.assertIn('r.sharpness2=e.y;', code)  # #712
+        self.assertIn('r.tint2=e.z;', code)  # #712
+        self.assertIn('r.tintGain=e.w;', code)  # #712
+
+        for name in ('rt_rig_hit', 'rt_rig_hit_shadowed'):
+            sig, body = self.rt_functions[name]
+            self.assertRegex(sig, r'LightResponse\s+r\s*\)\s*$')
+            self.assertNotIn('light_response_neutral', body)
+
+        _, comp_body = fragments(self.rt)['rt_composite']
+        self.assertRegex(comp_body, r'float4\s+mat\s*=\s*\(mi\s*>=\s*0\s*&&\s*float\(mi\)\s*<\s*u\.matCount\)\s*\?\s*mats\[kRTMatRow\s*\*\s*mi\]\s*:\s*float4\(0\.0\);')  # #712
+        self.assertRegex(comp_body, r'hmi\s*=\s*int\(sph\[2u\s*\*\s*res\.instance_id\s*\+\s*1u\]\.w\);')
+        self.assertRegex(comp_body, r'hmi\s*=\s*int\(triMat\[prim\]\);')
+        self.assertIn('rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, ha, hitP, hn, R, rt_hit_response(mats, hmi, u.matCount))',
+                      re.sub(r'\s+', ' ', comp_body))
+        self.assertIn('rt_rig_hit(rig, u, reflCol, ha, hitP, hn, R, rt_hit_response(mats, hmi, u.matCount))',
+                      re.sub(r'\s+', ' ', comp_body))
+
+        # CPU side
+        header = strip_comments(read(METAL_H))
+        self.assertRegex(header, r'std::vector<RTMatRow>\s+_rtFrameMat;')  # #712
+        self.assertRegex(header, r'std::vector<RTMatRow>\s+_rtBuiltMat;')  # #712
+        self.assertIn('_rtFrameMat.push_back(rtOccurrenceMaterial());', squash(header))
+
+        upload = cpp_function(self.mm, 'RendererMetal::uploadRTMatTable')
+        self.assertIn('n * std::tuple_size<RTMatRow>::value * sizeof(float)', upload)  # #712
+
+        occ = cpp_function(self.mm, 'RendererMetal::rtOccurrenceMaterial')
+        self.assertIn('MaterialLightResponseFor(_repMatParams)', occ)
+        self.assertIn('MaterialLightSharpness(r.exponent, _lightRigOn ? _lightRigBlock.head[1] : 0.0f)', occ)
+        occ_sq = squash(occ)
+        self.assertIn('return{_repMat[0],_repMat[1],_repMat[2],r.wrap,r.diffuse,r.highlight,'
+                      'MaterialLightSharpness(r.exponent,_lightRigOn?_lightRigBlock.head[1]:0.0f),r.tint,'
+                      'float(_repMatParams.family),float(_repMatParams.mode),'
+                      '_repMatParams.p[0],_repMatParams.p[1],'
+                      '_repMatParams.p[2],_repMatParams.p[3],_repMatParams.p[4],_repMatParams.p[5],'
+                      'r.highlight2,'
+                      'MaterialLightSharpness(r.exponent2,_lightRigOn?_lightRigBlock.head[1]:0.0f),'
+                      'r.tint2,r.tintGain};',  # #712
+                      occ_sq)
+
+    def testHitTakesTheProceduralAlbedo(self):
+        """#855: Traced reflection hits light the procedural albedo."""
+        material = strip_comments(self.msl['kMaterialSrc'])
+        for const in ('kMatMode_jelly', 'kMatGlassBaseAttenuation', 'kMatGlassReflection',
+                      'kMatMode_matte', 'kMatMode_marble', 'kMatMode_clay', 'kMatMode_rubber',
+                      'kMatClayGrainHarmonic', 'kMatClayGrainOffset',
+                      'kMatRubberGrainHarmonic', 'kMatRubberGrainOffset'):
+            pattern = r'constant\s+(?:int|float)\s+%s\s*=\s*([^;]+);' % const
+            ours = re.search(pattern, self.rt_code)
+            theirs = re.search(pattern, material)
+            self.assertIsNotNone(ours, const)
+            self.assertIsNotNone(theirs, const)
+            self.assertEqual(squash(ours.group(1)), squash(theirs.group(1)), const)
+
+        for name in ('mat_marble_albedo', 'mat_clay_edge'):
+            self.assertIn(name, self.rt_functions)
+            sig, body = self.rt_functions[name]
+            msig, mbody = self.material[name]
+            self.assertEqual(squash(body), squash(mbody), name)
+            msig_mod = msig.replace('constant MaterialU& m', 'thread const RTHitMaterial& m')
+            self.assertEqual(squash(sig), squash(msig_mod), name)
+
+        self.assertIn('rt_grain', self.rt_functions)
+        _, grain_body = self.rt_functions['rt_grain']
+        _, mgrain_body = self.material['mat_grain']
+        mgrain_mod = mgrain_body.replace('float cells1 = mat_cells_per_pixel(q1);',
+                                         'float cells1 = px * freq;')
+        self.assertEqual(squash(grain_body), squash(mgrain_mod))
+
+        self.assertIn('rt_hit_albedo', self.rt_functions)
+        _, albedo_body = self.rt_functions['rt_hit_albedo']
+        self.assertIn('if (m.family != kRTFamilyProcedural) return base;', albedo_body)
+        self.assertIn('return light_finite3(a) ? a : base;', albedo_body)
+
+        mat_h = strip_comments(read(os.path.join(ROOT, 'layer1', 'Material.h')))
+        enum_m = re.search(r'enum\s*\{([^}]+)\};', mat_h)
+        self.assertIsNotNone(enum_m)
+        enum_tokens = [t.strip().split('=')[0].strip() for t in enum_m.group(1).split(',') if t.strip()]
+        fam_proc_val = enum_tokens.index('cMaterialFamily_procedural')
+        fam_glass_val = enum_tokens.index('cMaterialFamily_glass')
+        self.assertRegex(self.rt_code, r'constant\s+int\s+kRTFamilyProcedural\s*=\s*%d\s*;' % fam_proc_val)
+        self.assertRegex(self.rt_code, r'constant\s+int\s+kRTFamilyGlass\s*=\s*%d\s*;' % fam_glass_val)
+
+        occ = cpp_function(self.mm, 'RendererMetal::rtOccurrenceMaterial')
+        self.assertIn('_repMatParams.family', occ)
+        self.assertIn('_repMatParams.mode', occ)
+        for i in range(6):
+            self.assertIn('_repMatParams.p[%d]' % i, occ)
+
+    def testTransparentLayerTakesItsTable(self):
+        """#855: The transparent reflection layer reads its own material table."""
+        sig, _ = fragments(self.rt)['rt_composite']
+        self.assertRegex(sig, r'device\s+const\s+uint\*\s+tocc\s*\[\[\s*buffer\(12\)\s*,\s*function_constant\(kRTTrans\)\s*\]\]')
+        self.assertRegex(sig, r'device\s+const\s+float4\*\s+tmats\s*\[\[\s*buffer\(14\)\s*,\s*function_constant\(kRTTrans\)\s*\]\]')
+
+        run_post = cpp_function(self.mm, 'RendererMetal::runPostChain')
+        self.assertIn('[er setFragmentBuffer:_rtTOccBuffer offset:0 atIndex:12];', run_post)
+        self.assertIn('[er setFragmentBuffer:_rtTMatBuffer offset:0 atIndex:14];', run_post)
+
+        note_trans = cpp_function(self.mm, 'RendererMetal::rtNoteTransparent')
+        self.assertIn('_rtTFrameMat.push_back(rtOccurrenceMaterial());', note_trans)
+
+        rt_curr = cpp_function(self.mm, 'RendererMetal::rayTracingCurrent')
+        self.assertIn('_rtTFrameMat == _rtTBuiltMat', rt_curr)
+
+        self.assertRegex(self.rt_code, r'float\s+lShin,\s*tMatCount,\s*aoAces,\s*pad6;')
+        self.assertRegex(run_post, r'float\s+lShin,\s*tMatCount,\s*aoAces,\s*pad6;')
+        self.assertIn('u.tMatCount = doRTTrans ? (float)_rtTBuiltMat.size() : 0.0f;', run_post)
+
+    def testGlassHitTakesTheGlints(self):
+        """#855: A glass hit in the transparent reflection layer takes the glass glints."""
+        for name in ('rt_rig_glass_hit', 'rt_rig_glass_hit_shadowed'):
+            self.assertIn(name, self.rt_functions)
+            _, body = self.rt_functions[name]
+            code = squash(body)
+            self.assertIn('constfloat3body=shaded+base*kMatGlassBaseAttenuation*t.diffuse;', code)
+            self.assertIn('constfloat3hi=light_glass_glints(t.specular)*(kMatGlassReflection*saturate(knob));', code)
+            self.assertIn('if(kLightHdr)returnlight_glass_cover(body,hi,a,rig.tone);', code)
+            self.assertIn('returnmat_glass_cover(body,hi,a);', code)
+
+        sig, body = self.rt_functions['rt_rig_glass_hit']
+        sig_s, body_s = self.rt_functions['rt_rig_glass_hit_shadowed']
+        norm_s = squash(sig_s + body_s)
+        norm_s = norm_s.replace(',depth2d_array<float>maps,samplersmp', '')
+        norm_s = norm_s.replace(',maps,smp', '')
+        norm_s = norm_s.replace('_shadowed', '')
+        self.assertEqual(norm_s, squash(sig + body))
 
     def testRTPipelines(self):
         code = strip_comments(self.mm)
         self.assertRegex(code, r'constexpr NSUInteger kRTLightRigConstantIndex = 1;')
         self.assertRegex(code, r'constexpr NSUInteger kRTLightRigBufferIndex = 13;')
+        self.assertRegex(code, r'constexpr NSUInteger kRTLightShadowConstantIndex = 3;')
+        self.assertRegex(code, r'constexpr NSUInteger kRTLightShadowTextureIndex = 5;')
         # every classic RT pipeline sets the constant, false, before it
         # specialises (both functions take the same values)
         build = cpp_function(self.mm, 'RendererMetal::buildRTPipelines')
@@ -1462,10 +1804,17 @@ class TestRayTracedReflections(LightMSLCase):
         self.assertIsNotNone(rig)
         self.assertEqual(depth_at(build, rig.start()), 1)
         self.assertLess(rig.start(), build.index('constantValues:fc'))
+        shadow = re.search(r'bool\s+shadow\s*=\s*false;\s*\[fc\s+setConstantValue:&shadow\s+'
+                           r'type:MTLDataTypeBool\s+atIndex:kRTLightShadowConstantIndex\];', build)
+        self.assertIsNotNone(shadow)
+        self.assertEqual(depth_at(build, shadow.start()), 1)
+        self.assertLess(shadow.start(), build.index('constantValues:fc'))
         # the variant: the composite only, with true, the classic descriptor
         variant = cpp_function(self.mm, 'RendererMetal::buildRTRigComposite')
         self.assertRegex(variant, r'bool\s+rig\s*=\s*true;\s*\[fc\s+setConstantValue:&rig\s+'
                                   r'type:MTLDataTypeBool\s+atIndex:kRTLightRigConstantIndex\];')
+        self.assertRegex(variant, r'bool\s+s\s*=\s*shadow;\s*\[fc\s+setConstantValue:&s\s+'
+                                  r'type:MTLDataTypeBool\s+atIndex:kRTLightShadowConstantIndex\];')
         self.assertIn('newFunctionWithName:@"rt_composite" constantValues:fc', variant)
         self.assertNotIn('rt_ao', variant)
         self.assertIn('pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;',
@@ -1474,25 +1823,27 @@ class TestRayTracedReflections(LightMSLCase):
                       build)
         for released in ('[fc release];', '[pd release];', '[vtx release];', '[fco release];'):
             self.assertIn(released, variant)
-        # #624 (re-taken): the rig composites are [transparent][hdr], every
+        # #624, #741: the rig composites are [transparent][hdr][shadow][soft], every
         # slot released
         dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
         self.assertRegex(dtor, r'for \(int t = 0; t < 2; \+\+t\)\s*'
                                r'for \(int h = 0; h < 2; \+\+h\)\s*'
-                               r'\[_rtResolvePipelineRig\[t\]\[h\] release\];')
+                               r'for \(int s = 0; s < 2; \+\+s\)\s*'
+                               r'for \(int so = 0; so < 2; \+\+so\)\s*'
+                               r'\[_rtResolvePipelineRig\[t\]\[h\]\[s\]\[so\] release\];')
 
     def testRigCompositeChosenAndBoundOnlyWhenOn(self):
         code = strip_comments(self.mm)
-        # one binding, under rtRig; one builder call, under the rig and a
-        # reflective frame; one attempt per variant
-        self.assertEqual(code.count('atIndex:kRTLightRigBufferIndex'), 1)
-        self.assertEqual(len(re.findall(r'(?<!::)buildRTRigComposite\(', code)), 1)
+        # two bindings (soft pass and composite), under rtRig / doSoft; two builder calls (variant and fallback);
+        # one attempt per variant
+        self.assertEqual(code.count('atIndex:kRTLightRigBufferIndex'), 2)
+        self.assertEqual(len(re.findall(r'(?<!::)buildRTRigComposite\(', code)), 2)
         post = cpp_function(self.mm, 'RendererMetal::runPostChain')
         start = post.index('id<MTLRenderPipelineState> composite =')
         self.assertRegex(post[start:], r'^id<MTLRenderPipelineState> composite =\s*'
                                        r'doRTTrans \? _rtResolvePipelineT : _rtResolvePipeline;'
                                        r'\s*bool rtRig = false;')
-        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*u\.matCount\s*>\s*0\.5f\s*\)\s*\{',
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*\(u\.matCount\s*>\s*0\.5f\s*\|\|\s*doSoft\)\s*\)\s*\{',
                           post)
         self.assertIsNotNone(block)
         end = match_brace(post, block.end() - 1)
@@ -1500,25 +1851,29 @@ class TestRayTracedReflections(LightMSLCase):
         self.assertIn('*tried = true;', inside)
         self.assertLess(inside.index('*tried = true;'), inside.index('buildRTRigComposite('))
         self.assertIn('rtRig = true;', inside)
-        self.assertEqual(len(re.findall(r'rtRig\s*=\s*true', post)), 1)
+        self.assertEqual(len(re.findall(r'rtRig\s*=\s*true', post)), 2)
         self.assertEqual(len(re.findall(r'\[er setRenderPipelineState:', post)), 1)
         self.assertIn('[er setRenderPipelineState:composite];', post)
         # which composite variant the rig path uses (613-R2-3): the transparent
         # or default pipeline slot, flag and builder argument all follow
         # doRTTrans; and (#624, re-taken) the HDR or knee slot, flag and
-        # argument all follow _lightHdrOn
+        # argument all follow _lightHdrOn; and (#664) the shadow slot follows
+        # rtShadow; and (#741) the soft slot follows doSoft
         self.assertRegex(inside, r'const int rigT = doRTTrans \? 1 : 0;\s*'
-                                 r'const int rigH = _lightHdrOn \? 1 : 0;')
-        self.assertRegex(inside, r'rigComposite\s*=\s*&_rtResolvePipelineRig\[rigT\]\[rigH\];')
-        self.assertRegex(inside, r'tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\];')
+                                 r'const int rigH = _lightHdrOn \? 1 : 0;\s*'
+                                 r'rigS = rtShadow \? 1 : 0;\s*'
+                                 r'const int rigSoft = doSoft \? 1 : 0;')
+        self.assertRegex(inside, r'rigComposite\s*=\s*&_rtResolvePipelineRig\[rigT\]\[rigH\]\[rigS\]\[rigSoft\];')
+        self.assertRegex(inside, r'tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\]\[rigS\]\[rigSoft\];')
         self.assertRegex(inside, r'\*rigComposite\s*=\s*buildRTRigComposite\(doRTTrans, '
-                                 r'_lightHdrOn\);')
+                                 r'_lightHdrOn,\s*rtShadow,\s*doSoft\);')
         builder = cpp_function(self.mm, 'RendererMetal::buildRTRigComposite')
         self.assertRegex(builder, r'bool t = transparent;\s*\[fc setConstantValue:&t '
                                   r'type:MTLDataTypeBool atIndex:0\];')
-        bind = re.search(r'if\s*\(\s*rtRig\s*\)\s*\{[^}]*LightRigBlock block = _lightRigBlock;'
-                         r'[^}]*setFragmentBytes:&block length:sizeof\(block\) '
-                         r'atIndex:kRTLightRigBufferIndex\];\s*\}', post)
+        bind = re.search(r'if\s*\(\s*rtRig\s*\)\s*\{.*?'
+                         r'LightRigBlock block = _lightRigBlock;.*?'
+                         r'setFragmentBytes:&block length:sizeof\(block\) '
+                         r'atIndex:kRTLightRigBufferIndex\];\s*\}', post, re.S)
         self.assertIsNotNone(bind)
         self.assertLess(post.index('[er setRenderPipelineState:composite];'), bind.start())
         self.assertLess(bind.start(), post.index('[er drawPrimitives:', bind.start()))

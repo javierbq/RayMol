@@ -54,12 +54,58 @@ void SceneSetLightRig(PyMOLGlobals* G, std::optional<pymol::LightRig> rig);
  */
 pymol::Result<> SceneLightsReplace(PyMOLGlobals* G, pymol::LightRig rig);
 
+/// #661: the eased position of camera animation element `cur` of `n`: the
+/// curve SceneLoadAnimation gives the camera (ViewElemInterpolate, power 2,
+/// bias 1): x = cur/n clamped to [0,1]; x < 0.5: pow(2x, 2) / 2;
+/// x > 0.5: 1 - pow(2(1-x), 2) / 2; 0.5 -> 0.5.
+double SceneLightsRecallEase(int cur, int n);
+
+/// #661: recall a scene's rig. `target` gets SceneLightsReplace's frame capture
+/// and validation (error -> nothing changes, return the error). A target equal
+/// to the live rig writes nothing and drops any pending blend. Then, when a
+/// camera animation started by the last scene recall is still running
+/// (SceneLightsNoteRecallView; consumed here) or `force` (tests:
+/// there is no camera animation without a GUI), and both the live rig and
+/// `target` are on (LightRigIsOn), the blend is recorded {from = live, to =
+/// target, serial = AnimationSerial} and the rig is left as it is (the camera's
+/// next frame steps it). Otherwise `target` is stored at once
+/// (SceneSetLightRig), as before #661.
+pymol::Result<> SceneLightsRecall(
+    PyMOLGlobals* G, pymol::LightRig target, bool force = false);
+
+/// #661: MovieSceneRecall's note of whether this recall started a camera
+/// animation (`animated`: it set the view with animate != 0). Records the
+/// animation's serial, or -1.
+void SceneLightsNoteRecallView(PyMOLGlobals* G, bool animated);
+
+/// #661: put the recall blend at camera element `cur` of `n`. Nothing pending
+/// -> false. n <= 0 or cur >= n -> finish (store `to` exactly, clear) and
+/// return false. Else store LightRigBlend(from, to, SceneLightsRecallEase(cur,
+/// n)) with air.dustSpeed = from's (the live dust clock is wall time x speed,
+/// so a ramp would race the dust: the speed steps when the blend finishes) and
+/// return true. Backwards steps are allowed (a movie scrubbed back re-steps the
+/// camera from element 0).
+bool SceneLightsRecallAdvance(PyMOLGlobals* G, int cur, int n);
+
+/// #661: SceneUpdateAnimation's step: nothing pending -> nothing; the pending
+/// blend's serial differs from AnimationSerial (a newer camera animation) ->
+/// finish; else SceneLightsRecallAdvance(cur_ani_elem, n_ani_elem).
+void SceneLightsRecallStep(PyMOLGlobals* G);
+
+/// #661: store the pending blend's `to` and clear it. A camera cut or user
+/// drag (SceneAbortAnimation), a light edit (SceneLightSet, which also covers
+/// a recall of an 'off' scene) and recenter land the rig on the scene's first;
+/// SceneSetLightRig replaces the whole rig and just drops the blend. Nothing
+/// pending -> nothing.
+void SceneLightsRecallFinish(PyMOLGlobals* G);
+
 /**
  * The rig frame for the current scene (spec §4.3, Q5): the box of the
  * enabled objects in the current state, that is the enabled atoms with
  * solvent excluded, plus the cached extents of enabled objects that are not
  * molecules (maps, meshes, isosurfaces, CGOs, measurements, slices, volumes;
- * not gadgets or gizmos). The centre is the box midpoint and the size half
+ * not overlays: gadgets, gizmos and the Move gizmo's CGO,
+ * SceneObjectIsOverlay). The centre is the box midpoint and the size half
  * its diagonal (at least 1 Å). Falls back to every enabled atom when only
  * solvent is enabled, and to the rotation origin with 10 Å when nothing
  * enabled has an extent.
@@ -157,6 +203,9 @@ struct SceneLightFrame {
   /// haze or dust is above 0. Nothing else is read for it here: the gates
   /// (grid, geometry), the clock and the settings are SceneLightsAir's.
   std::optional<pymol::LightAirSource> airSource;
+  /// Traced soft shadows (#741): per block light, LightSoftRadius while
+  /// studioShadows, else 0; never part of the GPU block.
+  std::array<float, pymol::kLightRigBlockSlots> softRadius{};
 };
 
 /**
@@ -190,30 +239,29 @@ void SceneLightsToneFill(PyMOLGlobals* G, pymol::LightRigBlock& block);
  * Haze and dust, drawn by the Metal renderer's air pass. SceneRenderMetal
  * calls SceneLightsAir() once per frame, after SceneLightsFrame(), and hands
  * the block to the renderer (setLightAir). No air without a rig that is on
- * with haze or dust (airSource), without geometry, or in grid mode.
+ * with haze or dust (airSource), or without geometry (grid frames draw air per
+ * cell, #686).
  */
 
-/// Overrides for _cmd.get_light_air_frame (CI has no renderer, grid or live
-/// clock): each unset field reads what a frame reads.
+/// Overrides for _cmd.get_light_air_frame (CI has no renderer or live clock):
+/// each unset field reads what a frame reads.
 struct SceneLightAirOptions {
   /// The frame renders offscreen (else Renderer::offscreenFrame()).
   std::optional<bool> offscreen;
   /// The live clock in seconds (else UtilGetSeconds).
   std::optional<double> wallSeconds;
-  /// The grid layout (else the scene's, G->Scene->grid).
-  const pymol::LightShadowGridOverride* grid = nullptr;
 };
 
 /**
  * This frame's air block, or nullopt when the frame draws no air. Tests, in
- * order and reading nothing before its turn: the frame's airSource; grid
- * mode (D8: no air in a grid); something to light (the overlay-free extent,
- * SceneGetLightShadowExtent, so overlays alone never get air); then reads
- * the dust clock (LightAirClock: metal_light_air_time, movie frame and
- * movie_fps, the renderer's offscreen flag, MoviePlaying on live frames only,
- * the wall clock) and metal_light_air_resolution and
- * metal_light_air_shadow_filter, and packs (LightAirPack). Writes nothing and
- * never requests a redraw.
+ * order and reading nothing before its turn: the frame's airSource; something to
+ * light (the overlay-free extent, SceneGetLightShadowExtent, so overlays alone
+ * never get air; grid frames draw air per cell, #686); then reads the dust
+ * clock (LightAirClock: metal_light_air_time, movie frame and movie_fps, the
+ * renderer's offscreen flag, MoviePlaying on live frames only, the wall clock)
+ * and metal_light_air_phase and metal_light_air_resolution and
+ * metal_light_air_shadow_filter and metal_light_air_alpha, and packs
+ * (LightAirPack). Writes nothing and never requests a redraw.
  */
 std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
     const SceneLightFrame& frame, const SceneLightAirOptions* options = nullptr);
@@ -221,9 +269,9 @@ std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
 /**
  * The dust moves on its own, so the live view must redraw for it
  * (LightAirAnimating): the rig is on, dust and dust_speed are above 0, the
- * clock is not pinned, no movie plays, no grid and there is geometry. Cheap
- * tests first, the extent last. Main thread (MoviePlaying). Writes nothing and
- * never requests a redraw: the app's redraw policy asks it (#618 D11).
+ * clock is not pinned, no movie plays and there is geometry. Cheap tests first,
+ * the extent last. Main thread (MoviePlaying). Writes nothing and never
+ * requests a redraw: the app's redraw policy asks it (#618 D11).
  */
 bool SceneLightsAirAnimating(PyMOLGlobals* G);
 

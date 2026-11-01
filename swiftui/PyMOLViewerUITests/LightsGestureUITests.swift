@@ -9,8 +9,11 @@
 //   - a pinch on a knob changes only that light's radius (0.5x grid, beam
 //     kept, camera still), and press-hold-drag on a knob drags it (the
 //     long-press never begins on a knob);
-//   - iPhone: the sheet's grabber drag expands it with the scene kept at
-//     180 pt at least; iPad: the float's grip drag moves it to a corner.
+//   - iPhone: the portrait light menu picks a light and opens the full
+//     bottom-sheet editor (#885), and the sheet's grabber drag expands it with
+//     the scene kept at 180 pt at least; iPad: the float's grip drag moves it
+//     to a corner, and a focused field keeps the viewport and the inspector
+//     above the keyboard (#725, #870).
 //
 // State is read from the PYMOL_UITEST=1 probe (`lightsProbe`, ContentView's
 // LightsUITestProbe): `sel=<name> radius= orbit= pitch= beam= cam=<hash>
@@ -163,12 +166,69 @@ final class LightsGestureUITests: XCTestCase {
 
     // MARK: - The docked sheet (iPhone) and the float (iPad)
 
+    func testPortraitLightMenuPicksALightAndOpensTheEditor() throws {
+        guard !isPad else { throw XCTSkip("iPhone only: the portrait light menu (#885)") }
+        XCUIDevice.shared.orientation = .portrait
+        _ = try launchInLights()
+        XCTAssertFalse(element("lights.sheet").exists, "the portrait sheet should start closed")
+        XCTAssertFalse(element("lights.chip.key").exists, "the light menu replaces the chips in portrait")
+        attach("menu-closed")
+        let menu = element("lights.menu")
+        XCTAssertTrue(menu.waitForExistence(timeout: 10), "the portrait light menu is missing")
+        menu.tap()
+        attach("menu-open")
+        let fillByID = app.buttons["lights.menu.light.fill"]
+        if fillByID.waitForExistence(timeout: 3) {
+            fillByID.tap()
+        } else {
+            let fallback = app.buttons.matching(NSPredicate(
+                format: "label == %@ AND identifier != %@", "fill", "lights.chip.fill"
+            )).allElementsBoundByIndex.first { $0.isHittable }
+            try XCTUnwrap(fallback, "no hittable 'fill' item in the light menu").tap()
+        }
+        _ = try waitForProbe("the fill light to be selected") { $0.sel == "fill" }
+        try openEditorFromMenu()
+        let sheet = element("lights.sheet")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), "the full editor sheet did not appear")
+        let grabber = element("lights.sheet.grabber")
+        XCTAssertEqual(grabber.value as? String, "Expanded")
+        XCTAssertTrue(element("lights.inspector.menu").exists, "the inspector header is missing in the full editor")
+        attach("editor-open")
+        let close = element("lights.sheet.close")
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "the sheet's close button is missing")
+        close.tap()
+        XCTAssertTrue(waitFor(timeout: 5) { !sheet.exists }, "the sheet did not close")
+    }
+
+    private func openEditorFromMenu() throws {
+        let menu = element("lights.menu")
+        XCTAssertTrue(menu.waitForExistence(timeout: 10), "the portrait light menu is missing")
+        menu.tap()
+        let editByID = app.buttons["lights.menu.edit"]
+        if editByID.waitForExistence(timeout: 3) {
+            editByID.tap()
+        } else {
+            let fallback = app.buttons["Edit light…"]
+            XCTAssertTrue(fallback.waitForExistence(timeout: 3), "'Edit light…' item is missing")
+            fallback.tap()
+        }
+    }
+
+    /// Opens the portrait full editor from the light menu (#885), collapses it
+    /// to Compact with Less, then drags the grabber up to Expanded.
     func testGrabberDragExpandsTheSheet() throws {
         guard !isPad else { throw XCTSkip("iPhone only: the iPad floats the orbit view (testGripDragMovesTheFloat)") }
+        XCUIDevice.shared.orientation = .portrait
         _ = try launchInLights()
+        try openEditorFromMenu()
         let grabber = element("lights.sheet.grabber")
         XCTAssertTrue(grabber.waitForExistence(timeout: 10), "the sheet's grabber is missing")
-        XCTAssertEqual(grabber.value as? String, "Compact")
+        let more = element("lights.sheet.more")
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "the sheet's More/Less button is missing")
+        more.tap()
+        XCTAssertTrue(waitFor(timeout: 5) { (grabber.value as? String) == "Compact" },
+                      "Less did not collapse the sheet to Compact (value \(String(describing: grabber.value)))")
+        settle(1.0)
         attach("sheet-compact")
         let start = screenPoint(CGPoint(x: grabber.frame.midX, y: grabber.frame.midY))
         mark("grabber-drag")
@@ -208,6 +268,110 @@ final class LightsGestureUITests: XCTestCase {
         attach("float-top-left")
         print("LIGHTS_UITEST_FLOAT value=\(String(describing: grip.value)) card before=\(before) after=\(card.frame)")
         XCTAssertLessThan(card.frame.midY, view.midY, "the card is not in the top half: \(card.frame)")
+    }
+
+    private static let focusedInspectorMinimum: CGFloat = 200
+
+    func testFloatFieldFocusKeepsTheViewport() throws {
+        guard isPad else { throw XCTSkip("iPad only: the float") }
+        app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:bl;expand"
+        _ = try launchInLights()
+        let before = viewport().frame
+        let field = element("lights.inspector.orbit.field")
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "the orbit field is missing")
+        field.tap()
+        let keyboard = app.keyboards.firstMatch
+        if !keyboard.waitForExistence(timeout: 5) {
+            throw XCTSkip("no software keyboard (a hardware keyboard is connected)")
+        }
+        settle(1.0)
+        attach("float-field-focus")
+        let after = viewport().frame
+        XCTAssertEqual(after.minX, before.minX, accuracy: 0.5, "viewport minX changed")
+        XCTAssertEqual(after.minY, before.minY, accuracy: 0.5, "viewport minY changed")
+        XCTAssertEqual(after.width, before.width, accuracy: 0.5, "viewport width changed")
+        XCTAssertEqual(after.height, before.height, accuracy: 0.5, "viewport height changed")
+        XCTAssertLessThanOrEqual(field.frame.maxY, keyboard.frame.minY,
+                                 "the orbit field is not above the keyboard")
+        print("LIGHTS_UITEST_FOCUS before=\(before) after=\(after) field=\(field.frame) keyboard=\(keyboard.frame)")
+    }
+
+    func testLandscapeFloatFieldKeepsTheInspectorAboveTheKeyboard() throws {
+        try checkLandscapeFieldFocus(corner: "bl")
+    }
+
+    /// A top-trailing orbit card heads the risen column (#870): it rises
+    /// with it and never covers the inspector.
+    func testLandscapeFloatFieldTopTrailingCardClearsTheInspector() throws {
+        try checkLandscapeFieldFocus(corner: "tr")
+    }
+
+    /// #889: the iPad float's bar carries the light menu (no chips) and the
+    /// Atmosphere button, which opens the popover with the air's switch and
+    /// rows; the float itself has no Atmosphere card.
+    func testIPadBarHasTheLightMenuAndTheAtmospherePopover() throws {
+        guard isPad else { throw XCTSkip("iPad only: the float's bar") }
+        _ = try launchInLights()
+        XCTAssertTrue(element("lights.menu").waitForExistence(timeout: 10), "the light menu is missing")
+        XCTAssertFalse(element("lights.chip.key").exists, "the light menu replaces the chips")
+        XCTAssertFalse(element("lights.atmosphere").exists, "the float has no Atmosphere card")
+        let button = element("lights.bar.atmosphere")
+        XCTAssertTrue(button.waitForExistence(timeout: 5), "the bar's Atmosphere button is missing")
+        button.tap()
+        XCTAssertTrue(element("lights.atmosphere.popover").waitForExistence(timeout: 5),
+                      "the Atmosphere popover did not open")
+        settle(0.5)
+        // It opens below the bar, where there is room: the whole popover
+        // shows, the switch included (above the bar its header was clipped).
+        let toggle = element("lights.atmosphere.switch")
+        XCTAssertTrue(toggle.exists, "the popover's switch is missing")
+        XCTAssertTrue(toggle.isHittable, "the popover's switch is clipped")
+        XCTAssertGreaterThanOrEqual(toggle.frame.minY, button.frame.maxY,
+                                    "the popover opened above the bar: switch=\(toggle.frame) button=\(button.frame)")
+        XCTAssertTrue(element("lights.atmosphere.haze").isHittable, "the popover's Haze slider is clipped")
+        XCTAssertTrue(element("lights.atmosphere.scatter.disclosure").isHittable,
+                      "the popover's Scatter disclosure is clipped")
+        attach("ipad-atmosphere-popover")
+    }
+
+    private func checkLandscapeFieldFocus(corner: String) throws {
+        guard isPad else { throw XCTSkip("iPad only: the float") }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:\(corner);expand"
+        _ = try launchInLights()
+        XCTAssertTrue(element("lights.bar.atmosphere").waitForExistence(timeout: 10),
+                      "the bar's Atmosphere button is missing")
+        let orbit = element("lights.inspector.orbit.field")
+        XCTAssertTrue(orbit.waitForExistence(timeout: 10), "the orbit field is missing")
+        orbit.tap()
+        let keyboard = app.keyboards.firstMatch
+        if !keyboard.waitForExistence(timeout: 5) {
+            throw XCTSkip("no software keyboard (a hardware keyboard is connected)")
+        }
+        settle(1.0)
+        attach("float-landscape-field-focus-\(corner)")
+        let inspector = element("lights.inspector")
+        let pitch = element("lights.inspector.pitch.field")
+        XCTAssertGreaterThanOrEqual(inspector.frame.height, Self.focusedInspectorMinimum,
+                                    "the inspector shrank under the keyboard: \(inspector.frame)")
+        for (name, field) in [("orbit", orbit), ("pitch", pitch)] {
+            XCTAssertFalse(field.frame.isEmpty, "the \(name) field frame is empty")
+            XCTAssertGreaterThanOrEqual(field.frame.minY, inspector.frame.minY - 0.5,
+                                        "the \(name) field is above the inspector")
+            XCTAssertLessThanOrEqual(field.frame.maxY, inspector.frame.maxY + 0.5,
+                                     "the \(name) field is below the inspector")
+            XCTAssertLessThanOrEqual(field.frame.maxY, keyboard.frame.minY,
+                                     "the \(name) field is not above the keyboard")
+            XCTAssertTrue(field.isHittable, "the \(name) field is not hittable")
+        }
+        let card = element("lights.orbit")
+        if corner == "tr", card.exists {
+            XCTAssertLessThanOrEqual(card.frame.maxY, inspector.frame.minY + 0.5,
+                                     "the orbit card covers the inspector: card=\(card.frame) inspector=\(inspector.frame)")
+        }
+        print("LIGHTS_UITEST_LANDSCAPE corner=\(corner) inspector=\(inspector.frame) orbit=\(orbit.frame) "
+              + "pitch=\(pitch.frame) card=\(card.frame) keyboard=\(keyboard.frame)")
     }
 
     // MARK: - The probe

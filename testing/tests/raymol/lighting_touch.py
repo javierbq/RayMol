@@ -16,7 +16,9 @@ sets that light's radius; the pan and the twist do nothing); a long-press
 never begins on a knob, the aim dot or a handle and places a highlight
 anywhere else while the gizmo shows (the context menu only when it is
 hidden); an option-tap off every target does the same; Move mode's
-one-finger pan hit-tests where the finger came down (#702).
+one-finger pan hit-tests where the finger came down (#702). The camera's
+twist (outside a knob pinch) rolls through a bridge call (#719), so no
+handler runs Python per tick.
 
 The docked tools (Part 3, LightsSheet.swift): placement by size class, the
 sheet's heights keyed by the room (the scene keeps 180 pt), the grabber drag
@@ -79,6 +81,8 @@ GIZMO_OVERLAY = os.path.join(SHARED, 'LightGizmoOverlay.swift')
 BAR = os.path.join(SHARED, 'LightsBar.swift')
 INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
 VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
+ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
+BRIDGE = os.path.join('swiftui', 'PyMOLViewer', 'Bridge', 'PyMOLBridge.mm')
 SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
@@ -249,17 +253,20 @@ class TestTouchSource(testing.PyMOLTestCase):
 
     def testHandlesStayInTheView(self):
         """#693: the handles go to the rightmost sample first; only when one
-        would leave the view (inset by the handle's reach) does another index
-        win, and both rings use the same index."""
+        would leave the view (less the chrome insets, inset by the handle's
+        reach) does another index win, both rings using the same index, with
+        the visible sample nearest the aim dot as the fallback."""
         text = self.read(GIZMO_MODEL)
         selected = body(text, 'private static func selected(')
         self.assertIsNotNone(selected, 'LightGizmoLayout.selected not found')
         first = selected.find('inner.rightmost ?? aim')
-        rule = selected.find('if !inside(handles)')
+        rule = selected.find('if !insideBoth(handles)')
         self.assertGreaterEqual(first, 0, 'the rightmost placement comes first')
         self.assertGreater(rule, first, 'the in-view rule only replaces it')
         self.assertIn('.insetBy(dx: metrics.handleReach, dy: metrics.handleReach)', selected)
         self.assertIn('inner.samples[k]', selected)
+        self.assertIn('insets.top', selected)
+        self.assertIn('gizmoDistance($0.ring, aim)', selected)
 
     def testTheOverlayUsesTheReach(self):
         """The knobs' VoiceOver (and XCUITest) frames are their hit areas,
@@ -308,9 +315,9 @@ class TestTouchSource(testing.PyMOLTestCase):
         LightsTouch.swatchColumns columns and the custom picker has a 44 pt
         frame; macOS keeps its one-row 15 pt swatches. The chips are drawn
         by LightsChip (shared with the Atmosphere card's switch, #726); the
-        inspector's chip() forwards to it. The Atmosphere card's chevron
-        and Scatter disclosure are 44 pt targets and its rows at least
-        44 pt tall."""
+        inspector's chip() forwards to it. The Atmosphere card's Scatter
+        disclosure is a 44 pt target and its rows at least 44 pt tall (its
+        header has no chevron since #889: no presentation collapses)."""
         text = self.read(INSPECTOR)
         for signature in ('private func lightMenu(', 'struct LightsChip', 'private func header('):
             with self.subTest(signature):
@@ -324,7 +331,7 @@ class TestTouchSource(testing.PyMOLTestCase):
         header = body(card, 'private func header(')
         self.assertIsNotNone(header, 'the Atmosphere header not found')
         self.assertIn('LightsChip(', header)
-        self.assertIn('.lightsTouchTarget()', header, 'the chevron')
+        self.assertNotIn('collapsed', header)
         disclosure = body(card, 'private func scatterDisclosure(')
         self.assertIsNotNone(disclosure, 'the Scatter disclosure not found')
         self.assertIn('.lightsTouchTarget(width: false)', disclosure)
@@ -424,6 +431,46 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(named, 'beginPinch(named:) not found')
         self.assertIn('LightsOrbitInteraction(controller: controller).beginPinch()', named)
 
+    def testTheTwistRunsNoPython(self):
+        """#719: both twist handlers roll through rollCamera(byRadians:),
+        which calls engine.turnZ; that calls PyMOLBridge_TurnZ, which is
+        PyMOL's C API turn (PyMOL_CmdTurn: the API lock and the rotation
+        cmd.turn does) with the modal-draw refusal, and runs no Python
+        source. No handler runs Python per tick."""
+        viewport = self.read(VIEWPORT)
+        engine_src = self.read(ENGINE)
+        bridge = self.read(BRIDGE)
+
+        for sig in ('func handleRotation(_ gesture: UIRotationGestureRecognizer)',
+                    'func handleRotationGesture(_ gesture: NSRotationGestureRecognizer)'):
+            handler = body(viewport, sig)
+            self.assertIsNotNone(handler, '%s not found' % sig)
+            self.assertIn('rollCamera(byRadians: delta)', handler)
+            self.assertNotIn('runPython', handler)
+            self.assertNotIn('turn(', handler)
+
+        roll = body(viewport, 'func rollCamera(byRadians radians: CGFloat)')
+        self.assertIsNotNone(roll, 'rollCamera not found')
+        self.assertIn('engine?.turnZ(deg)', roll)
+        self.assertIn('rollSign', roll)
+        self.assertNotIn('runPython', roll)
+
+        turn = body(engine_src, 'func turnZ(_ degrees: Float)')
+        self.assertIsNotNone(turn, 'turnZ not found')
+        self.assertIn('PyMOLBridge_TurnZ(instance, degrees)', turn)
+        self.assertNotIn('runPython', turn)
+
+        # The bridge is PyMOL's C API turn (SceneRotate under PYMOL_API_LOCK,
+        # the lock cmd.turn holds) with the modal-draw refusal reported.
+        bridge_turn = body(bridge, 'int PyMOLBridge_TurnZ(PyMOLHandle h, float degrees)')
+        self.assertIsNotNone(bridge_turn, 'PyMOLBridge_TurnZ not found')
+        self.assertIn('PyMOL_GetModalDraw(INST(h))', bridge_turn)
+        self.assertIn("PyMOL_CmdTurn(INST(h), 'z', degrees)", bridge_turn)
+        for banned in ('PyRun', 'PAutoBlock', 'PyMOLBridge_RunPython'):
+            self.assertNotIn(banned, bridge_turn)
+
+        self.assertNotIn("_c.turn('z'", viewport)
+
     def testOptionTapPlacesAHighlight(self):
         """handleTap passes the option key to lightGizmoTap, which places a
         highlight only off every target (LightTouchRouter.optionTap); a tap
@@ -433,6 +480,13 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(tap, 'handleTap not found')
         self.assertIn('lightGizmoTap(at: p, option: gesture.modifierFlags.contains(.alternate), in: view)', tap)
         self.assertLess(tap.find('lightGizmoTap('), tap.find('engine.pick('))
+        # #696: the atom pick is gated on LightClickPick, in both handlers.
+        self.assertIn('LightClickPick.shouldPick(', tap)
+        self.assertLess(tap.find('LightClickPick.shouldPick('), tap.find('engine.pick('))
+        up = body(viewport, 'func handleMouseUp(_ event: NSEvent, in view: MTKView)')
+        self.assertIsNotNone(up, 'handleMouseUp not found')
+        self.assertIn('LightClickPick.shouldPick(', up)
+        self.assertLess(up.find('LightClickPick.shouldPick('), up.find('engine?.pick('))
         routine = body(viewport, 'private func lightGizmoTap(')
         self.assertIsNotNone(routine, 'lightGizmoTap not found')
         option = routine.find('LightTouchRouter.optionTap(at: p, layout: layout)')
@@ -578,15 +632,35 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(grabber, 'grabber not found')
         self.assertIn('.accessibilityAdjustableAction', grabber)
         self.assertIn('.accessibilityIdentifier(LightsSheetState.grabberIdentifier)', grabber)
-        # The header's Atmosphere button (#726; a 44 pt target, checked in
-        # testInspectorControlsAndSwatches): it expands a compact sheet, then
-        # asks the rows to scroll to the Atmosphere section.
+        # The Atmosphere entry (#726; a 44 pt target, checked in
+        # testInspectorControlsAndSwatches) is not in the selected light's
+        # header (#795: atmosphere is scene-wide). The Lights bar carries it;
+        # it reaches the sheet through the owner's reveal request, which
+        # expands a compact sheet and scrolls the rows to the section.
         header = body(text, 'private var headerRow: some View')
         self.assertIsNotNone(header, 'headerRow not found')
-        self.assertIn('LightsSheetAtmosphereButton(controller: controller, style: style) { revealAtmosphere() }',
-                      header)
-        self.assertLess(header.find('LightsSheetAtmosphereButton('), header.find('moreButton'),
-                        'the Atmosphere button sits before More')
+        self.assertNotIn('LightsSheetAtmosphereButton', header,
+                         'nothing scene-wide in the light\'s header')
+        self.assertIn('moreButton', header)
+        bar = self.read(BAR)
+        self.assertIn('LightsSheetAtmosphereButton(controller: controller, style: style, action: onAtmosphere)',
+                      bar, 'the wide bar (iPhone landscape)')
+        overflow = body(bar, 'private func overflowMenu(')
+        self.assertIsNotNone(overflow, 'overflowMenu not found')
+        self.assertIn('if let onAtmosphere', overflow, 'the portrait menu item')
+        self.assertLess(overflow.find('onAtmosphere'), overflow.find('controller.setEnabled'),
+                        'Atmosphere before On/Off in the menu')
+        content = self.read(CONTENT_VIEW)
+        entry = body(content, 'private var lightsAtmosphereEntry: (() -> Void)?')
+        self.assertIsNotNone(entry, 'lightsAtmosphereEntry not found')
+        self.assertIn('LightsBarState.atmosphereOpensPopover(placement: lightsPlacement)', entry)
+        # #885: the entry goes through LightsPortraitTools.revealAtmosphere,
+        # which also opens the portrait editor; it still asks for one reveal.
+        self.assertIn('LightsPortraitTools.revealAtmosphere(', entry)
+        self.assertIn('revealRequest: &lightsAtmosphereRevealRequest', entry)
+        portrait = body(text, 'static func revealAtmosphere(placement: LightsToolsPlacement')
+        self.assertIsNotNone(portrait, 'LightsPortraitTools.revealAtmosphere not found')
+        self.assertIn('revealRequest += 1', portrait)
         reveal = body(text, 'private func revealAtmosphere()')
         self.assertIsNotNone(reveal, 'revealAtmosphere not found')
         self.assertIn('if placement == .bottom, detent == .compact { setDetent(.expanded) }', reveal)
@@ -766,23 +840,38 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertEqual(len(re.findall(r'engine\.suppressDrawableResize\s*=\s*moving', content)), 1)
 
     def testAFocusedLightFieldKeepsTheViewport(self):
-        """While an Orbit or Pitch field of the sheet or the side panel has
-        the keyboard, the viewport-plus-tools container of each phone layout
-        ignores it (an unconditional modifier with a dynamic argument); only
-        the tools' onFieldFocus sets the flag (the iPad card's fields keep
-        today's keyboard avoidance)."""
+        """While an Orbit, Pitch or Atmosphere field of the sheet, the side
+        panel, the iPad float or the bar's Atmosphere popover (#889) has the
+        keyboard, the viewport-plus-tools
+        container of each layout ignores it (an unconditional modifier with
+        a dynamic argument; both iPad orientations, #725), and on the float
+        the GeometryReader the layouts are sized from ignores it too. Only
+        the tools' onFieldFocus sets the flag; the float forwards
+        LightsFieldFocusKey like the sheet does and lifts its trailing
+        column above the keyboard."""
         content = self.read(CONTENT_VIEW)
         rule = '.ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)'
-        self.assertEqual(content.count(rule), 3)
+        self.assertEqual(content.count(rule), 4)
         for signature in ('private func iPhoneLayout(geo: GeometryProxy)',
-                          'private func iPhoneLandscapeLayout(geo: GeometryProxy)',
-                          'private func iPadMacStyleLayout(geo: GeometryProxy)'):
+                          'private func iPhoneLandscapeLayout(geo: GeometryProxy)'):
             with self.subTest(signature):
-                self.assertIn(rule, body(content, signature))
-        self.assertEqual(content.count('onFieldFocus: { lightsFieldFocused = $0 }'), 2)
+                self.assertEqual(body(content, signature).count(rule), 1)
+        self.assertEqual(body(content, 'private func iPadMacStyleLayout(geo: GeometryProxy)').count(rule), 2)
+        self.assertIn('.ignoresSafeArea(lightsFieldFocused && lightsPlacement == .floating ? .keyboard : [], '
+                      'edges: .bottom)', body(content, 'private var iPadOSLayout: some View'))
+        self.assertEqual(content.count('onFieldFocus: { lightsFieldFocused = $0 }'), 4)
+        for signature in ('private var lightsFloatingTools: some View', 'private var lightsBar: some View'):
+            with self.subTest(signature):
+                self.assertIn('onFieldFocus: { lightsFieldFocused = $0 }', body(content, signature))
         self.assertNotIn('onPreferenceChange(LightsFieldFocusKey', content)
         self.assertIn('if lightsFieldFocused { lightsFieldFocused = false }',
                       body(content, 'private func endLightsSheetMotion()'))
+        float = self.read(FLOAT)
+        self.assertIn('.onPreferenceChange(LightsFieldFocusKey.self)', float)
+        self.assertIn('onFieldFocus(focused)', float)
+        self.assertIn('onFieldFocus(false)', float)
+        self.assertIn('.modifier(LightsKeyboardTopReader(top: $keyboardTop))', float)
+        self.assertIn('.padding(.bottom, trailingPadding)', float)
 
     def testThePhoneLogLines(self):
         """A DEBUG LightsLayout line names the tools, the scene, the sheet's
@@ -1019,13 +1108,18 @@ class TestTouchSource(testing.PyMOLTestCase):
 
     def testTheUITestsCoverEveryGesture(self):
         """LightsGestureUITests runs the off-target camera gestures, the knob
-        pinch and press-hold-drag, the iPhone grabber and the iPad grip,
+        pinch and press-hold-drag, the iPhone grabber, the iPad grip and
+        the iPad float's field focus (the viewport keeps its frame, #725, and
+        the inspector keeps its height in landscape, #870),
         reads the probe and the viewport by identifier, and skips (with the
         reason) when a knob is unreachable instead of passing silently."""
         text = self.read(UI_TESTS)
         for name in ('testOffTargetDragRotates', 'testOffTargetPinchZooms', 'testOffTargetTwistRolls',
                      'testKnobPinchChangesOnlyTheRadius', 'testPressHoldDragOnAKnobDrags',
-                     'testGrabberDragExpandsTheSheet', 'testGripDragMovesTheFloat'):
+                     'testGrabberDragExpandsTheSheet', 'testGripDragMovesTheFloat',
+                     'testFloatFieldFocusKeepsTheViewport',
+                     'testLandscapeFloatFieldKeepsTheInspectorAboveTheKeyboard',
+                     'testLandscapeFloatFieldTopTrailingCardClearsTheInspector'):
             with self.subTest(name):
                 self.assertIn('func %s() throws' % name, text)
         for needle in ('"lightsProbe"', '"raymol.viewport"', '"lights.gizmo.knob."',

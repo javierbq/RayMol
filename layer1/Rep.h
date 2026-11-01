@@ -262,23 +262,6 @@ struct Rep {
   //! Records the transparency the geometry was built with; see above.
   void setBuiltTransparency(float t) { m_built_transparency = t; }
 
-  //! Does this (stick) rep emit any stick_ball sphere?
-  //!
-  //! `stick_ball` is atom-level, so answering it means scanning atoms. Cached
-  //! here at build time because the DRAW path needs it too -- a glass stick
-  //! degrades to `default` when balls are present -- and metalApplyRepMaterial
-  //! runs per draw op, per pass, per frame. Scanning there made it O(atoms)
-  //! every time, worst case on exactly the configuration the rule targets.
-  bool emitsStickBalls() const { return m_emits_stick_balls; }
-  /* True once invalidate() has been called, at ANY level, and the rep awaits
-     update(). Conservative for callers that trust cached build answers
-     (emitsStickBalls, hasTransparency): a colour-only invalidation leaves
-     those answers correct but still reads as invalidated, so such a caller
-     falls back to recomputing until the next frame (#530). */
-  bool isInvalidated() const { return MaxInvalid != cRepInvNone; }
-  //! Records the answer at build time; see above.
-  void setEmitsStickBalls(bool v) { m_emits_stick_balls = v; }
-
   //! Was `line_stick_helper` still ON when this (lines) rep was built?
   //! -1 for a rep that does not record one.
   //!
@@ -357,7 +340,6 @@ private:
   //! test written against that would be vacuous -- the exact failure mode this
   //! accessor exists to prevent.
   float m_built_transparency = -1.0f;
-  bool m_emits_stick_balls = false;
   //! Negative = "this rep does not record one", for the same reason as above:
   //! 0 would mean "the helper was off" and make an unbuilt rep answer with
   //! confidence.

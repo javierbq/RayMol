@@ -319,17 +319,18 @@ class TestJelly(testing.PyMOLTestCase):
     # -- spheres and ball-and-stick (#526) ------------------------------------
 
     def testJellyDrawsOnSpheres(self):
-        """Jelly is dense enough (implied alpha 0.85) to read as gummy balls,
-        so unlike clear and frosted glass it is NOT degraded on sphere
-        impostors. Asserted on the EFFECTIVE id -- what reaches the shader."""
+        """Jelly draws on sphere impostors (#526), and since #635 so do clear
+        and frosted glass. Asserted on the EFFECTIVE id -- what reaches the
+        shader."""
         by_name = {n: i for i, n in setting.get_material_names(0)}
         jelly = by_name['jelly']
         for rep in ('surface', 'cartoon', 'sticks', 'spheres'):
             self.assertEqual(
                 _cmd.get_effective_material(jelly, repres[rep]), jelly, rep)
         for clear in ('glass', 'frosted_glass'):
+            mat_id = by_name[clear]
             self.assertEqual(_cmd.get_effective_material(
-                by_name[clear], repres['spheres']), 0, clear)
+                mat_id, repres['spheres']), mat_id, clear)
 
     def testAJellySphereRepBuildsWithJellysImpliedAlpha(self):
         """Shading as jelly while building opaque would be a jelly-coloured
@@ -351,9 +352,8 @@ class TestJelly(testing.PyMOLTestCase):
                                0.4, places=5)
 
     def testJellyBallAndStickStaysJelly(self):
-        """Glass on a stick_ball rep degrades the WHOLE rep to default (its
-        balls would be near-invisible discs). Jelly's balls are fine, so a
-        jelly ball-and-stick keeps its material, its implied alpha and its
+        """All three glass-family materials draw on ball-and-stick since #834:
+        a jelly ball-and-stick keeps its material, its implied alpha and its
         peel request."""
         cmd.hide('everything', 'm1')
         cmd.set('stick_material', 'jelly', 'm1')
@@ -364,12 +364,12 @@ class TestJelly(testing.PyMOLTestCase):
         self.assertAlmostEqual(built_transparency('m1', repres['sticks']),
                                JELLY_TRANSPARENCY, places=5)
         self.assertEqual(resolved_peel('m1'), 1)
-        # ...while clear glass on the same ball-and-stick still degrades, peel
-        # request included: a `default` rep asks for none
+        # ...and clear glass on the same ball-and-stick is glass too (#834),
+        # peel request included
         cmd.set('stick_material', 'glass', 'm1')
         build('m1', 'sticks')
-        self.assertEqual(draw_params('m1', repres['sticks'])[0], 0)
-        self.assertEqual(resolved_peel('m1'), 0)
+        self.assertEqual(draw_params('m1', repres['sticks'])[:2], (GLASS_FAMILY, 4))
+        self.assertEqual(resolved_peel('m1'), 1)
 
     # -- the non-negotiables --------------------------------------------------
 

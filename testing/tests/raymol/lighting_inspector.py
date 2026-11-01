@@ -397,7 +397,7 @@ class TestInspectorSource(testing.PyMOLTestCase):
         cases, ranges, wraps = self.parameters()
         self.assertEqual(
             cases,
-            ['orbit', 'pitch', 'radius', 'intensity', 'warmth', 'beam', 'softness'])
+            ['orbit', 'pitch', 'radius', 'intensity', 'warmth', 'beam', 'softness', 'size'])
         self.assertEqual(sorted(ranges), sorted(cases),
                          'every case needs exactly one `case .x: return a...b` line')
         table = {name: (kind, low, high)

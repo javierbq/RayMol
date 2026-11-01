@@ -10930,6 +10930,9 @@ void ObjectMolecule::invalidate(cRep_t rep, cRepInv_t level, int state)
   if(level >= cRepInvVisib) {
     I->RepVisCacheValid = false;
     I->RepVisAtomsValid = false;
+    // The light shadow extent skips objects with no visible rep (#690).
+    // Every atom-level show/hide/toggle/scene recall ends here.
+    SceneInvalidateExtentCache(G);
   }
 
   if (level >= cRepInvBondsNoNonbonded) {

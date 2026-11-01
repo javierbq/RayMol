@@ -8,8 +8,9 @@
 # worse — as a build that succeeds and then fails upload validation. Paths come
 # from:
 #   swiftui/PyMOLBridge.xcconfig — the macOS link line: libpymol_core.a,
-#     -lpython3.13 from the standalone tree, -lfreetype -lpng16 from the
-#     package-manager prefix, and libomp.a linked statically by path
+#     -lpython3.13 from the standalone tree, static libfreetype.a/libpng16.a
+#     from deps_macos/install (scripts/build_macos_deps.sh), and libomp.a
+#     linked statically by path
 #   swiftui/project.yml ("macOS: Bundle Python + modules + data") — the
 #     embedded interpreter and its numpy + Biopython
 #   scripts/apply_mas_restrictions.sh — what the generated project must look
@@ -47,8 +48,10 @@ REQUIRED=(
   "$ROOT/$PYROOT/lib/python3.13/site-packages/Bio"
   # Homebrew's keg layout; PyMOLBridge.xcconfig's PYMOL_LIBOMP_STATIC default.
   "$PREFIX/opt/libomp/lib/libomp.a"
-  "$PREFIX/lib/libfreetype.dylib"
-  "$PREFIX/lib/libpng16.dylib"
+  # Static, from scripts/build_macos_deps.sh — never Homebrew's dylibs.
+  "$ROOT/deps_macos/install/lib/libfreetype.a"
+  "$ROOT/deps_macos/install/lib/libpng16.a"
+  "$ROOT/deps_macos/install/include/freetype2/ft2build.h"
   "$PREFIX/include/glm/glm.hpp"
   "$PBXPROJ"
 )
@@ -75,9 +78,9 @@ fi
 
 [ "$PROBLEMS" = 0 ] || {
   echo "ERROR: macOS App Store build inputs are incomplete (see above)." >&2
-  echo "       deps_macos comes from scripts/setup_macos_deps.sh; the Homebrew" >&2
-  echo "       libraries from 'brew install'; libpymol_core.a from" >&2
-  echo "       swiftui/build_macos.sh." >&2
+  echo "       deps_macos/python-standalone comes from scripts/setup_macos_deps.sh;" >&2
+  echo "       deps_macos/install and libpymol_core.a from swiftui/build_macos.sh;" >&2
+  echo "       glm + libomp from 'brew install'." >&2
   exit 1; }
 
 echo "macOS build inputs OK (core arm64, embedded Python + numpy + Bio, MAS project)"

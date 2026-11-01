@@ -15,8 +15,9 @@
 //   chip), keyed by the `lightsTouchMinimum` environment value so snapshot
 //   tests on macOS can draw the iOS profile;
 // - the touch routing deciders (LightTwoFingerSequence, LightTouchRouter,
-//   LightTouchGeometry): the knob pinch, the long-press and option-tap
-//   highlights and the touch-down point, wired by MetalViewport on iOS.
+//   LightTouchGeometry, LightAimDoubleTap): the knob pinch, the long-press
+//   and option-tap highlights, the touch-down point and the aim dot's
+//   double-tap (#699), wired by MetalViewport on iOS.
 //
 // Nothing here edits a light or names Python (testing/tests/raymol/
 // lighting_mode.py and lighting_touch.py check that).
@@ -42,6 +43,20 @@ enum LightsTouch {
 
     /// The side of a colour swatch's target on iOS.
     static let swatchTarget: CGFloat = 44
+
+    /// The Lights bar's Atmosphere popover opens below its button on both
+    /// platforms (#889), where the viewport leaves it room (on iPad the
+    /// console and sequence strip above the bar leave too little, and the
+    /// header was clipped). The two platforms read `arrowEdge` differently:
+    /// macOS as the button's edge the popover hangs from, iOS as the
+    /// popover's edge that carries the arrow.
+    static var popoverBelowArrowEdge: Edge {
+        #if os(iOS)
+        return .top
+        #else
+        return .bottom
+        #endif
+    }
 
     /// How many columns of 44 pt swatch targets a row of `width` points
     /// holds: all six when they fit side by side, else three (two rows).
@@ -215,6 +230,19 @@ enum LightLongPressRoute: Equatable {
     case contextMenu
 }
 
+/// Whether a click or tap runs the atom pick (#696). In Lights mode a plain
+/// click or tap runs no pick and leaves the selection alone, on or off the
+/// gizmo and with or without the option key (an option-click off a target
+/// places a highlight instead, #622). Every other mode picks on a click that
+/// was not a drag, as before.
+enum LightClickPick {
+    static func shouldPick(mode: InteractionMode, onGizmo: Bool, option: Bool,
+                           wasDrag: Bool) -> Bool {
+        if mode == .lights { return false }
+        return !wasDrag
+    }
+}
+
 /// Where a long-press or an option-tap goes in Lights mode (#623 Q4).
 enum LightTouchRouter {
     /// The point targets: a long-press there never begins, so press, hold and
@@ -252,5 +280,37 @@ enum LightTouchRouter {
     static func optionTap(at point: CGPoint, layout: LightGizmoLayout?) -> Bool {
         guard let layout else { return false }
         return LightGizmoHitTest.target(at: point, layout: layout) == nil
+    }
+}
+
+/// #699: a double-tap on the selected light's aim dot (iOS). UIKit's one-tap
+/// recognizer reports each tap of a double-tap, so the second is recognised
+/// here: the same light's aim dot within `interval` seconds and `slop` points
+/// of the first. Any other tap forgets the first.
+struct LightAimDoubleTap {
+    static let interval: TimeInterval = 0.35
+    static let slop: CGFloat = 24
+
+    private(set) var last: (point: CGPoint, time: TimeInterval, light: String)?
+
+    init() {}
+
+    /// A tap at `point` at `time` on `target` (nil: no target) while `light`
+    /// is selected. True when it completes a double-tap on the aim dot (and
+    /// the pair is forgotten, so a third tap starts over).
+    mutating func tap(on target: LightGizmoTarget?, light: String?, at point: CGPoint,
+                      time: TimeInterval) -> Bool {
+        guard target == .aimDot, let light else {
+            last = nil
+            return false
+        }
+        if let first = last, first.light.lowercased() == light.lowercased(),
+           (0...Self.interval).contains(time - first.time),
+           hypot(point.x - first.point.x, point.y - first.point.y) <= Self.slop {
+            last = nil
+            return true
+        }
+        last = (point, time, light)
+        return false
     }
 }

@@ -83,6 +83,45 @@ std::array<float, 3> LightToneInverse(std::array<float, 3> c)
   return LightToneRescale(c, LightToneScalarInverse(m), m);
 }
 
+float LightAcesScalar(float m)
+{
+  m = LightToneClean(m);
+  if (m >= kLightAcesClip)
+    return 1.0f; // past the white point (~7.24); keeps huge m from overflowing
+  return std::min(m * (kLightAcesA * m + kLightAcesB) /
+                      (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE),
+                  1.0f);
+}
+
+float LightAcesScalarInverse(float y)
+{
+  y = LightToneClean(y);
+  y = std::min(y, 1.0f);
+  const float a = kLightAcesA - kLightAcesC * y;
+  const float b = kLightAcesB - kLightAcesD * y;
+  return 2.0f * kLightAcesE * y /
+         (b + std::sqrt(b * b + 4.0f * kLightAcesE * a * y));
+}
+
+std::array<float, 3> LightAces(std::array<float, 3> c)
+{
+  c = LightToneClean(c);
+  const float m = std::max({c[0], c[1], c[2]});
+  if (m <= 0.0f)
+    return {0.0f, 0.0f, 0.0f};
+  return LightToneRescale(c, LightAcesScalar(m), m);
+}
+
+std::array<float, 3> LightAcesInverse(std::array<float, 3> c)
+{
+  c = LightToneClean(c);
+  c = {std::min(c[0], 1.0f), std::min(c[1], 1.0f), std::min(c[2], 1.0f)};
+  const float m = std::max({c[0], c[1], c[2]});
+  if (m <= 0.0f)
+    return {0.0f, 0.0f, 0.0f};
+  return LightToneRescale(c, LightAcesScalarInverse(m), m);
+}
+
 float LightToneExposure(float exposure)
 {
   if (!std::isfinite(exposure))

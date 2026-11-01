@@ -272,10 +272,14 @@ void OrthoExecDeferred(PyMOLGlobals* G)
   COrtho* I = G->Ortho;
   /* execute all deferred actions that happened to require a
    * valid OpenGL context (such as atom picks, etc.) */
-  for (const auto& d : I->deferred) {
+  // A job can queue another (OrthoDeferImage -> SceneDeferImage without a
+  // valid context). Run the jobs taken here, so a new one waits for the next
+  // drain instead of being cleared unrun or reallocating under this loop.
+  std::vector<std::function<void()>> deferred;
+  deferred.swap(I->deferred);
+  for (const auto& d : deferred) {
     d();
   }
-  I->deferred.clear();
 }
 
 void OrthoDefer(PyMOLGlobals* G, std::function<void()>&& D)
@@ -3181,14 +3185,14 @@ static pymol::Result<pymol::Image> OrthoMakeSizedImage(
   return final_image;
 }
 
-pymol::Result<bool> OrthoDeferImage(PyMOLGlobals* G, Extent2D extent, const char* filename,
-    int antialias, float dpi, int format, int quiet, pymol::Image* out_img,
+pymol::Result<bool> OrthoDeferImage(PyMOLGlobals* G, Extent2D extent,
+    const char* filename, int antialias, float dpi, int format, int quiet,
     bool with_overlay)
 {
   std::string filename_str = filename ? filename : "";
   std::function<void()> deferred = [=]() {
-    auto prior = SceneDeferImage(G, extent, filename_str.c_str(), antialias,
-        dpi, format, quiet, out_img);
+    auto prior = SceneDeferImage(
+        G, extent, filename_str.c_str(), antialias, dpi, format, quiet);
     if (prior) {
       // Something went bad here. Should fire on deferred.
       return;

@@ -15,6 +15,9 @@ Kept as a bundled module (not an inline Swift string) so it stays readable and
 testable. Mirrors the appkit_inspector.poll pattern.
 """
 
+import contextlib
+import copy
+
 from pymol import cmd
 
 
@@ -65,13 +68,25 @@ def _ease(linear):
 
 def _multistate_objects(names=None):
     """{objname: nstates} for objects with >1 coordinate state. `names` (list)
-    restricts to those objects; None = every object in the session."""
+    restricts to those objects, a group standing for every object inside it
+    (a CGO or a map too, not only molecules: a store through the group used to
+    reach them all); None = every molecule in the session."""
     out = {}
     try:
         objs = names if names else cmd.get_object_list()
     except Exception:
         objs = []
+    expanded = []
     for o in (objs or []):
+        try:
+            if names and cmd.get_type(o) == 'object:group':
+                expanded += [m for m in sorted(_group_members([o], cmd))
+                             if cmd.get_type(m) != 'object:group']
+                continue
+        except Exception:
+            pass
+        expanded.append(o)
+    for o in expanded:
         try:
             ns = int(cmd.count_states(o))
             if ns > 1:
@@ -81,27 +96,170 @@ def _multistate_objects(names=None):
     return out
 
 
-def _emit_state_sweep(obj, lo, hi, start, end, mode='sweep'):
-    """Store per-object STATE keyframes so `obj` sweeps models lo..hi across movie
-    frames [start,end], then interpolate that object's own track. Both endpoints
-    are flagged (state=) so View.cpp interpolates the state channel; the per-object
-    ViewElem sets the object's own `state` at render (independent of the mset and
-    of other objects). mode: 'sweep' (lo->hi) or 'loop' (lo->hi->lo)."""
+def _store_state_track(obj, pts, total, scene_keys=None):
+    """Store `obj`'s own STATE track: the model keyframes `pts` ({frame: model}),
+    held from frame 1 and to frame `total`, linear in between as the core
+    interpolates them. The per-object ViewElem sets the object's own `state` at
+    render, independent of the mset and of other objects.
+
+    Frames 1 and `total` are always keyed, so interpolating has no loop seam to
+    fill: with movie_loop on it wraps from the last key back round to the
+    first, which ran the models backwards through a Roll placed before a
+    Play-models clip. Every keyframe of an object's track carries both a model
+    and a Move-mode matrix (`mview store, object=` writes the object's current
+    TTT, and without state= it flags the object's own `state` setting). So the
+    frames the scenes keyed for it (`scene_keys`, {frame: that scene's TTT, None
+    for unmoved}) are stored again with the model the track has there, and
+    every keyframe gets the TTT of the scene key at or before it (the first
+    one, before any): a hold keeps the scenes' positions, and a scene key no
+    longer carries a stale model in between the track's keys. A key strictly
+    between two scenes that move the object holds the earlier scene's position
+    there, so that move happens after the key rather than across the whole
+    transition.
+
+    movie_auto_store is off while the keys are stored: with a movie defined,
+    set_object_ttt would also store a keyframe, with no model, at the current
+    frame (the last item rebuild visited), breaking the model ramp across it,
+    and reinterpolate every track each time. The track is then reinterpolated
+    whole: a plain interpolate refills only never-filled frames, and the scene
+    pass has filled them all."""
+    import bisect
     try:
-        s = int(start); e = int(end); lo = int(lo); hi = int(hi)
-        if e <= s:
-            e = s + 1
-        if hi < lo:
-            lo, hi = hi, lo
-        if mode == 'loop':
-            mid = (s + e) // 2
-            cmd.mview('store', object=obj, first=s,   state=lo)
-            cmd.mview('store', object=obj, first=mid, state=hi)
-            cmd.mview('store', object=obj, first=e,   state=lo)
+        total = max(int(total), 2)
+        pts = {int(f): int(m) for f, m in pts.items()}
+        if not pts:
+            return
+        fs = sorted(pts)
+        pts.setdefault(1, pts[fs[0]])
+        pts.setdefault(total, pts[fs[-1]])
+        fs = sorted(pts)
+        keys = {int(f): t for f, t in (scene_keys or {}).items() if 1 <= int(f) <= total}
+        ks = sorted(keys)
+        identity = None
+        if ks:
+            from pymol.raymol_scenes import _IDENTITY_TTT as identity
+
+        def model_at(f):
+            if f in pts:
+                return pts[f]
+            i = bisect.bisect(fs, f)
+            a, b = fs[i - 1], fs[i]
+            return max(1, int(round(pts[a] + (pts[b] - pts[a]) * (f - a) / float(b - a))))
+
+        with _no_auto_store():
+            for f in sorted(set(fs) | set(ks)):
+                if ks:
+                    i = bisect.bisect(ks, f)
+                    ttt = keys[ks[i - 1] if i else ks[0]]
+                    cmd.set_object_ttt(obj, list(ttt) if ttt else list(identity))
+                cmd.mview('store', object=obj, first=f, state=model_at(f), freeze=1)
+        cmd.mview('reinterpolate', object=obj, wrap=0)
+    except Exception as ex:
+        print('MOVIE_ERR:' + str(ex))
+
+
+class _no_auto_store(object):
+    """movie_auto_store off for the duration, restored exactly: its default is
+    -1, which `set` would turn into 1, so the default is put back by unset."""
+
+    def __enter__(self):
+        self.was = cmd.get_setting_int('movie_auto_store')
+        cmd.set('movie_auto_store', 0)
+
+    def __exit__(self, *exc):
+        if self.was == -1:
+            cmd.unset('movie_auto_store')
         else:
-            cmd.mview('store', object=obj, first=s, state=lo)
-            cmd.mview('store', object=obj, first=e, state=hi)
-        cmd.mview('interpolate', object=obj)
+            cmd.set('movie_auto_store', self.was)
+        return False
+
+
+def _share_scene_steps(scene_keys, state_clips, pins, total):
+    """Stopgap (#920): a model track keys frames the scenes don't (a clip's
+    ends and Loop midpoint, a hold, a camera item's pin), and such a key inside
+    a scene transition holds the earlier scene's position (_store_state_track).
+    Key every object the scenes really move (two different positions) at all of
+    those frames, with that same step, in `scene_keys` ({obj: {frame: TTT}}),
+    so objects moved together, an ensemble and its ligand, keep together.
+    Keeping the interpolated move exactly needs the core to interpolate models
+    apart from positions (#920)."""
+    import bisect
+    total = max(int(total), 2)
+    frames = {1, total}
+    for clip in state_clips:
+        s = int(clip['frame'])
+        e = int(clip.get('end', total))
+        frames.update((s - 1, s, (s + e) // 2, e))
+    for ps in pins.values():
+        frames.update(int(f) for f, _ in ps)
+    for keys in scene_keys.values():
+        if len({tuple(t) if t else None for t in keys.values()}) < 2:
+            continue
+        ks = sorted(keys)
+        for f in frames:
+            if 1 <= f <= total and f not in keys:
+                i = bisect.bisect(ks, f)
+                keys[f] = keys[ks[i - 1] if i else ks[0]]
+
+
+def _hold_scene_positions(obj, total, scene_keys):
+    """Stopgap (#920): hold an object the scenes move but no model track keys
+    (a one-state object, say) on the first scene's position before its first
+    scene key and the last scene's after its last, as _store_state_track does
+    for the ensembles, instead of gliding round the loop seam, and key it at
+    the frames _share_scene_steps added like them; a ligand moved with its
+    ensemble would otherwise come apart from it. The camera still wraps."""
+    try:
+        total = max(int(total), 2)
+        keys = {int(f): t for f, t in (scene_keys or {}).items() if 1 <= int(f) <= total}
+        if not keys:
+            return
+        from pymol.raymol_scenes import _IDENTITY_TTT as identity
+        ks = sorted(keys)
+        keys.setdefault(1, keys[ks[0]])
+        keys.setdefault(total, keys[ks[-1]])
+        with _no_auto_store():
+            for f in sorted(keys):
+                t = keys[f]
+                cmd.set_object_ttt(obj, list(t) if t else list(identity))
+                cmd.mview('store', object=obj, first=f, freeze=1)
+        cmd.mview('reinterpolate', object=obj, wrap=0)
+    except Exception as ex:
+        print('MOVIE_ERR:' + str(ex))
+
+
+def _emit_state_clips(obj, clips, total, scene_keys=None):
+    """`obj`'s STATE track for its Sweep and Loop clips, (start, end, lo, hi,
+    mode): models lo..hi across movie frames [start, end] ('loop' going back to
+    lo by the end), and a model held on every other frame: the first clip's
+    first model before it, and a clip's last model until the next clip starts
+    or the movie ends. Keys at the clips' own ends alone left the frames outside
+    them to the core: unkeyed frames keep whatever model was last applied, and
+    the loop wrap ran them backwards (see _store_state_track)."""
+    try:
+        pts = {}
+        first_lo = last_state = last_end = None
+        for s, e, lo, hi, mode in sorted(clips, key=lambda c: int(c[0])):
+            s = int(s); e = int(e); lo = int(lo); hi = int(hi)
+            if e <= s:
+                e = s + 1
+            if hi < lo:
+                lo, hi = hi, lo
+            if first_lo is None:
+                first_lo = lo
+            elif s - 1 > last_end:
+                pts[s - 1] = last_state      # hold until this clip starts
+            pts[s] = lo
+            if mode == 'loop':
+                pts[(s + e) // 2] = hi
+                pts[e] = last_state = lo
+            else:
+                pts[e] = last_state = hi
+            last_end = e
+        if first_lo is None:
+            return
+        pts.setdefault(1, first_lo)
+        _store_state_track(obj, pts, total, scene_keys)
     except Exception as ex:
         print('MOVIE_ERR:' + str(ex))
 
@@ -133,7 +291,7 @@ def _current_states():
     return out
 
 
-def _emit_state_hold(obj, pins, total):
+def _emit_state_hold(obj, pins, total, scene_keys=None):
     """Hold `obj` on the models it was pinned to (#579): per-object STATE
     keyframes at each (frame, state) in `pins`, extended to frames 1 and `total`
     so the object never falls back to the global mset (model 1) before the first
@@ -143,15 +301,7 @@ def _emit_state_hold(obj, pins, total):
         pts = {}
         for f, s in pins:
             pts[int(f)] = int(s)
-        if not pts:
-            return
-        fs = sorted(pts)
-        total = max(int(total), 2)
-        pts.setdefault(1, pts[fs[0]])
-        pts.setdefault(total, pts[fs[-1]])
-        for f in sorted(pts):
-            cmd.mview('store', object=obj, first=f, state=pts[f])
-        cmd.mview('interpolate', object=obj)
+        _store_state_track(obj, pts, total, scene_keys)
     except Exception as ex:
         print('MOVIE_ERR:' + str(ex))
 
@@ -193,46 +343,76 @@ def clear_keyframe(frame, linear=0):
         print('MOVIE_ERR:' + str(e))
 
 
-def _scene_keyframes():
-    """[(frame, scene_name, power)] for every scene marker currently on the
-    timeline, recovered by scrubbing: a scene-tagged keyframe sets
-    scene_current_name when its frame is displayed. Restores the playhead before
-    returning — the caller's frame must survive the scrub.
+def _movie_keyframes(_self=cmd):
+    """[(frame, scene_name_or_None, power)] for every stored camera keyframe
+    (ViewElem specification_level 2), in frame order (1-based), read from the
+    core's movie ViewElem list. The core only exports that list with a
+    session, so this exports one limited to an empty hidden selection (a names
+    pattern that matches nothing would serialize every object). Nothing is
+    displayed: the playhead and the live settings are untouched.
 
-    The per-keyframe power is reported as 0.0 ("none stored") because scrubbing
-    cannot read ViewElem.power back. That is not a loss here: every path that
-    scrubs also drives the easing with a movie-wide `mview reinterpolate power=`,
-    which the core resolves ahead of both endpoints — the caller passes that same
-    value to raymol_scene_anim.author(power=...)."""
-    out = []
+    The name is the scene the core tagged the keyframe with. Note that a plain
+    `mview store` tags it with the scene current at that moment, and playback
+    then recalls that scene there, so such a keyframe counts as a scene marker
+    too. `power` is the keyframe's stored easing power, 0.0 when none is
+    stored. Returns [] on any failure or when there is no movie."""
     try:
-        n = int(cmd.count_frames())
-    except Exception:
-        return out
-    try:
-        saved = int(cmd.get_frame() or 1)
-    except Exception:
-        saved = 1
-    seen = None
-    # Displaying a frame runs its authored commands (enter_scene, interpolated
-    # `set`s), so the scrub is wrapped: it READS the cuts and must leave the
-    # live settings as it found them (#508).
-    from pymol import raymol_scenes as _rs
-    with _rs.preserved():
-        for f in range(1, n + 1):
-            try:
-                cmd.frame(f)
-                cur = cmd.get('scene_current_name') or ''
-            except Exception:
-                continue
-            if cur and cur != seen:
-                out.append((f, cur, 0.0))
-            seen = cur
+        d = {}
+        # an unused name: never overwrite (and then delete) a user's object
+        probe = _self.get_unused_name('_raymol_kf_probe')
         try:
-            cmd.frame(saved)
-        except Exception:
-            pass
-    return out
+            _self.select(probe, 'none', enable=0)
+            with _self.lockcm:
+                _self._cmd.get_session(_self._COb, d, probe, 0, 1)
+        finally:
+            try:
+                _self.delete(probe)
+            except Exception:
+                pass
+        movie = d.get('movie')
+        if not movie or len(movie) < 7:
+            return []
+        elems = movie[6]
+        if not elems or not isinstance(elems, list):
+            return []
+        out = []
+        for i, v in enumerate(elems):
+            if v and len(v) > 12 and v[12] == 2:
+                scene = v[14] if (len(v) > 14 and v[13] and isinstance(v[14], str) and v[14]) else None
+                # v[16] is exported only with ortho_flag, which SceneToViewElem
+                # always sets on a stored keyframe
+                power = 0.0
+                if len(v) > 16 and v[15] and isinstance(v[16], (int, float)):
+                    power = float(v[16])
+                out.append((i + 1, scene, power))
+        return out
+    except Exception:
+        return []
+
+
+def _scene_keyframes(_self=cmd):
+    """[(frame, scene_name, power)] for every scene-tagged keyframe currently on
+    the timeline, read from the core's ViewElem list. It reports the MARKER
+    frames; the old scrub of scene_current_name reported where the camera
+    interpolation cuts between scenes (halfway, by mview's default cut), so the
+    blends finished halfway through the camera move (#659).
+
+    Each power is the one stored with that keyframe (0.0 = none stored), so
+    raymol_scene_anim.author resolves the easing exactly like the core does
+    for the callers' movie-wide `mview reinterpolate power=` (endpoint powers
+    of, say, a Timeline rebuild survive a later place_scene)."""
+    return [(f, name, p) for f, name, p in _movie_keyframes(_self) if name]
+
+
+def _scene_wrap(_self=cmd):
+    """None (follow movie_loop, like the camera's wrap=-1) when the movie has at
+    least one stored keyframe and both the first and last stored keyframes from
+    _movie_keyframes are scene markers; otherwise False (the camera would wrap
+    to or from a non-scene keyframe, so the settings must not wrap, #656, #659)."""
+    kfs = _movie_keyframes(_self)
+    if kfs and kfs[0][1] and kfs[-1][1]:
+        return None
+    return False
 
 
 def place_scene(frame, name, linear=0):
@@ -272,7 +452,8 @@ def place_scene(frame, name, linear=0):
         # settings ease exactly like the camera.
         try:
             from pymol import raymol_scene_anim as _an
-            _an.author(_scene_keyframes(), power=power)
+            # Settings wrap only when the camera wraps scene to scene (#656, #659).
+            _an.author(_scene_keyframes(), power=power, wrap=_scene_wrap())
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
     except Exception as e:
@@ -423,16 +604,18 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
                     except Exception:
                         pass
                 # Author from ALL markers currently on the timeline (not just the
-                # ones this batch placed). _scene_keyframes() recovers every
-                # scene-tagged keyframe by scrubbing, so calling append_template
-                # a second time does not wipe the first batch's animation: author
-                # runs once over the union, not twice over disjoint sets.
+                # ones this batch placed). _scene_keyframes() reads every
+                # scene-tagged keyframe from the core ViewElem list, so calling
+                # append_template a second time does not wipe the first batch's
+                # animation: author runs once over the union, not twice over
+                # disjoint sets.
                 # Unconditional: author([]) is the reset when names is empty;
                 # guarding would leave a previous movie's animation live in the
                 # module for the non-scenes path.
                 try:
                     from pymol import raymol_scene_anim as _an
-                    _an.author(_scene_keyframes())
+                    # Settings wrap only when the camera wraps scene to scene (#656, #659).
+                    _an.author(_scene_keyframes(), wrap=_scene_wrap())
                 except Exception as e:
                     print('MOVIE_ERR:' + str(e))
 
@@ -465,14 +648,18 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
 # + scene markers) joined by transitions (duration + easing). Swift owns the
 # order/timing/easing (the things the UI edits); Python owns the heavy camera
 # view matrices, keyed by the item's UUID. On every edit Swift calls rebuild()
-# with the ordered spec and we lay a fresh movie. Session-scoped (the dict lives
-# for the process, like the Swift-side item list) — not restored from a .pse.
-# Alongside each view we keep the model every multi-state object showed when
-# the item was captured (#579), so a camera item holds that model instead of
-# sweeping the ensemble.
+# with the ordered spec and we lay a fresh movie. Alongside each view we keep
+# the model every multi-state object showed when the item was captured (#579),
+# so a camera item holds that model instead of sweeping the ensemble.
+#
+# Swift also stages its editable item list here (stage_timeline) so the lane
+# rides in the .pse under `raymol_timeline` with the views it needs (#901).
 
 _views = {}
 _states = {}   # cam UUID -> {objname: state} at capture time
+_timeline = None   # the item list Swift staged last; None = empty lane
+
+SESSION_KEY = 'raymol_timeline'
 
 
 def capture_view(cam_id):
@@ -491,9 +678,291 @@ def forget_view(cam_id):
 
 
 def forget_all_views():
-    """Drop every stored camera view (timeline cleared / new session)."""
+    """Drop every stored camera view and the staged lane (timeline cleared /
+    new session)."""
+    global _timeline
     _views.clear()
     _states.clear()
+    _timeline = None
+
+
+def reset():
+    """Empty the lane after a full `reinitialize`, which drops the core movie
+    and scenes it describes, and tell the app so it empties its copy too. The
+    objects the players played are gone too."""
+    forget_all_views()
+    _playing.clear()
+    _emit_timeline([])
+
+
+def stage_timeline(items_json):
+    """Keep Swift's editable item list (a JSON list of item dicts) for the next
+    session save. An empty list empties the lane."""
+    global _timeline
+    import json
+    try:
+        items = json.loads(items_json)
+        _timeline = items if isinstance(items, list) and items else None
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
+
+
+def rename_scene(old, new):
+    """Re-key the staged lane's scene items (#655), so a session saved before
+    the app restages still names the scene the .pse holds."""
+    for it in _timeline or []:
+        if isinstance(it, dict) and it.get('kind') == 'scene' and it.get('scene') == old:
+            it['scene'] = new
+
+
+def _emit_timeline(items, untracked_movie=False):
+    """Hand a restored lane to the app: the item list and whether the session
+    carries a movie no lane describes (an older .pse), which the first
+    Timeline add must not replace unasked. The payload goes to the
+    `pymol_timeline` tempfile channel and only `TIMELINE:ready` rides the
+    feedback line: a lane of a few items is already over PyMOL's ~1 KB line
+    cap, and a split line would not parse. pcatch when embedded, like
+    raymol_scenes._emit_rename."""
+    import json
+    from pymol import raymol_tmp
+    payload = {'items': items or [], 'untrackedMovie': bool(untracked_movie)}
+    try:
+        with open(raymol_tmp.channel_path('pymol_timeline'), 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle)
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
+        return
+    line = 'TIMELINE:ready'
+    try:
+        import pcatch
+        pcatch.write(line + '\n')
+    except ImportError:
+        print(line)
+
+
+def _camera_ids(items):
+    return [str(it.get('id')) for it in items or []
+            if isinstance(it, dict) and it.get('kind') == 'camera']
+
+
+# --- Objects-panel players (morph close-out B) ------------------------------
+#
+# PyMOLEngine.startObjectStates animates an object on a Swift timer that sends
+# `set state, k, name`, so while it plays the object carries an object-level
+# `state` setting (a pin) nobody asked for. Written into a .pse, the pin
+# outlives the timer: the reopened object ignores the movie's frames, so a
+# Lockstep clip, mplay and movie export show it frozen on the saved frame. The
+# app notes here which objects it is playing (one call per start or stop,
+# never per tick), and session_save leaves those objects' pins out of the
+# session it writes. A pin on any other object is the user's (a typed
+# `set state`, a Play stopped on a frame) and stays.
+
+_playing = set()
+_renamed = {}   # old player name -> the name set_name gave its object, until the app stops it
+
+
+def note_object_playing(name, on=True):
+    """The app started (`on`) or stopped playing `name` in the Objects panel."""
+    if on:
+        _playing.add(str(name))
+    else:
+        _playing.discard(str(name))
+        _release_renamed(str(name))
+
+
+def clear_playing_objects():
+    """The app stopped every Objects-panel player."""
+    _playing.clear()
+    for old in list(_renamed):
+        _release_renamed(old)
+
+
+def _release_renamed(old, _self=cmd):
+    """The app stopped the player of `old`, an object renamed while it played:
+    its ticks (`set state, k, old`) reached the renamed object until then, since
+    PyMOL takes `old` as an unambiguous prefix of the new name, so drop the pin
+    they left there, or it would stay live and in every later save."""
+    new = _renamed.pop(old, None)
+    if new and new in (_self.get_names('all') or []):
+        try:
+            _self.unset('state', new, quiet=1)
+        except Exception:
+            pass
+
+
+def playing_objects():
+    """The objects the app is playing, sorted."""
+    return sorted(_playing)
+
+
+@contextlib.contextmanager
+def players_go_on():
+    """Around an in-memory snapshot or restore of the live session (the Theme
+    studio's get_session / set_session): it is the same session, and the app
+    keeps playing through it, so the snapshot keeps the players' pins and the
+    restore keeps the registry."""
+    kept, renamed = set(_playing), dict(_renamed)
+    _playing.clear()
+    _renamed.clear()
+    try:
+        yield
+    finally:
+        _playing.clear()
+        _playing.update(kept)
+        _renamed.clear()
+        _renamed.update(renamed)
+
+
+def object_renamed(old, new, _self=cmd):
+    """`set_name old, new` just ran. A playing object's timer goes on sending
+    `set state, k, old` until the panel poll stops that player, so it no longer
+    reaches the renamed object: drop the pin it left there (on a group, its
+    members), or the object would keep it live and in every later save. The
+    registry keeps `old`, which the timer still targets, until the app stops
+    it. set_name legalises `new` ('my morph' becomes 'my_morph'), so the
+    object may carry the legal form."""
+    if str(old) not in _playing:
+        return
+    new = str(new)
+    if new not in (_self.get_names('all') or []):
+        new = _self.get_legal_name(new)
+    _self.unset('state', new, quiet=1)
+    # Its ticks may still pin it (a prefix match) until the app stops the
+    # player: release it again then (_release_renamed), and leave it out of
+    # saves meanwhile (_pinned_by_players).
+    _renamed[str(old)] = new
+
+
+def _pinned_by_players(entries, _self):
+    """The names in `entries` whose `state` a player's ticks set. `set state,
+    k, <group>` pins the objects inside the group, all the way down, and not
+    the group, so a playing group stands for its members. The session's own
+    group links (entry[6]) reach every member it holds, whatever its type; a
+    partial save may hold a member without the groups above it, so a playing
+    group the session lacks adds its live members (_group_members). A full
+    save holds every group, so it never reads them."""
+    parent = {}
+    for entry in entries:
+        try:
+            parent[entry[0]] = entry[6]
+        except (IndexError, KeyError, TypeError):
+            continue
+    names = set()
+    for name in parent:
+        seen = set()
+        node = name
+        while node and node not in seen:
+            if node in _playing or node in _renamed.values():
+                names.add(name)
+                break
+            seen.add(node)
+            node = parent.get(node)
+    missing = set()
+    try:
+        missing = _playing.intersection(
+            _self.get_names('group_objects') or []) - set(parent)
+        if missing:
+            names.update(_group_members(sorted(missing), _self) & set(parent))
+    except Exception:
+        # at least the molecules, which a selection reaches
+        for group in missing:
+            try:
+                names.update(_self.get_object_list('(%s)' % group) or [])
+            except Exception:
+                pass
+    return names
+
+
+def _group_members(groups, _self):
+    """Every object inside `groups`, all the way down and of every type (a CGO,
+    a map: get_object_list reports only molecules). The core expands a group
+    named to get_session into its members, so a partial read of these groups
+    lists them. The core call, not cmd.get_session: that would run the
+    session-save tasks again, this one among them. A binary dump at the
+    current version, whatever the user's pse settings: only the names are
+    read, so the members' data is not worth turning into Python lists."""
+    sub = {}
+    with _self.lockcm:
+        _self._cmd.get_session(_self._COb, sub, ' '.join(groups), 1, 1, 1, 0.0)
+    return {e[0] for e in sub.get('names') or [] if e} - set(groups)
+
+
+def _leave_player_pins_out(session, _self=cmd):
+    """Drop the object-level `state` of every playing object (a playing
+    group's: of its members) from `session`, the copy get_session just
+    filled, so the live objects keep theirs and the players go on. An entry of
+    ``session['names']`` is ``[name, type, visible, None, objtype, data,
+    group]``; ``data[0]`` is the object's ObjectAsPyList, whose item 8 lists
+    its settings as ``[index, type, value]`` (None when it has none)."""
+    if not _playing:
+        return
+    from pymol import setting
+    index = setting._get_index('state')
+    entries = [e for e in session.get('names') or [] if e]
+    pinned = _pinned_by_players(entries, _self)
+    for entry in entries:
+        if entry[0] not in pinned:
+            continue
+        try:
+            base = entry[5][0]
+            settings = base[8]
+        except (IndexError, KeyError, TypeError):
+            continue
+        if settings:
+            base[8] = [s for s in settings if not (s and s[0] == index)]
+
+
+def session_save(session, *, _self=None, **_kwargs):
+    """Write the staged lane and the camera views its items use (#901), and
+    leave the Objects-panel players' pins out (they reopen on the movie's
+    frame)."""
+    _leave_player_pins_out(session, cmd if _self is None else _self)
+    if _timeline:
+        ids = _camera_ids(_timeline)
+        session[SESSION_KEY] = {
+            'version': 1,
+            # copies: the session dict must not share records with the live
+            # lane, which a later scene rename edits in place
+            'items': copy.deepcopy(_timeline),
+            'views': {i: list(_views[i]) for i in ids if i in _views},
+            'states': {i: dict(_states[i]) for i in ids if i in _states},
+        }
+    return 1
+
+
+def session_restore(session, *, _self=None, **_kwargs):
+    """Replace the lane and its views with the session's and tell the app.
+    A session with no lane empties it, and reports whether the session still
+    carries a movie of its own (left as it is). A partial restore
+    (`load x.pse, partial=1`) leaves the live lane alone, as the core leaves
+    the movie (#617). A full restore also forgets the players: the objects
+    they played are gone."""
+    global _timeline
+    from pymol import raymol_scenes
+    _self = cmd if _self is None else _self
+    if raymol_scenes.restoring_partial(_self):
+        return 1
+    _playing.clear()
+    value = session.get(SESSION_KEY)
+    items = value.get('items') if isinstance(value, dict) else None
+    _views.clear()
+    _states.clear()
+    if isinstance(items, list) and items:
+        # a copy, so editing the live lane never edits the restored snapshot
+        _timeline = copy.deepcopy(items)
+        for k, v in (value.get('views') or {}).items():
+            _views[str(k)] = list(v)
+        for k, v in (value.get('states') or {}).items():
+            _states[str(k)] = dict(v)
+        _emit_timeline(_timeline)
+    else:
+        _timeline = None
+        try:
+            untracked = int(_self.get_movie_length()) > 0
+        except Exception:
+            untracked = False
+        _emit_timeline([], untracked)
+    return 1
 
 
 def capture_template_views(ids_json, kind, axis='y', angle=30.0):
@@ -565,6 +1034,7 @@ def rebuild(spec_json):
         state_clips = [it for it in spec if it.get('states')]
         cam_scene = [it for it in spec if not it.get('states')]
         motion = []   # objects that received per-scene TTT keyframes (#204)
+        scene_keys = {}  # objname -> {frame: that scene's TTT}, for the state tracks
         scene_kfs = []   # (frame, scene_name, power) for the setting animation
         pins = {}        # objname -> [(frame, state)] the items hold it on (#579)
 
@@ -591,7 +1061,11 @@ def rebuild(spec_json):
                 # #204: author per-object Move-mode TTT keyframes for this scene.
                 try:
                     from pymol import raymol_scenes as _rs
-                    motion += _rs.emit_object_motion(name, f)
+                    keyed = _rs.emit_object_motion(name, f)
+                    motion += keyed
+                    ttts = _rs._scene_ttt.get(name) or {}
+                    for o in keyed:
+                        scene_keys.setdefault(o, {})[f] = ttts.get(o)
                 except Exception:
                     pass
                 scene_kfs.append((f, name, power))
@@ -631,9 +1105,13 @@ def rebuild(spec_json):
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
 
+        _share_scene_steps(scene_keys, state_clips, pins, total)
+        tracked = set()   # objects given a model track below
+
         # State sweeps — per-object tracks (independent; no clamping between objects).
         if state_clips:
             swept = set()
+            sweeps = {}   # objname -> [(start, end, lo, hi, mode)], all its clips
             for clip in state_clips:
                 start = int(clip['frame']); end = int(clip.get('end', total))
                 mode = str(clip.get('mode', 'sweep'))
@@ -655,11 +1133,16 @@ def rebuild(spec_json):
                     for obj, n in ms.items():
                         lo = max(1, min(req_first, n))
                         hi = n if req_last <= 0 else max(1, min(req_last, n))
-                        _emit_state_sweep(obj, lo, hi, start, end, mode)
+                        sweeps.setdefault(obj, []).append((start, end, lo, hi, mode))
+            # One track per object across all its clips, held between them.
+            for obj, clips in sweeps.items():
+                _emit_state_clips(obj, clips, total, scene_keys.get(obj))
+                tracked.add(obj)
             # Objects no clip plays keep the models their camera items hold.
             for obj in _multistate_objects():
                 if obj in pins and obj not in swept:
-                    _emit_state_hold(obj, pins[obj], total)
+                    _emit_state_hold(obj, pins[obj], total, scene_keys.get(obj))
+                    tracked.add(obj)
         else:
             # A camera item holds the models it was captured on (#579): a Roll
             # moves the camera, not the ensemble. Objects no item pins (loaded
@@ -668,9 +1151,17 @@ def rebuild(spec_json):
             # they never freeze on model 1.
             for obj, n in _multistate_objects().items():
                 if obj in pins:
-                    _emit_state_hold(obj, pins[obj], total)
+                    _emit_state_hold(obj, pins[obj], total, scene_keys.get(obj))
                 else:
-                    _emit_state_sweep(obj, 1, n, 1, total, 'sweep')
+                    _store_state_track(obj, {1: 1, total: n}, total,
+                                       scene_keys.get(obj))
+                tracked.add(obj)
+
+        # Stopgap (#920): objects the scenes move but no model track keys hold
+        # like the tracks above.
+        for obj, keys in scene_keys.items():
+            if obj not in tracked:
+                _hold_scene_positions(obj, total, keys)
 
         cmd.rewind()
     except Exception as e:

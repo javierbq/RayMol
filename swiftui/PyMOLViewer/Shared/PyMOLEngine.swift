@@ -215,6 +215,58 @@ final class PyMOLEngine: ObservableObject {
     /// because `designing.pending_info` publishes the same keys as
     /// `predicting.pending_info` deliberately. Guarded on assignment for the same reason.
     @Published var designJobs: [PredictionJobState] = []
+    /// Running and recently-settled MORPH jobs (#morph), refreshed by the same poll.
+    /// Separate from `predictionJobs`/`designJobs` — different cancel/dismiss commands,
+    /// different tray card words. Guarded on assignment for the same reason.
+    @Published var morphJobs: [PredictionJobState] = []
+    /// Completed morph name → source-object name, refreshed by the panel poll.
+    /// Populated once the Python side confirms delivery; cleared when the morph
+    /// object is deleted. Used by the inspector sheet to connect a re-morph to
+    /// the correct source without a separate lookup.
+    @Published var morphSources: [String: String] = [:]
+    /// Completed morph name → the settings that produced it, derived from the
+    /// wire spec in the payload. Populated in lock-step with `morphSources`.
+    /// `movieSmooth` is left at its default (the wire does not carry it).
+    @Published var morphSpecs: [String: MorphSettings] = [:]
+    /// Bytes one morph frame of each multi-state molecule would hold, from the
+    /// panel payload's `morph_bytes_per_frame` (Python's `bytes_per_frame`). The
+    /// Morph sheet and the Play-models sheet multiply it by their frame count.
+    /// Its keys are also relied on as the multi-state molecules not being built
+    /// (the morph-name resolver, the card's Morph… button): Python publishes a
+    /// figure only for those (appkit_inspector._morph_frame_costs), and a
+    /// molecule whose figure failed drops out until its next one.
+    @Published var morphBytesPerFrame: [String: Int] = [:]
+    /// Atoms one morph frame of each multi-state molecule would hold (state 1),
+    /// from the panel payload's `morph_atoms_per_frame` (`morph_estimate`'s
+    /// `atoms`). The Morph sheet's build-time hint counts these: a discrete
+    /// object's own atom count is every state's atoms.
+    @Published var morphAtomsPerFrame: [String: Int] = [:]
+    /// Morph names for which the tray's "auto-play on completion" flag is set.
+    /// Keyed by the TARGET name (settings.morphName(for: source)); consumed and
+    /// removed by `morphDidComplete(_:)`, dropped by each poll for a job that can
+    /// no longer complete (`autoPlayAfterPoll`) and by a morph of that target
+    /// started without auto-play. Not @Published — purely internal bookkeeping
+    /// (readable for tests).
+    private(set) var morphAutoPlay: Set<String> = []
+    /// Currently-running morph names (isError == false in morph_jobs), tracked by
+    /// the parse path to detect completions across consecutive polls.
+    /// Updated only on the main thread inside `parseObjectPanelFeedback`.
+    var runningMorphs: Set<String> = []
+    /// Build numbers (`morph_jobs` `MorphJob.build`) of the finished morphs a panel
+    /// poll has already reported. A number not in here is a morph built since the
+    /// last poll, whether or not a poll saw it building: a small morph starts and
+    /// finishes inside one poll's pump, so it never enters `runningMorphs`, and a
+    /// rebuild with the same settings publishes the same source and spec.
+    /// Main thread only, like `runningMorphs`.
+    var seenMorphBuilds: Set<Int> = []
+    /// Objects that a states clip in the lane names but that are not loaded, as of
+    /// the last two panel polls (`clipObjectsPoll`). The lane dims such a clip and
+    /// says why it plays nothing: a morph a session saved while it was still being
+    /// built comes back without its object, and so does any clip whose object was
+    /// deleted.
+    @Published var missingClipObjects: Set<String> = []
+    /// What the last poll found missing, before the two-poll rule.
+    var absentClipObjects: Set<String> = []
     #if os(macOS)
     /// Binder Design mode (#342). macOS only, and GATED rather than merely unused: the
     /// controller it drives lives behind `#if os(macOS)` because RFD3Kit is macOS-only,
@@ -245,6 +297,17 @@ final class PyMOLEngine: ObservableObject {
             if sequenceVisible && !oldValue { fetchSequences() }
         }
     }
+    #if os(macOS)
+    // #914: the side panel in a window too narrow to dock it (see
+    // PanelLayout.macInspectorPresentation). ContentView keeps `macInspectorNarrow`
+    // in step with the window; `macInspectorNarrowOpen` is the user opening the
+    // panel anyway, which shows it full-width. Session-only, and reset on every
+    // crossing, so a window that turns narrow always auto-hides the panel. Lives
+    // here rather than in ContentView so the View-menu command (PyMOLApp) and the
+    // tongue read and write the same state.
+    @Published var macInspectorNarrow = false
+    @Published var macInspectorNarrowOpen = false
+    #endif
     // Names the sequence strip was last built from (issue #380): the panel only
     // rows ENABLED objects, so any path that changes what is enabled — the object
     // panel checkbox, "all", a group cascade, `disable` at the prompt, a scene or
@@ -259,6 +322,13 @@ final class PyMOLEngine: ObservableObject {
     // object (it's underscore-prefixed → excluded from public_objects) to stay
     // in sync with the displayed structure instead of the user's hidden objects.
     var themePreviewActive = false
+    // True from `endThemePreview` until its THEMEPREVIEW:restore line is read.
+    // The restore's set_session announces TIMELINE:ready like a session load,
+    // but it puts back the session the studio hid, so the per-object players
+    // (a morph's auto-play, an object's Play) keep going through it. Read and
+    // cleared on the main thread, in feedback order: the restore prints its
+    // line after set_session has announced the Timeline.
+    private(set) var themeRestorePending = false
 
     // macOS "Trackpad" mouse mode: when on, the MetalViewport trackpad gesture
     // handlers (scroll/pinch) drive rotate/pan/zoom/roll/clip directly, mirroring
@@ -492,8 +562,9 @@ final class PyMOLEngine: ObservableObject {
     // the UI edits); the heavy camera view matrices live in Python
     // (appkit_movie._views) keyed by each camera item's UUID. Every edit
     // recomputes frames from the transition durations and rebuilds the whole
-    // core movie via appkit_movie.rebuild. Session-scoped, like the legacy
-    // tracks above (not reconstructed from a reloaded .pse).
+    // core movie via appkit_movie.rebuild. Every change is also staged in
+    // appkit_movie, so the lane and its views ride in the .pse; loading one
+    // hands the lane back on a TIMELINE: feedback line (#901).
     struct Transition: Equatable {
         var seconds: Double = 2.0    // gap from the previous item to this one
         var linear: Bool = false     // false = smooth (eased) default
@@ -506,6 +577,13 @@ final class PyMOLEngine: ObservableObject {
         var firstModel: Int = 1               // play models firstModel..lastModel
         var lastModel: Int = 0                // 0 = through the object's last model
         var durationSeconds: Double = 4.0
+        // When non-nil this clip was authored for a morph object. firstModel/lastModel
+        // are logical model indices (1-based); they are converted to absolute PyMOL
+        // states at rebuild time using the morph's CURRENT framesPerModel stride so
+        // a re-morph with a different stride keeps the clip covering the same models.
+        // A regenerate also writes its stride here (adoptingMorphStrides), so the
+        // value a session save carries is the one the movie was built with.
+        var morphStride: Int? = nil
     }
     struct TimelineItem: Identifiable, Equatable {
         enum Kind: Equatable { case camera; case scene(name: String); case states(StatesSpec) }
@@ -523,7 +601,15 @@ final class PyMOLEngine: ObservableObject {
             self.pinnedState = pinnedState; self.atFrame = atFrame
         }
     }
-    @Published var timelineItems: [TimelineItem] = []
+    @Published var timelineItems: [TimelineItem] = [] {
+        didSet { if timelineItems != oldValue { stageTimeline() } }
+    }
+    // The open session carries a movie no lane describes (an older .pse, or one
+    // authored outside the Timeline). The lane shows empty, and the first add
+    // would rebuild the movie from that one item, so it waits on
+    // `pendingTimelineAdd` until the user agrees to replace the movie (#901).
+    @Published var untrackedMovie = false
+    @Published var pendingTimelineAdd: (() -> Void)? = nil
 
     // While the user drags the scrubber, the poll must NOT overwrite
     // currentFrame (classic two-way-binding fight). Set on drag start, cleared
@@ -559,7 +645,15 @@ final class PyMOLEngine: ObservableObject {
     var launchOpenRequested = false {
         // A launch-to-open arriving before the engine is up must also drop the
         // snapshot preloaded in init(), or the old scene shows over the new file.
-        didSet { if launchOpenRequested { clearRestoreSnapshot(animated: false) } }
+        // It also retires a pending #385 "Start with an empty session?" prompt:
+        // the opened file wins, exactly as it does over a normal restore, so
+        // "Try Again" can't load the old session underneath it.
+        didSet {
+            if launchOpenRequested {
+                clearRestoreSnapshot(animated: false)
+                interruptedRestorePrompt = false
+            }
+        }
     }
     // A snapshot of the viewport captured alongside the autosave, shown over the
     // viewport while the session reloads on cold launch so the user sees their
@@ -567,16 +661,36 @@ final class PyMOLEngine: ObservableObject {
     // init() so it is in place for the very FIRST SwiftUI frame (#480), cleared
     // once the restored scene has actually presented (restoreRenderTick).
     @Published var restoreSnapshot: UIImage?
+    // #385: the previous cold-launch restore never finished (killed or crashed
+    // mid-restore). ContentView asks "Start with an empty session?" while true.
+    @Published var interruptedRestorePrompt = false
     // Frames the restored scene still has to present before the snapshot hands
     // off. nil = no handoff armed (nothing restored yet, or already done).
     private var restoreFramesToPresent: Int?
+    // #385: the restore-in-progress flag is set and this process's restore
+    // isn't confirmed yet. The heavy rep geometry (surfaces, cartoons) is built
+    // on the first rendered frame, not inside `load`, so the flag clears only
+    // once a frame has rendered AND the object list has landed
+    // (finishRestoreFlagIfReady). Independent of whether a snapshot is shown.
+    private var restoreFlagPending = false
+    private var restoreFrameRendered = false
     // Backstop that drops a stuck snapshot if the render loop never presents.
     private var restoreBackstop: DispatchWorkItem?
+    // The memory-warning observer (cancelMorphsForMemoryWarning).
+    private var memoryWarningObserver: NSObjectProtocol?
     #endif
 
     private init() {
         #if os(iOS)
         preloadRestoreSnapshot()
+        // Out-of-memory is uncatchable on iOS: a memory warning cancels the morphs
+        // being built (spec §5.6). The engine is the app-lifetime singleton, so
+        // the observer is never removed.
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.cancelMorphsForMemoryWarning()
+            }
         #endif
     }
 
@@ -614,6 +728,15 @@ final class PyMOLEngine: ObservableObject {
         // user documents, so a temp location is the right home for them.
         let tmp = NSTemporaryDirectory()
         runPython("from pymol import cmd as _c; _c.set('fetch_path', '\(tmp)')")
+
+        // A scripted launch (#671) skips the launch theme's render toggles and
+        // its forced outline-off (ContentView.applyPersistedTheme), so the
+        // script owns that state. Force the outline default here instead,
+        // BEFORE the script runs, so a script that sets metal_outline (directly
+        // or through run / @file) wins and one that does not still starts off.
+        if isScriptedLaunch {
+            runCommand("set metal_outline, 0")
+        }
 
         // Test affordance (no-op unless env var set): auto-load a bundled
         // structure so a screenshot has content without UI typing.
@@ -881,7 +1004,7 @@ final class PyMOLEngine: ObservableObject {
         // backgrounded. Skipped when a test affordance scripts the scene
         // (PYMOL_AUTOLOAD/PYMOL_AUTOCMD imply deterministic screenshot content)
         // and when launched to open a specific file (handled by .onOpenURL) —
-        // both checked inside (autosaveIsRestorable).
+        // both checked inside (autosaveRestoreAction).
         restoreAutosaveIfAvailable()
         #endif
 
@@ -895,6 +1018,7 @@ final class PyMOLEngine: ObservableObject {
             // The restore handoff may be waiting only on the object list, which
             // pollFeedback just parsed.
             self.finishRestoreHandoffIfReady()
+            self.finishRestoreFlagIfReady()
             #endif
             // While the core is advancing frames, mirror the frame counter at
             // the full 100ms tick so the scrubber tracks playback smoothly.
@@ -949,6 +1073,7 @@ final class PyMOLEngine: ObservableObject {
         if let url = autosaveURL { try? FileManager.default.removeItem(at: url) }
         if let img = autosaveImageURL { try? FileManager.default.removeItem(at: img) }
         UserDefaults.standard.set(false, forKey: Self.autosaveDefaultsKey)
+        Self.clearRestoreInProgress(in: .standard)
     }
 
     /// Full reset for the iOS "Clear session" action. clearSession() wipes the
@@ -978,14 +1103,33 @@ final class PyMOLEngine: ObservableObject {
     ///   structure was loaded.
     func autosaveSession(keepingNotes: Bool = false) {
         guard isReady, let url = autosaveURL else { return }
-        guard !objects.isEmpty || keepingNotes else { clearAutosave(); return }
+        // #385: while the prompt is up and nothing new was loaded, there is
+        // nothing to save; the autosave on disk is the session awaiting an answer.
+        if interruptedRestorePrompt && objects.isEmpty { return }
+        guard !objects.isEmpty || keepingNotes else {
+            // #385: never delete an autosave whose restore is unresolved. The
+            // scene can be empty only because that restore is held back behind
+            // the prompt, still loading, or was replaced by a file open that
+            // failed. The flag is cleared by Start Empty, a confirmed restore,
+            // or a fresh save below.
+            if !Self.restoreWasInterrupted(in: .standard) { clearAutosave() }
+            return
+        }
 
         let bgTask = UIApplication.shared.beginBackgroundTask(withName: "RayMolAutosave")
         defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }
 
+        let modifiedBefore = Self.modificationDate(of: url)
         runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
         let saved = FileManager.default.fileExists(atPath: url.path)
         UserDefaults.standard.set(saved, forKey: Self.autosaveDefaultsKey)
+        // #385: only a save that actually rewrote the file replaces the session
+        // whose restore was interrupted. A failed save leaves the old (possibly
+        // oversized) file in place, so its flag must stay set.
+        if saved, Self.modificationDate(of: url) != modifiedBefore {
+            Self.clearRestoreInProgress(in: .standard)
+            interruptedRestorePrompt = false
+        }
         // The viewport snapshot is captured separately on `.inactive` (see
         // captureRestoreSnapshot) — iOS forbids GPU/Metal work once the app is
         // already in `.background`, so it must be grabbed while still foreground.
@@ -1018,19 +1162,15 @@ final class PyMOLEngine: ObservableObject {
         renderHiResPNG(img.path, width: w, height: h, rayTraced: 0)
     }
 
-    /// True when this launch will resume the autosave: the flag is set, the .pse
-    /// exists, no test affordance scripts the scene (PYMOL_AUTOLOAD/PYMOL_AUTOCMD
-    /// imply deterministic screenshot content), and the launch isn't opening a
-    /// specific file. Shared by the init()-time snapshot preload and the restore
-    /// itself so the two can't disagree.
-    private var autosaveIsRestorable: Bool {
-        guard !launchOpenRequested else { return false }
-        let env = ProcessInfo.processInfo.environment
-        guard env["PYMOL_AUTOLOAD"] == nil, env["PYMOL_AUTOCMD"] == nil else { return false }
-        guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
-              let url = autosaveURL,
-              FileManager.default.fileExists(atPath: url.path) else { return false }
-        return true
+    /// What this launch will do with the autosaved session (#385): resume it,
+    /// ask whether to start empty (after an interrupted restore), or skip it.
+    private var autosaveRestoreAction: AutosaveRestoreAction {
+        let present = UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey)
+            && autosaveURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
+        return Self.autosaveRestoreAction(
+            scripted: isScriptedLaunch, openRequested: launchOpenRequested,
+            autosavePresent: present,
+            previousRestoreInterrupted: Self.restoreWasInterrupted(in: .standard))
     }
 
     /// Put the last-scene snapshot in place BEFORE the first SwiftUI body
@@ -1040,8 +1180,13 @@ final class PyMOLEngine: ObservableObject {
     /// which the synchronous restore in initialize() would otherwise freeze on
     /// screen, half laid out, for the whole .pse load. Cheap (one PNG decode).
     private func preloadRestoreSnapshot() {
-        guard restoreSnapshot == nil, autosaveIsRestorable,
-              let img = autosaveImageURL,
+        guard autosaveRestoreAction == .restore else { return }
+        loadRestoreSnapshotImage()
+    }
+
+    /// Show the saved viewport snapshot (no-op if already shown or missing).
+    private func loadRestoreSnapshotImage() {
+        guard restoreSnapshot == nil, let img = autosaveImageURL,
               let data = try? Data(contentsOf: img),
               let snap = UIImage(data: data) else { return }
         restoreSnapshot = snap
@@ -1055,18 +1200,62 @@ final class PyMOLEngine: ObservableObject {
     /// we deliberately do NOT re-assert the active theme here — that would
     /// override the saved scene and the goal is to resume it exactly. Loading
     /// into the empty cold-launch scene reproduces the prior session exactly.
+    /// If the previous restore was interrupted (watchdog kill / crash), #385
+    /// prompts the user rather than retrying blindly.
     func restoreAutosaveIfAvailable() {
         guard isReady, !didRestoreAutosave else { return }
-        guard autosaveIsRestorable, let url = autosaveURL else {
-            // Nothing to resume (or a file open won): drop any preloaded snapshot
-            // so the empty state / opened document shows instead.
+        switch autosaveRestoreAction {
+        case .skip:
+            // Nothing to resume (or a file open / scripted launch won): drop any
+            // preloaded snapshot so the empty state / opened document shows.
             clearRestoreSnapshot(animated: false)
-            return
+        case .askStartEmpty:
+            // #385: the last restore never finished. Don't retry it blindly
+            // (that bricked the app); let the user choose.
+            clearRestoreSnapshot(animated: false)
+            interruptedRestorePrompt = true
+        case .restore:
+            performAutosaveRestore()
         }
+    }
+
+    /// #385 "Start Empty": discard the autosave that failed to restore (this also
+    /// clears the in-progress flag), leaving the empty cold-launch scene.
+    func startEmptyAfterInterruptedRestore() {
+        interruptedRestorePrompt = false
+        clearAutosave()
+    }
+
+    /// #385 "Try Again": run the restore once more. Its in-progress flag is set
+    /// again, so another kill brings the prompt back. Deferred one short hop so
+    /// the alert dismissal and the snapshot commit before the blocking load.
+    func retryInterruptedRestore() {
+        interruptedRestorePrompt = false
+        guard !didRestoreAutosave, !launchOpenRequested else { return }
+        loadRestoreSnapshotImage()
+        // runHeavy paints the busy overlay before the blocking load and holds
+        // it through the geometry-build frames, so a large session doesn't
+        // look hung. Re-check at run time: a file open (onOpenURL) may have
+        // landed during the hop, and the old session must not load under it.
+        runHeavy("Restoring session…") { [weak self] in
+            guard let self, !self.didRestoreAutosave, !self.launchOpenRequested else { return }
+            self.performAutosaveRestore()
+        }
+    }
+
+    private func performAutosaveRestore() {
+        guard let url = autosaveURL else { return }
         didRestoreAutosave = true
-        preloadRestoreSnapshot()   // no-op when init() already loaded it
+        loadRestoreSnapshotImage()
+        // #385: set before the blocking load; cleared only once the restored
+        // scene has presented its first frames (restoreRenderTick), since the
+        // rep geometry is built there. A kill anywhere in between leaves the
+        // flag set, and the next launch asks instead of retrying blindly.
+        Self.markRestoreInProgress(in: .standard)
         runCommand("load \(url.path)")
         refreshAfterRestore()
+        restoreFrameRendered = false
+        restoreFlagPending = true
         // Hand the snapshot off once the restored scene has actually presented
         // (restoreRenderTick) AND the object list has landed (so the empty-state
         // CTA can't flash in between) — not after a fixed delay, which either
@@ -1086,6 +1275,17 @@ final class PyMOLEngine: ObservableObject {
         guard let left = restoreFramesToPresent, left > 0 else { return }
         restoreFramesToPresent = left - 1
         finishRestoreHandoffIfReady()
+    }
+
+    /// #385: clear the restore-in-progress flag once the restored scene has
+    /// rendered a frame (the geometry build survived) and its objects landed.
+    /// Called per rendered frame and from the 100 ms feedback timer.
+    private func finishRestoreFlagIfReady() {
+        guard restoreFlagPending,
+              Self.restoreConfirmed(frameRendered: restoreFrameRendered,
+                                    hasObjects: !objects.isEmpty) else { return }
+        restoreFlagPending = false
+        Self.clearRestoreInProgress(in: .standard)
     }
 
     private func finishRestoreHandoffIfReady() {
@@ -1207,10 +1407,32 @@ final class PyMOLEngine: ObservableObject {
         if restored == 1 { requestViewportRedraw() }
     }
 
-    // Synchronous command body. Safe on the main thread (light commands) or on
-    // coreQueue (heavy commands): it calls only direct bridge/runPython helpers,
-    // never runCommand, so it can't re-enter the heavy-dispatch path.
+    /// Roll the camera `degrees` about the view's z axis, exactly as
+    /// `cmd.turn('z', degrees)` (same API lock, same modal-draw refusal) but
+    /// with no Python source run (#719): the two-finger twist calls this on
+    /// every tick. The core marks the scene dirty, so the display link
+    /// redraws without a request.
+    func turnZ(_ degrees: Float) {
+        // A zero tick (fingers moving without twisting) changes nothing, so
+        // it takes no lock and leaves no redraw.
+        guard isReady, degrees.isFinite, degrees != 0, let instance else { return }
+        _ = PyMOLBridge_TurnZ(instance, degrees)
+    }
+
+    // Synchronous command body, always on the main thread (light commands
+    // directly, heavy ones from runHeavy's main-queue hop): it calls only direct
+    // bridge/runPython helpers, never runCommand, so it can't re-enter the
+    // heavy-dispatch path.
     private func runCommandCore(_ command: String) {
+        // A command that replaces the whole session (a full .pse load from File >
+        // Open, drag-drop, Open With or the console, or reinitialize: the commands
+        // Lights mode ends on) stops every per-object player BEFORE it runs. A
+        // timer tick after it would send `set state` to the restored object of the
+        // same name and pin it there (blank past its last state). Loads that never
+        // pass through here (MCP, Python `cmd.load`) are caught at TIMELINE:ready.
+        if !playingObjects.isEmpty, Self.endsLightsMode(command: command) {
+            stopAllObjectStates()
+        }
         PyMOLBridge_RunCommand(command)
         noteCommandForLightsMode(command)
         handleSessionViewport(for: command)
@@ -1292,6 +1514,13 @@ final class PyMOLEngine: ObservableObject {
     func heavyRenderTick(presented: Bool = true) {
         #if os(iOS)
         if presented { restoreRenderTick() }
+        // #385: any rendered frame (presented or not) has built the restored
+        // scene's geometry. The first tick after the load always renders: the
+        // load leaves the scene dirty, so it can't be a RenderGate .skip.
+        if restoreFlagPending {
+            restoreFrameRendered = true
+            finishRestoreFlagIfReady()
+        }
         #endif
         guard pendingHeavyClearFrames > 0 else { return }
         pendingHeavyClearFrames -= 1
@@ -1372,10 +1601,23 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_RenderHiResPNG(inst, path, Int32(width), Int32(height), Int32(rayTraced))
     }
 
+    // Check whether the Metal renderer is initialized and ready for hi-res
+    // renders (#654). Injectable so tests can simulate cold launch where no
+    // live frame has drawn yet.
+    lazy var metalRendererReady: () -> Bool = { [weak self] in
+        guard let inst = self?.instance else { return false }
+        return PyMOLBridge_GetRenderer(inst) != nil
+    }
+
+    // Bounded wait for the renderer during scripted movie_export (#654).
+    var scriptedExportRendererWait: TimeInterval = 10
+    private static let scriptedExportPollInterval: TimeInterval = 0.1
+
     // Exporter for cmd.movie_export requests (#581). Owned here, not by a sheet,
     // so a scripted export outlives any UI and has no save panel: it writes
     // straight to the requested path and reports in the log.
-    private lazy var scriptedMovieExporter = MovieExporter()
+    // Readable (not settable) outside the class so tests can check it (#654).
+    private(set) lazy var scriptedMovieExporter = MovieExporter()
 
     // Append a line to the console log from the main thread.
     func logLine(_ line: String) {
@@ -1383,27 +1625,34 @@ final class PyMOLEngine: ObservableObject {
         if feedbackLog.count > 400 { feedbackLog.removeFirst(feedbackLog.count - 400) }
     }
 
+    // Log a line to both the in-app feedback log and system log (NSLog)
+    // so outcomes are visible to headless callers (#654).
+    private func exportLog(_ line: String) {
+        logLine(line)
+        NSLog("%@", line)
+    }
+
     // Handle a `MOVIEEXPORT:<json>` request emitted by cmd.movie_export.
     // MUST be called on the main thread.
     func startScriptedMovieExport(_ json: String) {
         let req: MovieExportRequest
         switch MovieExportRequest.decode(json) {
-        case .failure(let e): logLine(" movie_export: \(e.message)"); return
+        case .failure(let e): exportLog(" movie_export: \(e.message)"); return
         case .success(let r): req = r
         }
         let exporter = scriptedMovieExporter
         guard !exporter.isExporting && !exportRenderActive else {
-            logLine(" movie_export: another movie export is already running"); return
+            exportLog(" movie_export: another movie export is already running"); return
         }
         // From the request, not the playback mirror (which lags by a poll).
         let frames = max(req.frames, 1)
         guard frames > 1 else {
-            logLine(" movie_export: there is no movie to export (build one in the Movie tab)"); return
+            exportLog(" movie_export: there is no movie to export (build one in the Movie tab)"); return
         }
         let first = max(req.first, 1)
         let last = req.last > 0 ? min(req.last, frames) : frames
         guard first <= last else {
-            logLine(" movie_export: first frame \(first) is past the last frame \(last)"); return
+            exportLog(" movie_export: first frame \(first) is past the last frame \(last)"); return
         }
         let fps = max(req.options.fpsOverride, 1)
         let dest = URL(fileURLWithPath: req.path)
@@ -1412,36 +1661,88 @@ final class PyMOLEngine: ObservableObject {
         // didn't make: a PNG sequence needs a new or empty folder; a movie file
         // may replace a file but never a folder.
         if let problem = Self.movieDestinationProblem(dest, frames: isFrames) {
-            logLine(" movie_export: \(problem)"); return
+            exportLog(" movie_export: \(problem)"); return
         }
-        exporter.onFinish = { [weak self] url, error in
-            guard let self = self else { return }
-            guard let url = url else {
-                self.logLine(" movie_export: failed: \(error ?? "unknown error")"); return
+
+        let startExport = { [weak self] in
+            guard let self else { return }
+            let exporter = self.scriptedMovieExporter
+            exporter.onFinish = { [weak self] url, error in
+                guard let self = self else { return }
+                guard let url = url else {
+                    self.exportLog(" movie_export: failed: \(error ?? "unknown error")"); return
+                }
+                do {
+                    let fm = FileManager.default
+                    try fm.createDirectory(at: dest.deletingLastPathComponent(),
+                                           withIntermediateDirectories: true)
+                    // Re-check: the destination may have changed during the render.
+                    if let problem = Self.movieDestinationProblem(dest, frames: isFrames) {
+                        try? fm.removeItem(at: url)
+                        self.exportLog(" movie_export: \(problem)"); return
+                    }
+                    if fm.fileExists(atPath: dest.path) {
+                        // Only an empty folder (frames) or a file (movie) gets here.
+                        try fm.removeItem(at: dest)
+                    }
+                    try fm.moveItem(at: url, to: dest)
+                    self.exportLog(" movie_export: wrote \(dest.path)")
+                } catch {
+                    self.exportLog(" movie_export: could not write \(dest.path): \(error.localizedDescription)")
+                }
             }
-            do {
-                let fm = FileManager.default
-                try fm.createDirectory(at: dest.deletingLastPathComponent(),
-                                       withIntermediateDirectories: true)
-                // Re-check: the destination may have changed during the render.
-                if let problem = Self.movieDestinationProblem(dest, frames: isFrames) {
-                    try? fm.removeItem(at: url)
-                    self.logLine(" movie_export: \(problem)"); return
-                }
-                if fm.fileExists(atPath: dest.path) {
-                    // Only an empty folder (frames) or a file (movie) gets here.
-                    try fm.removeItem(at: dest)
-                }
-                try fm.moveItem(at: url, to: dest)
-                self.logLine(" movie_export: wrote \(dest.path)")
-            } catch {
-                self.logLine(" movie_export: could not write \(dest.path): \(error.localizedDescription)")
+            self.exportLog(" movie_export: rendering \(last - first + 1) frames at "
+                    + "\(req.options.width)×\(req.options.height)…")
+            exporter.start(engine: self, options: req.options,
+                           first: first, last: last, fps: fps)
+        }
+
+        if metalRendererReady() {
+            startExport()
+            return
+        }
+
+        exportLog(" movie_export: waiting for the renderer (no live frame yet)…")
+        Self.pollUntilReady(
+            ready: { [weak self] in self?.metalRendererReady() ?? false },
+            busy: { [weak self] in
+                guard let self else { return true }
+                return self.scriptedMovieExporter.isExporting || self.exportRenderActive
+            },
+            deadline: .now() + scriptedExportRendererWait,
+            interval: Self.scriptedExportPollInterval,
+            onReady: startExport,
+            onBusy: { [weak self] in
+                self?.exportLog(" movie_export: another movie export is already running")
+            },
+            onTimeout: { [weak self] in
+                self?.exportLog(" movie_export: failed: the renderer is not ready "
+                                + "(no live frame was drawn; is the window visible?)")
+            })
+    }
+
+    // The scripted export's bounded wait (#654): poll `ready` on the main
+    // queue every `interval` until it is true, then run `onReady` once, or
+    // `onBusy` instead if another export began meanwhile; at or past `deadline`
+    // (checked first, and monotonic, so a wall-clock change cannot shorten or
+    // stretch it) run
+    // `onTimeout` once. Exactly one of the three runs. Static, for tests.
+    static func pollUntilReady(ready: @escaping () -> Bool, busy: @escaping () -> Bool,
+                               deadline: DispatchTime, interval: TimeInterval,
+                               onReady: @escaping () -> Void, onBusy: @escaping () -> Void,
+                               onTimeout: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval) {
+            // The deadline first: a poll that runs late (a stalled main queue)
+            // times out rather than starting past the bounded wait.
+            if DispatchTime.now() >= deadline {
+                onTimeout()
+            } else if ready() {
+                if busy() { onBusy() } else { onReady() }
+            } else {
+                pollUntilReady(ready: ready, busy: busy, deadline: deadline, interval: interval,
+                               onReady: onReady, onBusy: onBusy, onTimeout: onTimeout)
             }
         }
-        logLine(" movie_export: rendering \(last - first + 1) frames at "
-                + "\(req.options.width)×\(req.options.height)…")
-        exporter.start(engine: self, options: req.options,
-                       first: first, last: last, fps: fps)
     }
 
     // Why `dest` can't receive this export, or nil if it can.
@@ -1650,20 +1951,105 @@ final class PyMOLEngine: ObservableObject {
         return FileManager.default.fileExists(atPath: documentURL.path)
     }
 
+    // MARK: - Scripted launch (#671)
+
+    /// Pure helper returning true when the environment contains test/scripting
+    /// affordances (PYMOL_AUTOCMD or PYMOL_AUTOLOAD) that set up the scene at launch.
+    static func isScriptedLaunch(environment: [String: String]) -> Bool {
+        environment["PYMOL_AUTOCMD"] != nil || environment["PYMOL_AUTOLOAD"] != nil
+    }
+
+    /// True when this process was launched with PYMOL_AUTOCMD or PYMOL_AUTOLOAD (#671).
+    var isScriptedLaunch: Bool {
+        Self.isScriptedLaunch(environment: ProcessInfo.processInfo.environment)
+    }
+
+    // MARK: - Autosave restore escape hatch (#385)
+
+    /// What the iOS cold launch does with the rolling autosave.
+    enum AutosaveRestoreAction: Equatable {
+        /// Nothing to restore, or this launch must not restore (scripted / opening a file).
+        case skip
+        /// Restore the autosave.
+        case restore
+        /// The previous restore never finished (the app was killed or crashed
+        /// mid-restore): ask the user whether to start empty or try again.
+        case askStartEmpty
+    }
+
+    /// The rule (#385). A scripted launch (#671) or a launch-to-open never restores
+    /// and never asks, and neither does a launch with no autosave on disk. Otherwise
+    /// an interrupted previous restore asks instead of retrying blindly.
+    static func autosaveRestoreAction(scripted: Bool, openRequested: Bool,
+                                      autosavePresent: Bool,
+                                      previousRestoreInterrupted: Bool) -> AutosaveRestoreAction {
+        if scripted || openRequested || !autosavePresent { return .skip }
+        return previousRestoreInterrupted ? .askStartEmpty : .restore
+    }
+
+    /// UserDefaults key set while an autosave restore is running. Still set at
+    /// the next launch means that restore never finished.
+    static let restoreInProgressDefaultsKey = "raymol.autosave.restoreInProgress"
+
+    static func restoreWasInterrupted(in defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: restoreInProgressDefaultsKey)
+    }
+
+    static func clearRestoreInProgress(in defaults: UserDefaults) {
+        defaults.removeObject(forKey: restoreInProgressDefaultsKey)
+        defaults.synchronize()
+    }
+
+    /// Set the in-progress flag before a restore. Both this and the clear are
+    /// flushed with synchronize() so the flag's state on disk tracks the
+    /// restore even if a watchdog/jetsam SIGKILL follows (the main thread
+    /// blocks in the load right after this). Belt and braces: cfprefsd usually
+    /// persists the write without it.
+    static func markRestoreInProgress(in defaults: UserDefaults) {
+        defaults.set(true, forKey: restoreInProgressDefaultsKey)
+        defaults.synchronize()
+    }
+
+    /// A restore is confirmed (its in-progress flag may clear) once the restored
+    /// scene has rendered a frame, which builds the rep geometry, and its object
+    /// list has landed. Either one alone is not enough.
+    static func restoreConfirmed(frameRendered: Bool, hasObjects: Bool) -> Bool {
+        frameRendered && hasObjects
+    }
+
+    static func modificationDate(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
     // MARK: - Theme
 
-    /// Whether the passive launch-time theme re-assertion
-    /// (ContentView.applyPersistedTheme) should SKIP the theme's render toggles
-    /// (metal_outline / metal_raytrace / metal_shadows). True when a session was
-    /// restored or a file-open is pending at launch: that session OWNS its render
-    /// state and must not be clobbered by the theme (the .pse already restored
-    /// them). On a fresh/empty launch this is false so the theme establishes them.
-    var suppressLaunchThemeRenderToggles: Bool {
+    /// What the passive launch-time theme re-assertion
+    /// (ContentView.applyPersistedTheme) does: whether it applies the theme's
+    /// render toggles (metal_outline / metal_raytrace / metal_shadows), and
+    /// whether it then forces metal_outline off. Pure, so a test pins the rule.
+    struct LaunchThemePlan: Equatable {
+        var applyRenderToggles: Bool
+        var forceOutlineOff: Bool
+    }
+
+    /// The rule (#671): a scripted launch (PYMOL_AUTOCMD / PYMOL_AUTOLOAD)
+    /// owns its render state on both platforms, so it gets neither the toggles
+    /// nor the forced outline-off (the engine forced the outline default
+    /// before the script ran). A restored or opened session owns the toggles
+    /// too (the .pse restored them) but still gets the outline default. A
+    /// fresh launch gets both, so the theme establishes them.
+    static func launchThemePlan(scripted: Bool, sessionOwnsRenderState: Bool) -> LaunchThemePlan {
+        LaunchThemePlan(applyRenderToggles: !(scripted || sessionOwnsRenderState),
+                        forceOutlineOff: !scripted)
+    }
+
+    var launchThemePlan: LaunchThemePlan {
         #if os(iOS)
-        return didRestoreAutosave || launchOpenRequested
+        let sessionOwns = didRestoreAutosave || launchOpenRequested
         #else
-        return false   // macOS launch-open loads the .pse AFTER the theme, so the session wins
+        let sessionOwns = false   // macOS launch-open loads the .pse AFTER the theme, so the session wins
         #endif
+        return Self.launchThemePlan(scripted: isScriptedLaunch, sessionOwnsRenderState: sessionOwns)
     }
 
     /// Push a theme's molecular/viewport defaults into PyMOL. Chrome is handled
@@ -1671,7 +2057,7 @@ final class PyMOLEngine: ObservableObject {
     /// that NEW objects pick up via raymol_theme.apply_to. Does NOT restyle or
     /// recolor existing objects. `applyRenderToggles` gates the three render-state
     /// settings (outline/raytrace/shadows) so the launch-time re-assertion won't
-    /// clobber a restored session (see suppressLaunchThemeRenderToggles).
+    /// clobber a restored session (see launchThemePlan).
     func applyTheme(_ theme: Theme, applyRenderToggles: Bool = true) {
         guard isReady else { return }
         // 3D selection-indicator color follows the theme's selection color.
@@ -1770,6 +2156,18 @@ final class PyMOLEngine: ObservableObject {
         // longer exist.
         cameraKeyframes.removeAll()
         sceneMarkers.removeAll()
+        // ...and the lane with its stored views (#901), or the next save would
+        // write the cleared session's Timeline into the new one.
+        timelineItems.removeAll()
+        untrackedMovie = false
+        pendingTimelineAdd = nil
+        runPython("from pymol import appkit_movie as _am\n_am.forget_all_views()")
+        // A morph still building is cancelled and dismissed before its source
+        // goes, so no card is left in the tray for an object the user just
+        // wiped ("source deleted"); reinitialize resets the registry too. The
+        // per-object players go with the objects they play.
+        runPython("from pymol import morph_jobs as _mj\n_mj.reset(dismiss=True)")
+        stopAllObjectStates()
         runCommand("reinitialize")
         // reinitialize also resets engine settings to defaults — restore the
         // fetch_path that initialize() set (the writable temp dir) so a post-clear
@@ -1832,6 +2230,7 @@ final class PyMOLEngine: ObservableObject {
     func endThemePreview() {
         guard isReady else { return }
         themePreviewActive = false
+        themeRestorePending = true
         runPython("from pymol import appkit_theme_preview as _tp\n_tp.restore()")
         applyTheme(ThemeManager.shared.active)
         refreshAfterRestore()
@@ -1897,6 +2296,7 @@ final class PyMOLEngine: ObservableObject {
         let fps = objectPlaybackFPS(name)
         var k = min(max(objectMeta[name]?.state ?? 1, 1), total)
         playingObjects.insert(name)
+        notePlayerRegistry(name, playing: true)
         let t = Timer(timeInterval: 1.0 / max(fps, 0.1), repeats: true) { [weak self] _ in
             guard let self else { return }
             k = k >= total ? 1 : k + 1
@@ -1908,13 +2308,49 @@ final class PyMOLEngine: ObservableObject {
 
     func stopObjectStates(_ name: String) {
         objectStateTimers[name]?.invalidate(); objectStateTimers[name] = nil
-        playingObjects.remove(name)
+        if playingObjects.remove(name) != nil { notePlayerRegistry(name, playing: false) }
     }
 
-    func stopAllObjectStates() {
+    /// Stop every per-object player. `releasing` (entering the Movie tab or the
+    /// timeline): also hand each object back to the movie, since its timer pinned
+    /// it with `set state` ticks and a pinned object ignores the movie's frames.
+    func stopAllObjectStates(releasing: Bool = false) {
+        if releasing {
+            for name in playingObjects.sorted() {
+                runCommand("unset state, \(name)", naming: name)
+            }
+        }
         objectStateTimers.values.forEach { $0.invalidate() }
         objectStateTimers.removeAll()
-        if !playingObjects.isEmpty { playingObjects.removeAll() }
+        if !playingObjects.isEmpty {
+            playingObjects.removeAll()
+            runPython("from pymol import appkit_movie as _am\n_am.clear_playing_objects()")
+        }
+    }
+
+    /// Tell appkit_movie which objects the timers play: a session saved while
+    /// one plays leaves out the pin its `set state` ticks set, so the reopened
+    /// object follows the movie (Lockstep, mplay, export) instead of freezing
+    /// on the saved frame. One call per start or stop, never per tick. Names
+    /// follow `playingObjects`: the Objects panel's rename stops the player
+    /// (`renameObject`), and any other rename or a delete stops it at the next
+    /// panel poll (`timersToStop`), which takes its old name out. The renamed
+    /// object does not keep the timer's last pin: `cmd.set_name` drops it on
+    /// every rename path (`appkit_movie.object_renamed`). A playing group's
+    /// ticks pin its members, and the save strips theirs.
+    private func notePlayerRegistry(_ name: String, playing: Bool) {
+        runPython("from pymol import appkit_movie as _am\n"
+                  + "_am.note_object_playing(\(InferenceJob.pythonLiteral(name)), \(playing ? "True" : "False"))")
+    }
+
+    /// Playing objects that are no longer loaded. Their timers must stop: an object
+    /// can go by many paths (the A menu, a `delete` typed or scripted, cancelling or
+    /// failing a re-morph in the tray, reinitialize), and a timer left behind sends
+    /// `set state` to the missing name ~30 times a second, each tick logging
+    /// "Invalid selection". The object-panel poll applies this to every published
+    /// object list, so one place covers every path.
+    static func timersToStop(playing: Set<String>, objects: Set<String>) -> Set<String> {
+        playing.subtracting(objects)
     }
 
     func stepObjectState(_ name: String, by delta: Int) {
@@ -1923,6 +2359,204 @@ final class PyMOLEngine: ObservableObject {
         var n = cur + delta
         if n < 1 { n = total } else if n > total { n = 1 }
         runCommand("set state, \(n), \(name)", naming: name)
+    }
+
+    // MARK: - Morph (#morph)
+
+    /// Submit a morph job and remember whether to auto-play on completion.
+    ///
+    /// Validates `source` (and `name` when given) with the panel's legal-name check
+    /// before sending, and refuses silently like `runCommand(_:naming:)` does for
+    /// illegal names — the Python side would surface its own error in that case, but a
+    /// silent refusal here avoids building a broken Python call.
+    /// `target` is the object the job is expected to write when `name` is nil
+    /// (Python picks; see MorphSettings.morphTarget): auto-play and the playback
+    /// stop key on it. Defaults to `name`, else `<source>_morph`.
+    func morph(source: String, settings: MorphSettings,
+               autoPlay: Bool, reuse: Bool = false, name: String? = nil,
+               target expected: String? = nil) {
+        guard isLegalObjectName(source) else { return }
+        if let n = name, !isLegalObjectName(n) { return }
+        let target = expected ?? name ?? MorphSettings.morphName(for: source)
+        // A request left by an earlier morph of this target that never completed
+        // must not make this one play.
+        if autoPlay { morphAutoPlay.insert(target) } else { morphAutoPlay.remove(target) }
+        // The rebuild replaces the target's states; a timer still playing it would
+        // step through the partial object, then miss it if the job is cancelled.
+        // Completion restarts playback when auto-play is on.
+        stopObjectStates(target)
+        runPython(settings.pythonCall(source: source, name: name, reuse: reuse))
+    }
+
+    /// Cancel a running morph job via the Python morph_cancel command.
+    func cancelMorph(_ name: String) {
+        runPython("from pymol import cmd as _c\n_c.morph_cancel(\(InferenceJob.pythonLiteral(name)))")
+    }
+
+    /// The system is short of memory (iOS `didReceiveMemoryWarningNotification`;
+    /// out-of-memory is uncatchable there, spec §5.6): cancel every morph still
+    /// being built, which deletes its partial object and drops the worker's leg,
+    /// and stop per-object playback, which builds each state it shows. One
+    /// console line says why, when a morph was cancelled.
+    func cancelMorphsForMemoryWarning() {
+        let building = morphJobs.filter { !$0.isError }.map { $0.id }
+        for name in building { cancelMorph(name) }
+        stopAllObjectStates()
+        if !building.isEmpty { logLine("morph: cancelled on memory warning") }
+    }
+
+    /// Called by the parse path when a morph name transitions from running to
+    /// present in the completed-morph dict. Expands the inspector detail,
+    /// configures playback FPS, and starts playback when auto-play was requested
+    /// and Timeline mode is not active. Also triggers a timeline rebuild when the
+    /// morph object is referenced by a states clip.
+    func morphDidComplete(_ name: String) {
+        // Expand the inspector to show this object's detail panel.
+        expandedDetail = name
+        // Align the per-object FPS with the timeline's movie FPS so the object
+        // plays at the same rate when it is later added to the timeline.
+        setObjectFPS(name, playback.movieFPS)
+        // Auto-play: start per-object state playback, but only when not in Timeline
+        // mode (the Timeline drives its own playback and the two would fight).
+        if MorphCompletion.shouldAutoPlay(requested: morphAutoPlay.remove(name) != nil,
+                                          timelineMode: timelineMode) {
+            startObjectStates(name)
+        }
+        // If a states clip already references this morph (e.g. the user dropped it
+        // into the timeline before the job finished), rebuild so the clip's frame
+        // count reflects the object's now-final state count.
+        if timelineItems.contains(where: {
+            if case .states(let spec) = $0.kind {
+                return spec.objects?.contains(name) ?? false
+            }
+            return false
+        }) {
+            rebuildMovie()
+        }
+    }
+
+    /// The morph part of a panel poll, on the main queue.
+    ///
+    /// The registry's sources and specs are recorded BEFORE completions are
+    /// reported: a completion rebuilds the movie, and a regenerated morph's
+    /// clips must be mapped with the stride it was just built with, which only
+    /// the new specs carry (while it built, the registry listed no finished
+    /// morph by that name). Those clips also adopt the new stride, so the lane
+    /// a session save writes matches the movie.
+    ///
+    /// `builds` is each finished morph's build number. A number no poll has
+    /// reported is a completion even when no poll saw the morph building: a
+    /// small morph starts and finishes inside the one pump the poll runs before
+    /// it gathers, and the movie the Add rebuilt while the morph had one state
+    /// has no track for it until the completion rebuilds it.
+    func applyMorphPoll(jobs: [PredictionJobState], running: Set<String>,
+                        sources: [String: String], specs: [String: MorphSettings],
+                        builds: [String: Int]) {
+        // Morph completion: names that were running, disappeared from running,
+        // AND now appear in the completed-morph dict, plus finished morphs whose
+        // build number is new. Names that disappeared but are NOT in the morph
+        // dict ended with an error or cancellation — they do not trigger
+        // auto-play or the expand animation.
+        let completed = Set(Self.completedMorphs(previouslyRunning: runningMorphs,
+                                                 nowRunning: running, known: sources))
+            .union(Self.newlyBuiltMorphs(builds: builds, seen: seenMorphBuilds))
+        morphAutoPlay = Self.autoPlayAfterPoll(
+            autoPlay: morphAutoPlay, previouslyRunning: runningMorphs, nowRunning: running,
+            sources: sources, failed: Set(jobs.filter { $0.isError }.map { $0.id }),
+            completed: completed)
+        runningMorphs = running
+        seenMorphBuilds.formUnion(builds.values)
+        let previousSpecs = morphSpecs
+
+        if morphJobs != jobs { morphJobs = jobs }
+        if morphSources != sources { morphSources = sources }
+        if morphSpecs != specs { morphSpecs = specs }
+
+        if let items = Self.adoptingMorphStrides(timelineItems, previous: previousSpecs,
+                                                 current: specs) {
+            timelineItems = items           // didSet restages the lane for the next save
+            // A completion below rebuilds for its own clips. A stride that changed
+            // without one (the registry listing again, with no new build, a morph
+            // it had stopped vouching for) needs a rebuild here.
+            let changed = Set(specs.keys.filter {
+                specs[$0]?.framesPerModel != previousSpecs[$0]?.framesPerModel
+            })
+            if !changed.isSubset(of: completed) { rebuildMovie() }
+        }
+        for name in completed.sorted() { morphDidComplete(name) }
+    }
+
+    /// The lane after the registry's morph specs went from `previous` to
+    /// `current`, or nil when nothing changes. A single-object morph clip whose
+    /// object's frames per model CHANGED (a regenerate completing, or the first
+    /// spec of a morph the clip already named) takes that stride and keeps its
+    /// model indices: the remap of spec §5.7, made on the clip itself so a
+    /// session save writes the stride the movie is built with, and a reload
+    /// (which has no registry spec) plays the same states.
+    ///
+    /// A spec that disappears changes nothing (the morph was deleted, or a
+    /// session load restored another one: the clip's saved stride stands), nor
+    /// does an unchanged one: a poll gathered before a session load may still
+    /// carry the old session's specs, and must not rewrite the restored lane.
+    static func adoptingMorphStrides(_ items: [TimelineItem],
+                                     previous: [String: MorphSettings],
+                                     current: [String: MorphSettings]) -> [TimelineItem]? {
+        var changed = false
+        let adopted = items.map { item -> TimelineItem in
+            guard case .states(var spec) = item.kind, let stride = spec.morphStride,
+                  let objs = spec.objects, objs.count == 1,
+                  let now = current[objs[0]]?.framesPerModel, now > 0, now != stride,
+                  now != previous[objs[0]]?.framesPerModel
+            else { return item }
+            spec.morphStride = now
+            var copy = item
+            copy.kind = .states(spec)
+            changed = true
+            return copy
+        }
+        return changed ? adopted : nil
+    }
+
+    /// Finished morphs (name → build number, from the registry) whose build no
+    /// poll has reported yet (`seen`), sorted. Each morph job has its own number,
+    /// so this catches a morph no poll saw building, and a rebuild with the same
+    /// settings, which publishes the same source and spec.
+    static func newlyBuiltMorphs(builds: [String: Int], seen: Set<Int>) -> [String] {
+        builds.filter { !seen.contains($0.value) }.keys.sorted()
+    }
+
+    /// The auto-play requests a poll leaves: those that may still complete.
+    /// Kept: a name a build of which is running (`nowRunning`) or finished in this
+    /// poll (`completed`, for `morphDidComplete` to consume), whatever older card
+    /// is still in the tray, and one no poll has listed yet. Otherwise dropped: a
+    /// target whose job record is terminal (`failed`: error, cancelled, or
+    /// refused, which Python files as `<name> (refused)` when a finished morph
+    /// holds the name, so that card outlives a later build of the name), and a
+    /// name that left the running set without a finished record (dismissed, or
+    /// deleted with its record). Without this a later build of that name that
+    /// never asked for auto-play (a Movie-tab smooth Add, a command-line morph)
+    /// would start playing.
+    static func autoPlayAfterPoll(autoPlay: Set<String>, previouslyRunning: Set<String>,
+                                  nowRunning: Set<String>, sources: [String: String],
+                                  failed: Set<String>, completed: Set<String>) -> Set<String> {
+        autoPlay.filter { name in
+            if nowRunning.contains(name) || completed.contains(name) { return true }
+            if failed.contains(name) || failed.contains(name + " (refused)") { return false }
+            return !previouslyRunning.contains(name) || sources[name] != nil
+        }
+    }
+
+    /// Names in `previouslyRunning` that have disappeared from `nowRunning`
+    /// AND appear in `known` (the completed-morph dict). Names that dropped out
+    /// of running but are NOT in `known` ended with an error or cancellation.
+    ///
+    /// Pure static so it is unit-testable without an engine instance.
+    static func completedMorphs(previouslyRunning: Set<String>,
+                                nowRunning: Set<String>,
+                                known: [String: String]) -> [String] {
+        previouslyRunning
+            .filter { !nowRunning.contains($0) && known[$0] != nil }
+            .sorted()
     }
 
     // Live scrub: clamp, set immediately for snappy UI, throttle the core call.
@@ -2090,6 +2724,149 @@ final class PyMOLEngine: ObservableObject {
             + "_c.scene(_b64.b64decode('\(b64)').decode('utf-8'), '\(action)')")
     }
 
+    // The (old, new) names of a `SCENERENAME:<b64 old>:<b64 new>` feedback
+    // line (raymol_scenes._emit_rename, #655), or nil for any other line.
+    static func sceneRenameEvent(_ line: String) -> (String, String)? {
+        guard line.hasPrefix("SCENERENAME:") else { return nil }
+        let parts = line.dropFirst("SCENERENAME:".count).split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let a = Data(base64Encoded: String(parts[0])), let b = Data(base64Encoded: String(parts[1])),
+              let old = String(data: a, encoding: .utf8), let new = String(data: b, encoding: .utf8),
+              !old.isEmpty, !new.isEmpty else { return nil }
+        return (old, new)
+    }
+
+    // MARK: Timeline in the session (#901)
+    //
+    // The lane as plain JSON items, the shape appkit_movie stages and writes
+    // under `raymol_timeline`. Views stay in Python, keyed by the camera ids.
+    struct TimelineRecord: Codable, Equatable {
+        struct States: Codable, Equatable {
+            var objects: [String]?
+            var mode: String
+            var first: Int
+            var last: Int
+            var seconds: Double
+            // A morph clip's stride (StatesSpec.morphStride): first/last are then
+            // model indices. Absent for a plain clip (nil is not encoded) and in
+            // sessions saved before morph clips; a value below 1 reads as absent.
+            var morphStride: Int?
+        }
+        var id: String
+        var kind: String              // camera | scene | states
+        var scene: String?
+        var states: States?
+        var seconds: Double
+        var linear: Bool
+        var pinnedState: Int?
+        var atFrame: Int?
+    }
+
+    static func timelineRecords(_ items: [TimelineItem]) -> [TimelineRecord] {
+        items.map { it in
+            var r = TimelineRecord(id: it.id.uuidString, kind: "camera",
+                                   seconds: it.transition.seconds, linear: it.transition.linear,
+                                   pinnedState: it.pinnedState, atFrame: it.atFrame)
+            switch it.kind {
+            case .camera: break
+            case .scene(let name):
+                r.kind = "scene"; r.scene = name
+            case .states(let spec):
+                r.kind = "states"
+                r.states = .init(objects: spec.objects, mode: spec.mode.rawValue,
+                                 first: spec.firstModel, last: spec.lastModel,
+                                 seconds: spec.durationSeconds,
+                                 morphStride: Self.positiveStride(spec.morphStride))
+            }
+            return r
+        }
+    }
+
+    // A morph stride that can map models to states, else nil (a plain clip).
+    private static func positiveStride(_ stride: Int?) -> Int? {
+        guard let s = stride, s > 0 else { return nil }
+        return s
+    }
+
+    // The lane a session's records describe. A record this build cannot read
+    // (bad id, unknown kind) is dropped rather than failing the whole lane.
+    static func timelineItems(from records: [TimelineRecord]) -> [TimelineItem] {
+        records.compactMap { r in
+            guard let id = UUID(uuidString: r.id) else { return nil }
+            let kind: TimelineItem.Kind
+            switch r.kind {
+            case "camera": kind = .camera
+            case "scene":
+                guard let name = r.scene, !name.isEmpty else { return nil }
+                kind = .scene(name: name)
+            case "states":
+                guard let st = r.states else { return nil }
+                kind = .states(StatesSpec(objects: st.objects,
+                                          mode: StatesMode(rawValue: st.mode) ?? .sweep,
+                                          firstModel: st.first, lastModel: st.last,
+                                          durationSeconds: st.seconds,
+                                          morphStride: Self.positiveStride(st.morphStride)))
+            default: return nil
+            }
+            return TimelineItem(id: id, kind: kind,
+                                transition: Transition(seconds: r.seconds, linear: r.linear),
+                                pinnedState: r.pinnedState, atFrame: r.atFrame)
+        }
+    }
+
+    // The lane and untracked-movie flag appkit_movie._emit_timeline writes to
+    // the `pymol_timeline` channel (announced by `TIMELINE:ready`: the payload
+    // would overflow PyMOL's ~1 KB feedback line). nil when it does not decode.
+    static func timelineRestorePayload(_ data: Data) -> (items: [TimelineItem], untrackedMovie: Bool)? {
+        struct Payload: Decodable { var items: [TimelineRecord]; var untrackedMovie: Bool }
+        guard let p = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        return (timelineItems(from: p.items), p.untrackedMovie)
+    }
+
+    // Hand the lane to appkit_movie for the next session save.
+    private func stageTimeline() {
+        guard isReady, let data = try? JSONEncoder().encode(Self.timelineRecords(timelineItems)) else { return }
+        runPython("import base64 as _b64\nfrom pymol import appkit_movie as _am\n"
+            + "_am.stage_timeline(_b64.b64decode('\(data.base64EncodedString())').decode('utf-8'))")
+    }
+
+    // A session load replaced the lane. The core movie it describes came with
+    // the .pse, so nothing is rebuilt here.
+    private func applyRestoredTimeline(_ items: [TimelineItem], untrackedMovie: Bool) {
+        pendingTimelineAdd = nil
+        self.untrackedMovie = untrackedMovie && items.isEmpty
+        timelineItems = items
+    }
+
+    // True when `add` must wait for the user to agree to replace an untracked
+    // movie; the Timeline add actions return early then and run again from
+    // confirmMovieReplace.
+    private func holdForUntrackedMovie(_ add: @escaping () -> Void) -> Bool {
+        guard untrackedMovie, timelineItems.isEmpty else { return false }
+        pendingTimelineAdd = add
+        return true
+    }
+
+    func confirmMovieReplace() {
+        let add = pendingTimelineAdd
+        pendingTimelineAdd = nil
+        untrackedMovie = false
+        add?()
+    }
+
+    // The Timeline after renaming scene `old` to `new` (#655): every scene item
+    // naming `old` now names `new`; everything else (ids, transitions, other
+    // kinds) is unchanged. renameScene applies it so the next rebuildMovie does
+    // not reference a scene that no longer exists. Pure, for tests.
+    static func renamingScene(in items: [TimelineItem], from old: String, to new: String) -> [TimelineItem] {
+        items.map { item in
+            guard case .scene(let name) = item.kind, name == old else { return item }
+            var updated = item
+            updated.kind = .scene(name: new)
+            return updated
+        }
+    }
+
     func renameScene(_ name: String, to newName: String) {
         let n = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !n.isEmpty, n != name else { return }
@@ -2098,6 +2875,12 @@ final class PyMOLEngine: ObservableObject {
         runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
             + "_c.scene(_b64.b64decode('\(b)').decode('utf-8'), 'rename', "
             + "new_key=_b64.b64decode('\(nb)').decode('utf-8'))")
+        // The core re-keyed the authored movie (raymol_scene_anim.rename_scene),
+        // so only the Timeline's own copy of the name changes here: no rebuild.
+        let updated = Self.renamingScene(in: timelineItems, from: name, to: n)
+        if updated != timelineItems {
+            timelineItems = updated
+        }
     }
 
     // Move the playhead to `frame` and commit (for tapping a keyframe/ruler in
@@ -2263,9 +3046,20 @@ final class PyMOLEngine: ObservableObject {
                 let objs = spec.objects.map {
                     "[" + $0.map { "\"\($0)\"" }.joined(separator: ",") + "]"
                 } ?? "null"
+                // Morph clips (morphStride != nil, single named object): remap
+                // model indices to absolute states using the current stride so a
+                // re-morph with different framesPerModel keeps the same models.
+                var first = spec.firstModel, last = spec.lastModel
+                if spec.morphStride != nil,
+                   let name = spec.objects?.first,
+                   spec.objects?.count == 1 {
+                    let r = Self.statesClipRange(spec: spec, models: statesClipModels(spec),
+                                                 currentStride: morphSpecs[name]?.framesPerModel)
+                    first = r.first; last = r.last
+                }
                 parts.append("{\"frame\":\(start),\"end\":\(end),\"states\":1,"
                     + "\"objects\":\(objs),\"mode\":\"\(spec.mode.rawValue)\","
-                    + "\"first\":\(spec.firstModel),\"last\":\(spec.lastModel)}")
+                    + "\"first\":\(first),\"last\":\(last)}")
             }
         }
         let json = "[" + parts.joined(separator: ",") + "]"
@@ -2283,14 +3077,225 @@ final class PyMOLEngine: ObservableObject {
     }
     var maxStateCount: Int { objects.map { $0.stateCount }.max() ?? 1 }
 
+    /// Models a states clip counts over (its lane label's range suffix and, for a
+    /// morph clip, the model → state mapping): a morph clip's source models, a
+    /// single object's states, otherwise the most states of any object.
+    func statesClipModels(_ spec: StatesSpec) -> Int {
+        guard let objs = spec.objects, objs.count == 1 else { return maxStateCount }
+        let name = objs[0]
+        let counts = Dictionary(objects.map { ($0.name, $0.stateCount) },
+                                uniquingKeysWith: { a, _ in a })
+        if let stride = spec.morphStride {
+            return Self.morphClipModels(name: name,
+                                        stride: morphSpecs[name]?.framesPerModel ?? stride,
+                                        morphSources: morphSources, stateCounts: counts)
+        }
+        return counts[name] ?? maxStateCount
+    }
+
+    /// Models in a morph clip's object: its source's states when this session built
+    /// it (`morphSources`), else its own states ÷ `stride` (a morph restored from a
+    /// session, or one still building), at least 1.
+    static func morphClipModels(name: String, stride: Int, morphSources: [String: String],
+                                stateCounts: [String: Int]) -> Int {
+        if let src = morphSources[name], let n = stateCounts[src] { return n }
+        let s = max(stride, 1)
+        return max(1, (stateCounts[name] ?? s) / s)
+    }
+
+    /// A states clip's lane label and glyph: its object ("N objects", or "N models"
+    /// for all), a "3–7" suffix only when it plays a subset of its `models`, and the
+    /// `repeat` glyph for a Loop or a morph clip (spec §5.7), `film.stack` otherwise.
+    static func statesClipLabel(_ spec: StatesSpec, models: Int) -> (text: String, glyph: String) {
+        let who = spec.objects.map { $0.count == 1 ? $0[0] : "\($0.count) objects" }
+            ?? "\(models) models"
+        let subset = spec.firstModel > 1 || (spec.lastModel > 0 && spec.lastModel < models)
+        let suffix = subset
+            ? " \(spec.firstModel)–\(spec.lastModel > 0 ? spec.lastModel : models)" : ""
+        let glyph = spec.mode == .loop || spec.morphStride != nil ? "repeat" : "film.stack"
+        return (who + suffix, glyph)
+    }
+
+    /// The objects the lane's states clips name that a poll found not loaded
+    /// (`absent`), and those that count as missing: absent in this poll AND the
+    /// previous one (`previouslyAbsent`). One poll's payload can be older than the
+    /// lane it is applied to, since a clip added (or a session restored) between
+    /// the poll's gathering and its arrival is checked against the old object
+    /// list; a smooth Add's morph, created with its clip, must not flash as missing.
+    static func clipObjectsPoll(items: [TimelineItem], loaded: Set<String>,
+                                previouslyAbsent: Set<String>)
+        -> (absent: Set<String>, missing: Set<String>) {
+        var named = Set<String>()
+        for item in items {
+            if case .states(let spec) = item.kind, let objs = spec.objects {
+                named.formUnion(objs)
+            }
+        }
+        let absent = named.subtracting(loaded)
+        return (absent, absent.intersection(previouslyAbsent))
+    }
+
+    /// The panel poll's half of `missingClipObjects` (main queue): `loaded` is the
+    /// poll's object list.
+    func applyClipObjectPoll(loaded: Set<String>) {
+        let poll = Self.clipObjectsPoll(items: timelineItems, loaded: loaded,
+                                        previouslyAbsent: absentClipObjects)
+        absentClipObjects = poll.absent
+        if missingClipObjects != poll.missing { missingClipObjects = poll.missing }
+    }
+
+    /// The objects `spec` names that are missing, in its order: not loaded by the
+    /// last two polls, and not in the object list now.
+    func statesClipMissing(_ spec: StatesSpec) -> [String] {
+        guard let objs = spec.objects, !missingClipObjects.isEmpty else { return [] }
+        let loaded = Set(objects.map(\.name))
+        return objs.filter { missingClipObjects.contains($0) && !loaded.contains($0) }
+    }
+
+    /// A morph clip's source object, when its name follows `<source>_morph[N]`
+    /// and that source is loaded (`MorphSettings.conventionalSource`): the clip's
+    /// own record carries no source, and a morph a session saved unfinished comes
+    /// back without its registry entry.
+    static func morphClipSource(_ spec: StatesSpec, loaded: [String]) -> String? {
+        guard spec.morphStride != nil, let objs = spec.objects, objs.count == 1 else { return nil }
+        return MorphSettings.conventionalSource(of: objs[0], existing: loaded)
+    }
+
+    /// The lane caption of a states clip that plays nothing because objects it
+    /// names (`missing`, in its order) are not loaded, or nil when none is. A
+    /// morph clip was not built (saved while its morph was being built, or the
+    /// morph was cancelled or deleted): morphing its source fills it.
+    static func statesClipMissingNote(_ spec: StatesSpec, missing: [String],
+                                      loaded: [String]) -> String? {
+        guard !missing.isEmpty else { return nil }
+        if spec.morphStride != nil, let objs = spec.objects, objs.count == 1 {
+            let source = morphClipSource(spec, loaded: loaded) ?? "its source"
+            return "not built · morph \(source) to fill"
+        }
+        if let objs = spec.objects, objs.count == 1 { return "not loaded" }
+        return missing.joined(separator: ", ") + " not loaded"
+    }
+
+    /// The forms a states clip's caption takes in the lane, widest first; the
+    /// lane draws the first that fits the part of the clip on screen (a
+    /// ViewThatFits in `StatesClipCaption`), else the last, truncated. A clip
+    /// that plays nothing: "label — note", then "label — reason" (the note up to
+    /// its " · ", "not built" for a morph clip), then the reason alone (the lane
+    /// draws the ⚠ glyph before it), so the reason is what stays readable. The
+    /// remedy ("morph 2kpo to fill") stays in the tooltip and in the context
+    /// menu, which also offers the Build action. A clip that plays: its label.
+    static func statesClipCaptions(label: String, note: String?) -> [String] {
+        guard let note else { return [label] }
+        let reason = note.components(separatedBy: " · ").first ?? note
+        var forms = ["\(label) — \(note)"]
+        if reason != note { forms.append("\(label) — \(reason)") }
+        forms.append(reason)
+        return forms
+    }
+
+    /// The least of a states clip on screen its caption lays out in: the
+    /// caption's leading padding, the ⚠ glyph and an ellipsis. Less is a sliver.
+    static let statesClipCaptionMinWidth: CGFloat = 26
+
+    /// The part of a states clip's block the lane shows, as `x` from the block's
+    /// leading edge and `width`: where its caption is laid out, leading-aligned
+    /// (the lane adds its padding), so a clip longer than the lane, or one
+    /// scrolled past its start, still shows its ⚠ and the start of its text.
+    /// All in lane (content) coordinates: the block spans `blockX` +
+    /// `blockWidth`, the lane shows `visibleX` + `visibleWidth`. A block with
+    /// nothing on screen, or less than `minWidth` of it, gets its whole width,
+    /// as before: a caption laid out in a sliver of the block's tail would run
+    /// past the block's end, over the next item.
+    static func statesClipVisibleSpan(blockX: CGFloat, blockWidth: CGFloat,
+                                      visibleX: CGFloat, visibleWidth: CGFloat,
+                                      minWidth: CGFloat = statesClipCaptionMinWidth)
+        -> (x: CGFloat, width: CGFloat) {
+        let lo = max(blockX, visibleX)
+        let hi = min(blockX + blockWidth, visibleX + visibleWidth)
+        guard hi > lo, hi - lo >= minWidth else { return (0, blockWidth) }
+        return (lo - blockX, hi - lo)
+    }
+
+    /// Fill a morph clip whose object is not loaded: morph its source into the
+    /// clip's object at the clip's own stride, so its model indices play the
+    /// states they were saved for. The other settings are the Morph sheet's last
+    /// ones, with loop on (a Play-models morph is always a loop). The completion
+    /// rebuilds the movie, as for any morph a clip names. No-op without a loaded
+    /// source.
+    func fillMorphClip(_ spec: StatesSpec) {
+        guard let stride = spec.morphStride, let name = spec.objects?.first,
+              let source = Self.morphClipSource(spec, loaded: objects.map(\.name))
+        else { return }
+        var settings = MorphSettings.load()
+        settings.framesPerModel = stride
+        settings.loop = true
+        morph(source: source, settings: settings, autoPlay: false, name: name)
+    }
+
+    // Convert a StatesSpec's model window to absolute PyMOL state numbers.
+    //
+    // When `spec.morphStride` is nil the clip is a plain states clip and the
+    // spec's firstModel/lastModel values are returned unchanged (byte-identical
+    // JSON). When morphStride is set the clip was authored for a morph object;
+    // model indices are mapped to absolute states using the CURRENT stride
+    // (currentStride) — or the recorded stride (morphStride) when the morph is
+    // no longer loaded — so a re-morph with different framesPerModel still plays
+    // the intended models.
+    static func statesClipRange(
+        spec: StatesSpec,
+        models: Int,
+        currentStride: Int?
+    ) -> (first: Int, last: Int) {
+        guard let morphStride = spec.morphStride else {
+            return (spec.firstModel, spec.lastModel)
+        }
+        let stride = currentStride ?? morphStride
+        return MorphClipMapping.absoluteRange(
+            firstModel: spec.firstModel,
+            lastModel: spec.lastModel,
+            models: models,
+            stride: stride
+        )
+    }
+
     // Append a "Play models" states clip (sweeps a model range over `seconds`).
+    // morphStride: when non-nil, firstModel/lastModel are logical model indices
+    // for the named morph object; they are remapped to absolute states at each
+    // rebuild using the morph's current framesPerModel.
     func appendStatesClip(objects: [String]? = nil, mode: StatesMode = .sweep,
-                          firstModel: Int = 1, lastModel: Int = 0, seconds: Double = 4.0) {
+                          firstModel: Int = 1, lastModel: Int = 0, seconds: Double = 4.0,
+                          morphStride: Int? = nil) {
         guard isReady else { return }
-        let spec = StatesSpec(objects: objects, mode: mode,
+        if holdForUntrackedMovie({ [weak self] in
+            self?.appendStatesClip(objects: objects, mode: mode, firstModel: firstModel,
+                                   lastModel: lastModel, seconds: seconds,
+                                   morphStride: morphStride)
+        }) { return }
+        var spec = StatesSpec(objects: objects, mode: mode,
                               firstModel: firstModel, lastModel: lastModel, durationSeconds: seconds)
+        spec.morphStride = morphStride
         timelineItems.append(TimelineItem(kind: .states(spec)))
         rebuildMovie()
+    }
+
+    // The Play-models sheet's Add (morph spec §5.7): submit the morph the plan
+    // names (Python reuses a matching one), append its clip, remember the sheet's
+    // settings. Over an untracked movie the three wait together for the replace
+    // prompt (#901), so Cancel there starts no morph and stores nothing.
+    func addPlayModelsClip(_ plan: MorphMovie.AddPlan, mode: StatesMode,
+                           firstModel: Int, lastModel: Int, seconds: Double) {
+        guard isReady else { return }
+        if holdForUntrackedMovie({ [weak self] in
+            self?.addPlayModelsClip(plan, mode: mode, firstModel: firstModel,
+                                    lastModel: lastModel, seconds: seconds)
+        }) { return }
+        if let m = plan.morph {
+            morph(source: m.source, settings: m.settings, autoPlay: false,
+                  reuse: true, name: m.name, target: m.target)
+        }
+        appendStatesClip(objects: plan.objects, mode: mode, firstModel: firstModel,
+                         lastModel: lastModel, seconds: seconds, morphStride: plan.morphStride)
+        plan.save?.save()
     }
 
     // Re-position a frame-anchored camera item (dragged along the lane).
@@ -2325,6 +3330,7 @@ final class PyMOLEngine: ObservableObject {
     func resetToPlainEnsemble() {
         guard isReady else { return }
         timelineItems.removeAll()
+        untrackedMovie = false
         runPython("from pymol import appkit_movie as _am\n_am.reset_ensemble()")
         playback.frameCount = max(maxStateCount, 1)
         playback.currentFrame = 1
@@ -2333,6 +3339,7 @@ final class PyMOLEngine: ObservableObject {
     // Append a camera keyframe of the CURRENT view to the end of the lane.
     func captureCameraItem() {
         guard isReady else { return }
+        if holdForUntrackedMovie({ [weak self] in self?.captureCameraItem() }) { return }
         // With a "Play models" clip present, anchor the keyframe at the current
         // playhead so it can be dropped WITHIN the clip's span (camera moves while
         // the models cycle). Otherwise append sequentially as before.
@@ -2348,6 +3355,7 @@ final class PyMOLEngine: ObservableObject {
     // camera flies into the scene and its reps cut in at playback.
     func appendSceneItem(_ name: String) {
         guard isReady, !name.isEmpty else { return }
+        if holdForUntrackedMovie({ [weak self] in self?.appendSceneItem(name) }) { return }
         let item = TimelineItem(kind: .scene(name: name))
         timelineItems.append(item)
         rebuildMovie()
@@ -2396,6 +3404,9 @@ final class PyMOLEngine: ObservableObject {
     // (spin/rock around the current view) under Swift-generated UUIDs.
     func appendCameraTemplate(kind: String, duration: Double, axis: String, angle: Double) {
         guard isReady else { return }
+        if holdForUntrackedMovie({ [weak self] in
+            self?.appendCameraTemplate(kind: kind, duration: duration, axis: axis, angle: angle)
+        }) { return }
         let count = 4
         let ids = (0..<count).map { _ in UUID() }
         let idsJSON = "[" + ids.map { "\"\($0.uuidString)\"" }.joined(separator: ",") + "]"
@@ -2420,6 +3431,9 @@ final class PyMOLEngine: ObservableObject {
         guard isReady else { return }
         let names = scenes ?? sceneNames
         guard !names.isEmpty else { return }
+        if holdForUntrackedMovie({ [weak self] in
+            self?.appendScenesTemplate(secondsPerScene: secondsPerScene, scenes: scenes)
+        }) { return }
         for nm in names {
             timelineItems.append(TimelineItem(kind: .scene(name: nm),
                                               transition: Transition(seconds: secondsPerScene, linear: false)))
@@ -2431,6 +3445,7 @@ final class PyMOLEngine: ObservableObject {
     func clearMovieItems() {
         guard isReady else { return }
         timelineItems.removeAll()
+        untrackedMovie = false
         runPython("from pymol import appkit_movie as _am\n_am.forget_all_views()\n_am.reset_movie()")
         playback.frameCount = 1
         playback.currentFrame = 1
@@ -2479,6 +3494,12 @@ final class PyMOLEngine: ObservableObject {
         runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
             + "_c.set_name(_b64.b64decode('\(ob)').decode('utf-8'), "
             + "_b64.b64decode('\(nb)').decode('utf-8'))")
+        // A player of `old` stops now, not at the next panel poll: its ticks
+        // (`set state, k, old`) would still reach the renamed object when the
+        // new name extends the old one (PyMOL matches an unambiguous name
+        // prefix) and pin it again. AFTER set_name, which drops the pin the
+        // ticks left while `old` is still in appkit_movie's registry.
+        stopObjectStates(old)
     }
 
     // MARK: - Interactive measurement
@@ -2570,6 +3591,27 @@ final class PyMOLEngine: ObservableObject {
         guard let data = try? Data(contentsOf: url),
               let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
         return rows
+    }
+
+    /// Bond-derived glycan topology and advisory geometry assessments for the
+    /// native topology sheet. The temporary-file bridge avoids feedback-size
+    /// limits for branched glycans and matches the Analysis Notes data bridge.
+    func glycanTopology(selection: String = "all") -> GlycanForestPayload? {
+        guard isReady else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-glycan-tree-\(UUID().uuidString).json")
+        let encodedPath = Data(url.path.utf8).base64EncodedString()
+        let encodedSelection = Data(selection.utf8).base64EncodedString()
+        runPython("""
+        import base64 as _b64
+        from pymol.glyco.tree import write_glycan_tree as _write_glycan_tree
+        _path = _b64.b64decode('\(encodedPath)').decode('utf-8')
+        _selection = _b64.b64decode('\(encodedSelection)').decode('utf-8')
+        _write_glycan_tree(_path, selection=_selection)
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(GlycanForestPayload.self, from: data)
     }
 
     /// Safe residue selection used by raymol-residue links in note Preview.
@@ -2712,11 +3754,13 @@ final class PyMOLEngine: ObservableObject {
     }
 
     /// Leave the viewport tool a docked-bar mode cannot share the screen with: Move
-    /// (its gizmo takes the drags) and Lights (its bar takes the strip above the
+    /// (its gizmo takes the drags), Box Select (its box takes the drags, and its
+    /// preview highlight would stay lit) and Lights (its bar takes the strip above the
     /// viewport). Used by the Measure, Design, Predict and Binder Design setters on
-    /// entry. Box Select is left alone, as it was before Lights joined.
+    /// entry. Leaving goes through `setInteractionMode(.viewing)`, the same path Esc
+    /// uses, so Box Select's rectangle and session are torn down too (#648).
     private func leaveViewportTool() {
-        if interactionMode == .move || interactionMode == .lights { setInteractionMode(.viewing) }
+        if interactionMode != .viewing { setInteractionMode(.viewing) }
     }
 
     // MARK: - Exclusive interaction modes
@@ -3178,6 +4222,8 @@ final class PyMOLEngine: ObservableObject {
             self.panelPolled
                 .sink { [weak self, weak lc] in
                     guard let self, self.interactionMode == .lights else { return }
+                    self.noteDocumentGenerationForLightsMode()
+                    guard self.interactionMode == .lights else { return }
                     lc?.refresh()
                 }
                 .store(in: &self.lightsCancellables)
@@ -3186,6 +4232,14 @@ final class PyMOLEngine: ObservableObject {
     }()
 
     private var lightsCancellables = Set<AnyCancellable>()
+    private var lightsEntryDocumentGeneration: UInt32?
+
+    /// Reads the core document-generation counter (#649). Defaults to reading the
+    /// bridge for the live instance; tests can replace it.
+    lazy var documentGenerationReader: () -> UInt32 = { [weak self] in
+        guard let self, self.isReady, let inst = self.instance else { return 0 }
+        return PyMOLBridge_DocumentGeneration(inst)
+    }
 
     /// The per-frame hook of the light tools (#620): MetalViewport.draw(in:)
     /// calls it once per rendered frame while in Lights mode, so a pinned
@@ -3198,6 +4252,23 @@ final class PyMOLEngine: ObservableObject {
         // draw(in:) runs on the main thread on both platforms (macOS: the
         // view's display link; iOS: MTKView's own loop).
         MainActor.assumeIsolated { lightsController.frameRendered() }
+        refreshLightGizmoGridCell()
+    }
+
+    /// Grid mode (#697): the gizmo's cell kept in step with the grid each
+    /// frame (objects added or removed, grid_max, a resize or rotation): the
+    /// same cell while the grid still lays it out, else the cell under its
+    /// old centre. Not while a gizmo press owns the pointer (a drag stays in
+    /// its cell). One bridge read, only while grid mode is on and a cell is
+    /// shown; no Python.
+    private func refreshLightGizmoGridCell() {
+        guard isReady, let instance, lightGizmoGridMode, !lightGizmoPointer.ownsPress else { return }
+        MainActor.assumeIsolated {
+            guard let cell = lightGizmoUI.gridCell, let size = lightGizmoUI.viewSize,
+                  let camera = lightsController.eye.projection,
+                  let rect = LightGizmoProjection(camera: camera, viewSize: size)?.sceneRect else { return }
+            lightGizmoUI.gridCell = cell.revalidated(size: Self.gridSize(handle: instance), in: rect)
+        }
     }
 
     /// The live camera as the light gizmo projects it (#622): the 25-float view
@@ -3228,26 +4299,41 @@ final class PyMOLEngine: ObservableObject {
             })
     }
 
-    /// `grid_mode` is on, as the scene poll last read it: the gizmo hides
-    /// (each cell has its own view, which its whole-view projection cannot
-    /// match).
+    /// `grid_mode` is on, as the scene poll last read it: the gizmo shows in
+    /// `lightGizmoUI.gridCell` (the cell under the pointer), or hides when nil
+    /// (#697).
     var lightGizmoGridMode: Bool {
         (sceneState.values["grid_mode"] ?? 0) > 0.5
+    }
+
+    /// The grid cell under `p` (top-left points) in a view of `viewSize`
+    /// points (#697): nil unless grid_mode is on (the scene poll's) and the
+    /// camera is known; one 1x1 cell when the scene lays out fewer than two
+    /// cells. Bridge reads only, no Python; main thread.
+    func lightGizmoGridCell(at p: CGPoint, viewSize: CGSize) -> LightGizmoGridCell? {
+        guard isReady, let instance, lightGizmoGridMode else { return nil }
+        guard let camera = MainActor.assumeIsolated({ lightsController.eye.projection }),
+              let rect = LightGizmoProjection(camera: camera, viewSize: viewSize)?.sceneRect
+        else { return nil }
+        return LightGizmoGridCell.at(p, size: Self.gridSize(handle: instance), in: rect)
     }
 
     /// The light gizmo as it is drawn and hit now in a view of `viewSize`
     /// points (#622): the overlay and the viewport both build it here, from
     /// the controller's published eye space and projection, so what is drawn
     /// is what is hit-tested. nil when the gizmo is hidden (not in Lights
-    /// mode, a movie export, no lights, grid mode, no eye data). No bridge
-    /// or Python call.
+    /// mode, a movie export, no lights, grid mode without a cell, no eye data).
+    /// No bridge or Python call.
     func lightGizmoLayout(viewSize: CGSize,
                           metrics: LightGizmoMetrics = LightGizmoMetrics()) -> LightGizmoLayout? {
         guard interactionMode == .lights else { return nil }
         return MainActor.assumeIsolated {
             LightGizmoLayout.make(
                 LightGizmoInputs(controller: lightsController, viewSize: viewSize,
-                                 gridMode: lightGizmoGridMode, sceneShadowsOn: sceneShadowsOn),
+                                 gridMode: lightGizmoGridMode,
+                                 gridCell: lightGizmoUI.gridCell,
+                                 sceneShadowsOn: sceneShadowsOn,
+                                 chromeInsets: lightGizmoUI.chromeInsets),
                 metrics: metrics)
         }
     }
@@ -3298,6 +4384,13 @@ final class PyMOLEngine: ObservableObject {
     /// card teach the command) or, for Revert, one Python call. Never called
     /// per drag tick.
     func performLightsAction(_ action: LightsAction) {
+        switch action {
+        case .restore, .restoreLight:
+            noteDocumentGenerationForLightsMode()
+            guard interactionMode == .lights else { return }
+        default:
+            break
+        }
         guard let invocation = action.invocation else {
             // Names come from the core (which enforces the same rule), presets
             // from #612's table and air values from the rig and the field
@@ -3359,13 +4452,26 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+    /// Document replacement check for Lights mode (#649): if a replacement
+    /// ran without going through `runCommandCore` (Python or MCP `cmd.load('x.pse')`,
+    /// `cmd.reinitialize()`, etc.), the core document generation differs from its
+    /// value when Lights mode began. End the mode the way Done does so Revert
+    /// cannot write the old document's rig into the new document.
+    func noteDocumentGenerationForLightsMode() {
+        guard interactionMode == .lights,
+              let entry = lightsEntryDocumentGeneration,
+              documentGenerationReader() != entry else { return }
+        setInteractionMode(.viewing)
+    }
+
     /// A command that replaces the whole document ends Lights mode the way Done
     /// does (edits kept), so Revert does not put the previous document's rig into
     /// the new one. Called by runCommandCore after the command ran, so it sees the
     /// command forms this app and the console type (`load`, `reinitialize` and its
-    /// abbreviations); a replacement that never goes through runCommandCore (MCP,
-    /// Python `cmd.load(...)`, scripts) is not seen (follow-up). Internal so a
-    /// test can drive it without running the command in the shared host.
+    /// abbreviations); replacements that never go through runCommandCore (MCP,
+    /// Python `cmd.load(...)`, scripts) are caught by the document-generation check
+    /// (`noteDocumentGenerationForLightsMode`). Internal so a test can drive it
+    /// without running the command in the shared host.
     func noteCommandForLightsMode(_ command: String) {
         guard interactionMode == .lights, Self.endsLightsMode(command: command) else { return }
         setInteractionMode(.viewing)
@@ -3575,12 +4681,14 @@ final class PyMOLEngine: ObservableObject {
             // follows the mode: .everyFrame BEFORE begin(), whose refresh then
             // publishes the eye space and the projection at once.
             if previous != .lights {
+                lightsEntryDocumentGeneration = documentGenerationReader()
                 MainActor.assumeIsolated {
                     lightsController.eyeDemand = .everyFrame
                     lightsController.begin()
                 }
             }
         } else if previous == .lights {
+            lightsEntryDocumentGeneration = nil
             // Done, Esc or another mode: the edits stay, the snapshot goes; no
             // more per-frame eye reads, no gizmo hover or drag state, and the
             // aim dot's pick grids go back. A gizmo drag under way writes no
@@ -3942,6 +5050,11 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_GetLetterboxAspect(handle)
     }
 
+    /// The number of grid cells laid out (#697): 0 when grid_mode is off.
+    static func gridSize(handle: UnsafeMutableRawPointer?) -> Int {
+        Int(PyMOLBridge_GridSize(handle))
+    }
+
     /// The letterbox aspect the live frame renders the scene into, which
     /// `pickSurface` maps view points through (0 = the scene fills the view,
     /// also before the core or its renderer is up).
@@ -3961,6 +5074,12 @@ final class PyMOLEngine: ObservableObject {
     private var lastHoverFire = Date.distantPast
     private let kHoverInterval = 0.045        // leading-edge throttle: ≤~22 picks/s
     private let kHoverMinNDC: Float = 0.004   // sub-pixel move gate (NDC²-ish)
+    /// Whether a hover pick that may have written '_preselect' has run since the
+    /// last clear (#694). clearHoverPreview skips its Python select when false,
+    /// so a press with nothing previewed (every press in Lights mode) runs no
+    /// Python. Starts true so the first clear is unconditional (a session or
+    /// script could have left '_preselect' populated).
+    private(set) var hoverPreviewMayBeShown = true
     // Separate throttle state for the design-mode hover path so it doesn't
     // interfere with the viewing-mode hover path's NDC gate / work item.
     #if RAYMOL_MPNN
@@ -3990,6 +5109,9 @@ final class PyMOLEngine: ObservableObject {
             self.lastHoverFire = Date()
             let wantsPreview = self.hoverPreviewEnabled
             let wantsInfo = self.hoverReadoutEnabled
+            // Only a preview pick writes '_preselect'; a readout-only pick
+            // leaves it alone, so it must not make the next clear run Python.
+            if wantsPreview { self.hoverPreviewMayBeShown = true }
             self.runPython(
                 "from pymol import metal_pick as _mp; "
                 + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect), "
@@ -4009,7 +5131,8 @@ final class PyMOLEngine: ObservableObject {
 
     /// Cancel any pending hover pick and empty the preview selection. Cheap and
     /// idempotent — safe to call from mouse-down / drag-start / mouse-exit and
-    /// when the user toggles the feature off.
+    /// when the user toggles the feature off; runs no Python when nothing was
+    /// previewed since the last clear (#694).
     func clearHoverPreview() {
         hoverWork?.cancel()
         hoverWork = nil
@@ -4025,7 +5148,10 @@ final class PyMOLEngine: ObservableObject {
         lastDesignHoverNDC = nil
         if designMode { MainActor.assumeIsolated { designController.clearHover() } }
         #endif
-        guard isReady else { return }
+        // Nothing previewed since the last clear → '_preselect' is already empty;
+        // skip the Python (#694: every Lights-mode press used to pay for it).
+        guard isReady, hoverPreviewMayBeShown else { return }
+        hoverPreviewMayBeShown = false
         // enable=0: never enable '_preselect' — enabling a selection is exclusive
         // and would disable the committed 'sele', hiding its markers. (The
         // renderer draws '_preselect' by membership regardless of enabled state.)
@@ -4065,9 +5191,7 @@ final class PyMOLEngine: ObservableObject {
         let fire: () -> Void = { [weak self] in
             guard let self else { return }
             self.lastDesignHoverFire = Date()
-            self.runPython(
-                "from pymol import metal_pick as _mp; "
-                + "_mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+            self.runHoverDesignPick(ndcX, ndcY, aspect)
             self.readDesignHoverHit()
         }
         let elapsed = Date().timeIntervalSince(lastDesignHoverFire)
@@ -4124,9 +5248,17 @@ final class PyMOLEngine: ObservableObject {
         deliver(out.object, out.chain, out.resi, out.hit)
     }
 
+    /// Run `hover_design_at`, which always writes '_preselect', and arm the
+    /// hover clear (#694). Every caller goes through here so none can leave a
+    /// glow that a later `clearHoverPreview` would skip.
+    private func runHoverDesignPick(_ ndcX: Float, _ ndcY: Float, _ aspect: Float) {
+        hoverPreviewMayBeShown = true
+        runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+    }
+
     func designPickResidue(ndcX: Float, ndcY: Float, aspect: Float) {
         guard designMode, isReady else { return }
-        runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+        runHoverDesignPick(ndcX, ndcY, aspect)
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_hover_design.json")
         // An unreadable payload must NOT reach the controller: `handleViewportHit`
@@ -4315,6 +5447,15 @@ final class PyMOLEngine: ObservableObject {
         return PyMOLBridge_InvokeKey(token) == 1
     }
 
+    /// True iff `token` is an ALT-/CTSH- key whose binding the user defined (it
+    /// differs from stock PyMOL's). The key monitor asks before taking such an
+    /// event from the focused command line, when the "Send Key Bindings to
+    /// Viewport While Typing" toggle is on (#261). Invokes nothing.
+    func isUserBoundKey(_ token: String) -> Bool {
+        guard isReady, !token.isEmpty else { return false }
+        return PyMOLBridge_IsUserBoundKey(token) == 1
+    }
+
     func renderMetal() {
         guard let inst = instance else { return }
         PyMOLBridge_RenderMetal(inst)
@@ -4343,10 +5484,10 @@ final class PyMOLEngine: ObservableObject {
     // the final post pass writes to it (#396). Returns false when no drawable
     // arrived, i.e. nothing was presented and the caller should render again.
     @discardableResult
-    func renderMetalFrame(view: MTKView, width: Int, height: Int) -> Bool {
+    func renderMetalFrame(view: MTKView, width: Int, height: Int, airTick: Bool = false) -> Bool {
         guard let inst = instance else { return false }
         let vPtr = Unmanaged.passUnretained(view).toOpaque()
-        return PyMOLBridge_RenderMetalFrame(inst, vPtr, Int32(width), Int32(height)) != 0
+        return PyMOLBridge_RenderMetalFrame(inst, vPtr, Int32(width), Int32(height), airTick ? 1 : 0) != 0
     }
 
     /// Live Metal frames committed but not yet completed on the GPU. The render
@@ -4390,6 +5531,11 @@ final class PyMOLEngine: ObservableObject {
         if !text.isEmpty {
             // Check for ObjectPanel feedback before appending to log
             for line in text.components(separatedBy: "\n") {
+                // The Theme studio's restore is over once its own line is read
+                // (it still goes on to the console below).
+                if line == "THEMEPREVIEW:restore" || line.hasPrefix("THEMEPREVIEW_ERR:restore") {
+                    themeRestorePending = false
+                }
                 if line.hasPrefix("OBJPANEL:") {
                     parseObjectPanelFeedback(line)
                 } else if line.hasPrefix("OBJDETAIL:") {
@@ -4408,6 +5554,34 @@ final class PyMOLEngine: ObservableObject {
                     parsePlaybackFeedback(line)
                 } else if line.hasPrefix("PLAYBACK_ERR:") {
                     // swallow (don't flood the log with poll errors)
+                } else if let (old, new) = Self.sceneRenameEvent(line) {
+                    // A scene renamed from the console, Python or MCP (#655):
+                    // re-key the Timeline's copy of the name too.
+                    DispatchQueue.main.async {
+                        let updated = Self.renamingScene(in: self.timelineItems, from: old, to: new)
+                        if updated != self.timelineItems { self.timelineItems = updated }
+                    }
+                } else if line == "TIMELINE:ready" {
+                    // A .pse load or reinitialize replaced the Timeline (#901).
+                    // Read now, while the file is the one this line announces.
+                    let path = TempChannel.path(TempChannel.Stem.timeline)
+                    if let data = FileManager.default.contents(atPath: path),
+                       let restored = Self.timelineRestorePayload(data) {
+                        // Read now, in feedback order (see themeRestorePending).
+                        let replacedSession = !themeRestorePending
+                        DispatchQueue.main.async {
+                            // A per-object player outlives the session it was
+                            // started in, and would drive a restored object of
+                            // the same name. runCommandCore stops them before a
+                            // load it runs; this catches loads that bypass it
+                            // (MCP, Python `cmd.load`). The Theme studio's
+                            // restore is the same session: they keep playing.
+                            // Not released: a restored .pse carries its
+                            // objects' own states.
+                            if replacedSession { self.stopAllObjectStates() }
+                            self.applyRestoredTimeline(restored.items, untrackedMovie: restored.untrackedMovie)
+                        }
+                    }
                 } else if line.hasPrefix("MOVIEEXPORT:") {
                     // cmd.movie_export (#581): a scripted export request.
                     let json = String(line.dropFirst("MOVIEEXPORT:".count))
@@ -4650,7 +5824,8 @@ final class PyMOLEngine: ObservableObject {
             // renders no row rather than a row in a neutral state, which is the
             // safe direction — an inert control on an object it does not apply
             // to is worse than a missing one.
-            hasPeelRow: ((m["peel_row"] as? NSNumber)?.intValue ?? 0) != 0)
+            hasPeelRow: ((m["peel_row"] as? NSNumber)?.intValue ?? 0) != 0,
+            atomCount: (m["natoms"] as? NSNumber)?.intValue)
     }
 
     /// Ask the core for the material table, unless we already have it.
@@ -4867,7 +6042,9 @@ extension LightsAction {
     /// so nothing is run (no quoting is ever needed). The command strings are
     /// pinned by LightsActionInvocationTests and, run through the core, by
     /// testing/tests/raymol/lighting_mode.py TestBarCommands (the highlight
-    /// strings by lighting_gizmo.py TestHighlightCommand, the Atmosphere
+    /// strings by lighting_gizmo.py TestHighlightCommand, the aim=centre
+    /// string by lighting_gizmo.py TestAimCentreCommand, the rename string by
+    /// lighting_mode.py TestBarCommands, the Atmosphere
     /// card's by lighting_atmosphere.py TestCardCommands): change them
     /// together.
     var invocation: Invocation? {
@@ -4906,6 +6083,13 @@ extension LightsAction {
             }
             if pin { command += ", pin=1" }
             return .command(command)
+        case .aimAtCentre(let name):
+            // #699's double-click or double-tap on the aim dot, run once.
+            return Self.isValidName(name) ? .command("lights \(name), aim=centre") : nil
+        case .rename(let old, let new):
+            // #797: the inspector's Rename, checked first with `nameCheck`.
+            guard Self.isValidName(old), Self.isValidName(new) else { return nil }
+            return .command("lights \(old), name=\(new)")
         case .atmosphereOff:
             return .command("atmosphere off")
         case .setAir(let values):
@@ -4942,6 +6126,50 @@ extension LightsAction {
         let degrees = value.rounded()
         guard degrees >= 1, degrees <= 179 else { return nil }
         return Int(degrees)
+    }
+
+    /// The words a light cannot be named after: the `lights` command's
+    /// keywords (lighting_commands.KEYWORDS, which lighting_mode.py checks
+    /// this list against); the preset names come from the core's menu.
+    static let reservedNames = ["add", "remove", "presets", "recenter", "on", "off", "clear"]
+
+    /// What a typed light name comes to (#797).
+    enum NameCheck: Equatable {
+        /// A name Rename can send.
+        case ok
+        /// The light already has exactly this name: nothing to send.
+        case unchanged
+        /// Refused, with the reason to show beside the field.
+        case refused(String)
+    }
+
+    /// Check `text` as the new name of the light called `current`, with the
+    /// core's rules: letters, digits and `_`, not starting with a digit, at
+    /// most 32 characters, not a keyword or a preset, and unique among the
+    /// lights ignoring case (the light's own name may change case). `text`
+    /// is trimmed first, as the command trims it. Checked in the Swift side
+    /// so that a refused name is never sent.
+    static func nameCheck(_ text: String, renaming current: String, among names: [String],
+                          presets: [String]) -> NameCheck {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return .refused("Enter a name") }
+        if name.count > 32 { return .refused("At most 32 characters") }
+        if !isValidName(name) {
+            if let first = name.unicodeScalars.first, first.value >= 48, first.value <= 57 {
+                return .refused("A name can't start with a digit")
+            }
+            return .refused("Use letters, digits and _ only")
+        }
+        let key = name.lowercased()
+        if reservedNames.contains(key) { return .refused("\"\(name)\" is a command word") }
+        if presets.contains(where: { $0.lowercased() == key }) {
+            return .refused("\"\(name)\" is a preset name")
+        }
+        let own = current.lowercased()
+        if key != own, let clash = names.first(where: { $0.lowercased() == key }) {
+            return .refused("A light named \"\(clash)\" already exists")
+        }
+        return name == current ? .unchanged : .ok
     }
 
     /// The core's light-name rule (LightNameValid; lighting_commands.NAME_RE):

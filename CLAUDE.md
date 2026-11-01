@@ -62,6 +62,18 @@ C++ uses `.clang-format` (Linux brace style, 2-space indent, 80-column limit). N
   ```
   Do NOT pass `PRODUCT_NAME=RayMol-<suffix>` on the `xcodebuild` command line — it applies globally to every target in the build, including SPM package resource-bundle targets (e.g. mlx-swift's `Cmlx.bundle`), and breaks copy-phase steps that still reference the old bundle name by string. Multiple branches/worktrees are often under test at the same time; an unsuffixed build can overwrite or shadow another one in progress, causing verification against the wrong binary. Release builds keep the plain `RayMol` name — this rule is dev-only.
 
+## MCP awareness (when adding a RayMol feature)
+
+AI clients drive RayMol over its built-in MCP server (`modules/raymol_mcp/`) and only use what it tells them exists; otherwise they fall back on stock PyMOL. When you add a user-facing feature or command:
+
+1. **Always:** give the command a full docstring (`raymol_help <command>` serves it), and name it with a one-line example in `GUIDE` in `modules/raymol_mcp/guide.py`. `testing/tests/test_mcp_command_coverage.py` fails CI for a new command the guide never names. If agents should never use it (UI plumbing, test hooks), add it to `guide.NOT_FOR_AGENTS` with the reason. Never add it to the test's `KNOWN_COMMANDS` snapshot to make the test pass.
+2. **Headline feature, or one that replaces a PyMOL habit:** also name it in `INSTRUCTIONS` in `guide.py`. Clients read that on every connect, so keep it short.
+3. **Something agents will do often:** add a typed tool in `modules/raymol_mcp/native.py` (`TOOLS` + `DISPATCH`) as a thin wrapper over the real command. Add a test in `testing/tests/test_mcp_native.py`, a row in `docs/src/content/docs/guides/mcp-setup.md`, and optionally a banner label in `_summary` in `server.py`.
+4. **Feature with state** (a mode, a rig, running jobs): report it in `native.raymol_state()` so it shows under `raymol` in `get_session_state`.
+5. **Replaces a PyMOL idiom:** add a pattern to `_HABITS` in `native.py`, so `run_pymol_command` and `run_python` add a note naming the RayMol way.
+
+Clients cache the tool list, so they see new tools only after they reconnect.
+
 ## Architecture
 
 ### C++ Layer System

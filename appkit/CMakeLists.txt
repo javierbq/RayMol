@@ -55,7 +55,7 @@ if(PYMOL_METAL_ONLY)
     # static lib only needs headers; linking happens in the Xcode app via
     # PyMOLBridge.xcconfig. Python headers come from the staged
     # python-build-standalone tree (PYMOL_PYTHON_INCLUDE_DIR); png/freetype
-    # headers from Homebrew (build-time only).
+    # headers from deps_macos/install (PYMOL_MACOS_DEPS); glm from Homebrew.
     set(BREW_PREFIX "${PYMOL_EXTERNAL_PREFIX}")
     set(Python3_INCLUDE_DIRS "${PYMOL_PYTHON_INCLUDE_DIR}")
     # numpy/arrayobject.h, from the numpy installed into the same staged tree by
@@ -73,10 +73,18 @@ if(PYMOL_METAL_ONLY)
             set(Python3_NumPy_INCLUDE_DIRS "")
         endif()
     endif()
-    set(PNG_INCLUDE_DIRS "${BREW_PREFIX}/include/libpng16" "${BREW_PREFIX}/include")
-    set(FREETYPE_INCLUDE_DIRS "${BREW_PREFIX}/include/freetype2" "${BREW_PREFIX}/include")
+    # png/freetype headers come from the SAME static build the app links
+    # (scripts/build_macos_deps.sh), never from Homebrew: Homebrew's headers
+    # can be a different freetype version than the archive we link.
+    set(PYMOL_MACOS_DEPS "${CMAKE_SOURCE_DIR}/../deps_macos/install" CACHE PATH "Static macOS png/freetype prefix")
+    if(NOT EXISTS "${PYMOL_MACOS_DEPS}/include/freetype2/ft2build.h")
+        message(FATAL_ERROR "Static macOS deps missing under ${PYMOL_MACOS_DEPS}; run scripts/build_macos_deps.sh")
+    endif()
+    set(PNG_INCLUDE_DIRS "${PYMOL_MACOS_DEPS}/include/libpng16" "${PYMOL_MACOS_DEPS}/include")
+    set(FREETYPE_INCLUDE_DIRS "${PYMOL_MACOS_DEPS}/include/freetype2" "${PYMOL_MACOS_DEPS}/include")
     find_path(GLM_INCLUDE glm/glm.hpp HINTS ${BREW_PREFIX}/include)
     message(STATUS "macOS metal-only build: standalone Python headers ${Python3_INCLUDE_DIRS}")
+    message(STATUS "  png/freetype headers: ${PYMOL_MACOS_DEPS}/include")
     if(Python3_NumPy_INCLUDE_DIRS)
         message(STATUS "  numpy headers: ${Python3_NumPy_INCLUDE_DIRS}")
     else()

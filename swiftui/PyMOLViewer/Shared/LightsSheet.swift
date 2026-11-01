@@ -2,15 +2,17 @@
 //
 // Where the light tools go is decided by size class, never by device
 // (LightsToolsPlacement): the macOS side column; on compact width with
-// regular height (iPhone portrait, iPad Slide Over) a two-height bottom sheet
-// docked under the viewport; on compact height (every iPhone in landscape)
-// the same tools in the trailing panel slot; on regular width and height
-// (iPad) the floating orbit card (LightsFloatingTools, Part 5).
+// regular height (iPhone portrait, iPad Slide Over) the light menu on the
+// Lights bar and a two-height bottom sheet docked under the viewport only
+// while the full editor is open (#885); on compact height (every iPhone in
+// landscape) the same tools in the trailing panel slot; on regular width and
+// height (iPad) the floating orbit card (LightsFloatingTools, Part 5).
 //
-// The sheet (LightsSheet, `.bottom`):
+// The sheet (LightsSheet, `.bottom`, opened as the portrait full editor by
+// "Edit light…" or the Lights bar's Atmosphere entry, #885):
 // - a grabber strip and a measured header row (the inspector's header: the
 //   light menu, the status line, Shadow and Pin, the cap notice and the
-//   Shadows hint) with More/Less;
+//   Shadows hint) with More/Less and Close;
 // - compact: the plan (164 pt) beside Pitch, Intensity and one 44 pt Colour
 //   button (LightsCompactRows);
 // - expanded: the plan and the pitch arc pinned under the header, and every
@@ -26,8 +28,11 @@
 //
 // The Atmosphere section (#726): the rig's haze and dust
 // (LightsAtmosphereCard, `.section`) follow the inspector rows in the
-// expanded body. An Atmosphere button in the header expands a compact sheet
-// and scrolls to it (`revealAtmosphere()`).
+// expanded body. The Atmosphere entry is scene-wide, so it is not in the
+// light's header (#795): the Lights bar carries it (a bar button in landscape,
+// an overflow menu item in portrait), and ContentView's reveal request
+// (`atmosphereRevealRequest`) expands a compact sheet and scrolls to the
+// section (`revealAtmosphere()`).
 //
 // With no light (no rig, or a rig with no light) the sheet shows the air
 // alone (`showsAirOnly`): at `.bottom` the compact height whatever the
@@ -62,7 +67,8 @@ import UIKit
 enum LightsToolsPlacement: String, Equatable, CaseIterable {
     /// The macOS side column under the Lights bar (#620, #621).
     case column
-    /// The two-height bottom sheet (compact width, regular height).
+    /// Compact width, regular height (iPhone portrait): the light menu on the
+    /// Lights bar, and the bottom sheet only while the full editor is open (#885).
     case bottomSheet
     /// The trailing panel slot (compact height: iPhone landscape).
     case sidePanel
@@ -76,6 +82,41 @@ enum LightsToolsPlacement: String, Equatable, CaseIterable {
         if compactHeight { return .sidePanel }
         if compactWidth { return .bottomSheet }
         return .floating
+    }
+}
+
+/// The phone portrait's light tools (#885): on `.bottomSheet` the Lights bar
+/// carries the light menu (a dropdown) in place of the chips, and the bottom
+/// sheet shows only as the full editor ("Edit light…", or the bar's Atmosphere
+/// entry), so the molecule stays fully visible while it is closed. Pure.
+enum LightsPortraitTools {
+    /// The Lights bar shows the light menu instead of the chips.
+    static func showsMenu(placement: LightsToolsPlacement) -> Bool { placement == .bottomSheet }
+    /// The docked bottom sheet shows.
+    static func showsSheet(placement: LightsToolsPlacement, editorOpen: Bool) -> Bool {
+        placement == .bottomSheet && editorOpen
+    }
+
+    /// "Edit light…": the editor opens expanded on the light's rows, as a
+    /// fresh sheet (`generation`, the sheet's identity, moves on). A reveal an
+    /// earlier Atmosphere entry asked for is dropped (0): a sheet acts on a
+    /// non-zero request when it appears, so after Atmosphere, Close, Edit
+    /// light… it would scroll past the light to the air. The fresh sheet also
+    /// covers an editor already open on Atmosphere: it starts on the light's
+    /// rows with nothing seen, so the next Atmosphere request (1) still acts.
+    static func editLight(detent: inout LightsSheetDetent, editorOpen: inout Bool, revealRequest: inout Int,
+                          generation: inout Int) {
+        detent = .expanded
+        revealRequest = 0
+        generation += 1
+        editorOpen = true
+    }
+
+    /// The bar's Atmosphere entry: the editor opens (on `.bottomSheet`) and a
+    /// new reveal is asked for, which the sheet acts on when it appears.
+    static func revealAtmosphere(placement: LightsToolsPlacement, editorOpen: inout Bool, revealRequest: inout Int) {
+        if showsMenu(placement: placement) { editorOpen = true }
+        revealRequest += 1
     }
 }
 
@@ -99,8 +140,10 @@ enum LightsSheetMetrics {
     static let minimumHeader: CGFloat = 44
     /// Between the header and the body.
     static let headerGap: CGFloat = 8
-    /// Above the Atmosphere section, under the inspector rows.
-    static let sectionGap: CGFloat = 8
+    /// Above the Atmosphere section, under the inspector rows: a break wide
+    /// enough that the section does not read as one more of the light's rows
+    /// (#795; its own hairline and header follow).
+    static let sectionGap: CGFloat = 20
     /// The compact body: the plan (164 x 164) beside two 48 pt two-line
     /// sliders and a 44 pt Colour button with 8 pt gaps (156).
     static let compactBody: CGFloat = 164
@@ -126,8 +169,8 @@ enum LightsSheetMetrics {
     static let keyboardRows: CGFloat = 96
     /// The rows' height before they are first measured: the three_point
     /// key's inspector rows plus the Atmosphere section in the 44 pt profile
-    /// (measured 603; LightsSheetSnapshotTests keeps it within 40 pt).
-    static let estimatedRows: CGFloat = 600
+    /// (measured 647; LightsSheetSnapshotTests keeps it within 40 pt).
+    static let estimatedRows: CGFloat = 640
     /// The top corners' radius.
     static let cornerRadius: CGFloat = 12
     /// Above the side panel's header.
@@ -374,6 +417,12 @@ enum LightsSheetState {
     static let sideIdentifier = "lights.side"
     static let grabberIdentifier = "lights.sheet.grabber"
     static let moreIdentifier = "lights.sheet.more"
+    static let closeIdentifier = "lights.sheet.close"
+    static let closeLabel = "Close light editor"
+    /// The More/Less chevron, by the rule every Lights chevron follows (the
+    /// inspector's, the Atmosphere card's, the orbit card's): ⌄ while it will
+    /// expand, ⌃ while it will collapse (#885).
+    static func moreChevron(expanded: Bool) -> String { expanded ? "chevron.up" : "chevron.down" }
     static let colourIdentifier = "lights.sheet.colour"
     static let paletteIdentifier = "lights.sheet.palette"
     static let colourLabel = "Colour"
@@ -385,7 +434,7 @@ enum LightsSheetState {
     /// The rows' top, scrolled into view when a field with no row of its own
     /// (the inspector's) takes the keyboard.
     static let rowsAnchor = "lights.sheet.rows.top"
-    /// The Atmosphere section (#726): what the header's Atmosphere button
+    /// The Atmosphere section (#726): what the Lights bar's Atmosphere entry
     /// scrolls to.
     static let atmosphereAnchor = "lights.sheet.atmosphere.section"
 
@@ -427,13 +476,17 @@ enum LightsSheetState {
     }
 
     /// Where the tools are, for the `tools=` field of the PYMOL_AUTOLIGHTS
-    /// and LightsLayout log lines: `sheet:compact`, `sheet:expanded`,
-    /// `side`, `float:<corner>` (`float:bl`) or `column`; with no light on a
-    /// phone (`airOnly`, LightsSheet.showsAirOnly) `sheet:air` or `side:air`.
+    /// and LightsLayout log lines: `menu` (portrait with the full editor
+    /// closed, #885), `sheet:compact`, `sheet:expanded`, `side`,
+    /// `float:<corner>` (`float:bl`) or `column`; with no light on a phone
+    /// (`airOnly`, LightsSheet.showsAirOnly) `sheet:air` or `side:air`.
     static func toolsSummary(placement: LightsToolsPlacement, detent: LightsSheetDetent,
-                             corner: LightsFloatCorner = .default, airOnly: Bool = false) -> String {
+                             corner: LightsFloatCorner = .default, airOnly: Bool = false,
+                             editorOpen: Bool = true) -> String {
         switch placement {
-        case .bottomSheet: return airOnly ? "sheet:air" : "sheet:\(detent.rawValue)"
+        case .bottomSheet:
+            if !editorOpen { return "menu" }
+            return airOnly ? "sheet:air" : "sheet:\(detent.rawValue)"
         case .sidePanel: return airOnly ? "side:air" : "side"
         case .floating: return "float:\(corner.rawValue)"
         case .column: return "column"
@@ -495,11 +548,14 @@ struct LightsSheet: View {
     /// A field in the rows (Orbit, Pitch, an Atmosphere value) took or lost
     /// the keyboard.
     var onFieldFocus: (Bool) -> Void
-    /// Asks the full sheet to reveal the Atmosphere section, as the header's
-    /// Atmosphere button does (`revealAtmosphere()`): each change asks once,
+    /// Asks the full sheet to reveal the Atmosphere section, as the Lights
+    /// bar's Atmosphere entry does (`revealAtmosphere()`): each change asks once,
     /// and a non-zero value when the full sheet appears asks once too (an
     /// owner resets it to 0 for each mode entry). 0: nothing asked.
     var atmosphereRevealRequest: Int
+    /// Closes the portrait full editor (#885); nil where the sheet is not
+    /// dismissible (the side panel, or snapshot tests).
+    var onClose: (() -> Void)?
 
     /// The grabber drag's live translation. SwiftUI resets it when the drag
     /// ends or is cancelled (no `onEnded` then), so a cancelled drag leaves
@@ -522,7 +578,7 @@ struct LightsSheet: View {
          detent: Binding<LightsSheetDetent>, heights: LightsSheetHeights, bottomInset: CGFloat = 0,
          sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {},
          onMoving: @escaping (Bool) -> Void = { _ in }, onFieldFocus: @escaping (Bool) -> Void = { _ in },
-         atmosphereRevealRequest: Int = 0) {
+         atmosphereRevealRequest: Int = 0, onClose: (() -> Void)? = nil) {
         self.controller = controller
         self.style = style
         self.placement = placement
@@ -534,6 +590,7 @@ struct LightsSheet: View {
         self.onMoving = onMoving
         self.onFieldFocus = onFieldFocus
         self.atmosphereRevealRequest = atmosphereRevealRequest
+        self.onClose = onClose
     }
 
     private typealias M = LightsSheetMetrics
@@ -562,6 +619,10 @@ struct LightsSheet: View {
                 case .side: airOnlyPanel
                 }
             })
+            // The air is all there is to see, so a reveal asked here is
+            // already done; marking it seen keeps it from firing later, when
+            // a light is added and the full sheet appears.
+            .onChange(of: atmosphereRevealRequest, initial: true) { _, request in revealSeen = request }
         }
     }
 
@@ -597,8 +658,8 @@ struct LightsSheet: View {
         revealAtmosphere()
     }
 
-    /// The header's Atmosphere button: a compact sheet expands, then the
-    /// rows scroll to the Atmosphere section (the side panel, always
+    /// The Lights bar's Atmosphere entry (through the owner's reveal request):
+    /// a compact sheet expands, then the rows scroll to the Atmosphere section (the side panel, always
     /// expanded, only scrolls).
     private func revealAtmosphere() {
         if placement == .bottom, detent == .compact { setDetent(.expanded) }
@@ -716,15 +777,17 @@ struct LightsSheet: View {
 
     // MARK: header
 
-    /// The inspector's header, the Atmosphere button (expands a compact
-    /// sheet and scrolls to the section) and, on the bottom sheet, More/Less.
+    /// The inspector's header and, on the bottom sheet, More/Less and Close.
+    /// Nothing scene-wide sits here (#795): the Atmosphere entry is on the Lights bar.
     private var headerRow: some View {
         HStack(alignment: .top, spacing: 4) {
             LightsInspector(controller: controller, style: style, sceneShadowsOn: sceneShadowsOn,
                             onEnableSceneShadows: onEnableSceneShadows, presentation: .header)
-            LightsSheetAtmosphereButton(controller: controller, style: style) { revealAtmosphere() }
             if placement == .bottom {
                 moreButton
+                if let onClose {
+                    closeButton(onClose)
+                }
             }
         }
         .background(GeometryReader { g in
@@ -738,7 +801,7 @@ struct LightsSheet: View {
             HStack(spacing: 3) {
                 Text(LightsSheetState.moreTitle(expanded: expanded))
                     .font(.system(size: 12, weight: .medium))
-                Image(systemName: expanded ? "chevron.down" : "chevron.up")
+                Image(systemName: LightsSheetState.moreChevron(expanded: expanded))
                     .font(.system(size: 9, weight: .semibold))
             }
             .foregroundColor(style.accent)
@@ -751,6 +814,22 @@ struct LightsSheet: View {
         .help(LightsSheetState.moreLabel(expanded: expanded))
         .accessibilityLabel(LightsSheetState.moreLabel(expanded: expanded))
         .accessibilityIdentifier(LightsSheetState.moreIdentifier)
+    }
+
+    private func closeButton(_ onClose: @escaping () -> Void) -> some View {
+        Button { onClose() } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(style.text.opacity(0.7))
+                .frame(minHeight: M.minimumHeader)
+                .contentShape(Rectangle())
+                .lightsTouchTarget()
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(LightsSheetState.closeLabel)
+        .accessibilityLabel(LightsSheetState.closeLabel)
+        .accessibilityIdentifier(LightsSheetState.closeIdentifier)
     }
 
     // MARK: bodies
@@ -850,7 +929,7 @@ struct LightsSheet: View {
     /// The air alone at the compact height whatever the detent: the
     /// Atmosphere header (title and switch) under an empty grabber strip
     /// (there is no other height to drag to), and the air rows scrolling in
-    /// the compact body. No More and no Atmosphere button. The keyboard rule
+    /// the compact body. No More, and no reveal to make. The keyboard rule
     /// holds as in the full sheet.
     private var airOnlySheet: some View {
         let frame = LightsSheetModel.airOnlyFrame(heights: heights)
@@ -905,11 +984,16 @@ struct LightsSheet: View {
     /// The Atmosphere header as the sheet's header row (measured, as the
     /// light's header is, so the heights follow it).
     private var airHeaderRow: some View {
-        LightsAtmosphereCard(controller: controller, style: style, presentation: .header)
-            .frame(minHeight: M.minimumHeader)
-            .background(GeometryReader { g in
-                Color.clear.preference(key: LightsSheetHeaderHeightKey.self, value: g.size.height)
-            })
+        HStack(alignment: .top, spacing: 4) {
+            LightsAtmosphereCard(controller: controller, style: style, presentation: .header)
+                .frame(minHeight: M.minimumHeader)
+            if placement == .bottom, let onClose {
+                closeButton(onClose)
+            }
+        }
+        .background(GeometryReader { g in
+            Color.clear.preference(key: LightsSheetHeaderHeightKey.self, value: g.size.height)
+        })
     }
 
     /// The hint and the air rows. Not reported as the sheet's rows height:
@@ -1126,8 +1210,17 @@ struct LightsColourPalette: View {
 
 // MARK: - The keyboard (iOS)
 
+/// Whether a keyboard frame is docked at the bottom of the screen (#725):
+/// not empty and reaching the screen's bottom edge. A floating or undocked
+/// iPad keyboard is not, and covers no bottom band. Pure.
+enum LightsKeyboardDock {
+    static func isDocked(keyboard: CGRect, screen: CGRect) -> Bool {
+        !keyboard.isEmpty && keyboard.maxY >= screen.maxY - 1
+    }
+}
+
 /// The keyboard's top edge in the window's coordinates, nil while it is
-/// hidden (iOS only; nothing on macOS). Read from the keyboard's frame
+/// hidden or not docked (iOS only; nothing on macOS). Read from the keyboard's frame
 /// notifications, converted from screen coordinates (an iPad Slide Over
 /// window is offset).
 struct LightsKeyboardTopReader: ViewModifier {
@@ -1139,6 +1232,9 @@ struct LightsKeyboardTopReader: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
                 note in
                 guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+                // A floating or undocked iPad keyboard (#725) covers no
+                // bottom band: no overlap then, like a hidden one.
+                guard Self.isDocked(frame) else { top = nil; return }
                 top = Self.windowY(screenY: frame.minY)
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
@@ -1150,13 +1246,26 @@ struct LightsKeyboardTopReader: ViewModifier {
     }
 
     #if os(iOS)
+    /// The keyboard's frame (screen coordinates) is docked: not empty and
+    /// reaching the screen's bottom edge.
     @MainActor
-    private static func windowY(screenY: CGFloat) -> CGFloat {
-        let window = UIApplication.shared.connectedScenes
+    private static func isDocked(_ frame: CGRect) -> Bool {
+        guard !frame.isEmpty else { return false }
+        let screen = keyWindow?.screen.bounds ?? frame
+        return LightsKeyboardDock.isDocked(keyboard: frame, screen: screen)
+    }
+
+    @MainActor
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows)
             .first { $0.isKeyWindow }
-        guard let window else { return screenY }
+    }
+
+    @MainActor
+    private static func windowY(screenY: CGFloat) -> CGFloat {
+        guard let window = keyWindow else { return screenY }
         return window.convert(CGPoint(x: 0, y: screenY), from: window.screen.coordinateSpace).y
     }
     #endif

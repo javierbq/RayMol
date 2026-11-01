@@ -253,19 +253,10 @@ MaterialParams MaterialResolve(int id, int repType)
   if (!row || !row->implemented) {
     return MaterialParams{};
   }
-  /* Clear and frosted glass do not draw on sphere impostors: at an implied
-     alpha of 0.15 / 0.2 a sphere reads as a near-invisible disc, and a
-     ball-and-stick of them as scattered smudges. Jelly DOES (#526): at 0.85 it
-     is a dense body, gummy balls are the representation a gummy most
-     obviously belongs on, and the path already exists --
-     buildImpostorPipelines() builds the sphere pipelines for every implemented
-     family and mat_impostor_composite's kMatGlass branch dispatches jelly.
-     Kept in one place so a rep cannot shade as a material while building with
-     its implied alpha (MaterialEffectiveTransparency resolves through here). */
-  if (row->family == cMaterialFamily_glass && repType == cRepSphere &&
-      row->id != cMaterial_jelly) {
-    return MaterialParams{};
-  }
+  /* Clear and frosted glass draw on sphere impostors since #635 (through the
+     OIT glass path with the coverage split), and on ball-and-stick since #834,
+     so no rule here depends on repType and no glass degradation remains;
+     repType stays in the signature for the callers. */
   return row->params;
 }
 
@@ -281,12 +272,14 @@ MaterialRayParams MaterialRayParamsFor(int id)
      smooth cosine field over the surface position -- the only mode that reads
      as veining. Matte 1 perturbs every sample's normal at random, a fine dry
      grain (unglazed clay); Matte 2 perturbs it through a coarser positional
-     lookup, a mottled skin (rubber). These three ALSO keep default's
+     lookup, a mottled skin (rubber). Marble and rubber keep default's
      highlight, so "marble under ray" and "default under ray_texture 2" are the
-     same image, byte for byte. Clay and rubber are the same only
-     STATISTICALLY: Matte 1 and Matte 2 draw from rand(), and RayNew refills
-     its table on every render, so no two traces of either match. frosted_glass
-     takes Matte 1 as well, on top of the transparency it already implies.
+     same image, byte for byte. Rubber is the same only STATISTICALLY: Matte 1
+     and Matte 2 draw from rand(), and RayNew refills its table on every
+     render, so no two traces of a Matte texture match. Clay drops the
+     highlight (below), so it shares only its texture with "default under
+     ray_texture 1". frosted_glass takes Matte 1 as well, on top of the
+     transparency it already implies.
 
      A known limit of the positional textures: Swirl 1 (marble) is evaluated
      at the impact point in CAMERA space, and Matte 2 (rubber) un-rotates it
@@ -297,7 +290,8 @@ MaterialRayParams MaterialRayParamsFor(int id)
      noise per sample, so there is no pattern to lock or to slide.
 
      The highlight knobs are best effort, and deliberately few. matte drops the
-     highlight entirely, as its Lambert shader does. plastic is a brighter
+     highlight entirely, as its Lambert shader does. clay, like matte, drops it
+     (its Metal shader has no specular either, #711). plastic is a brighter
      white highlight on unchanged diffuse. metallic dims the diffuse term and
      tints the highlight toward the surface's own colour, which is what makes
      a metal read as metal without an environment to reflect. */
@@ -322,6 +316,7 @@ MaterialRayParams MaterialRayParamsFor(int id)
     break;
   case cMaterial_clay:
     r.wobble = 1;
+    r.specular = 0.0f;
     break;
   case cMaterial_rubber:
     r.wobble = 4;
@@ -358,6 +353,10 @@ constexpr float kMatJellyGlowWrap = 0.6f;       // the glow's wrap, (n.l + 0.6)/
 constexpr float kMatJellyGlowGain = 1.15f;      // the glow, base * 1.15
 constexpr float kMatRubberHighlightExp = 8.0f;  // rubber's key highlight
 constexpr float kMatRubberHighlightTint = 0.7f; // its tint toward the base
+constexpr float kMatJellySheen = 0.12f;      // mat_jelly_shade: its broad sheen, 0.12 * pow(n.h, 8)
+constexpr float kMatJellySheenExp = 8.0f;    // the sheen's exponent
+constexpr float kMatJellyTintGain = 1.3f;    // its highlights tint toward saturate(base * 1.3)
+constexpr float kMatRubberTintGain = 1.4f;   // rubber's toward saturate(base * 1.4)
 
 /* C++ only. The studio light `highlight` at which a material's response
    equals its own key-light highlight: a new light's default (LightRig.h,
@@ -414,6 +413,7 @@ MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
     r.highlight = NonNegative(p.p[2]) / kMaterialLightHighlightRef;
     r.exponent = kMatRubberHighlightExp;
     r.tint = kMatRubberHighlightTint;
+    r.tintGain = kMatRubberTintGain;
     break;
   case cMaterial_marble:
     // default's model, with marble's own wrap.
@@ -434,6 +434,13 @@ MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
     r.highlight = reflect * (n + 2.0f) / (2.0f * kPi);
     r.exponent = n;
     r.tint = std::min(1.0f, tint * ReflectiveTintGain());
+    /* The layered-gloss coat: default's key highlight, white, at the scene's
+       shininess, carried by whatever share of the highlight the tint does not
+       take: plastic (tint 0) gets a full coat, the table metallic (tint 0.8) a
+       thin one, a Custom tint of 1 none: a bare metal. */
+    r.highlight2 = 1.0f - r.tint;
+    r.exponent2 = 0.0f;
+    r.tint2 = 0.0f;
     break;
   }
   case cMaterial_glass:
@@ -456,6 +463,10 @@ MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
     r.exponent = kMatJellyWetExp;
     r.tint = kMatJellyWetTint;
     r.wrap = kMatJellyGlowWrap;
+    r.highlight2 = kMatJellySheen / kMaterialLightHighlightRef;
+    r.exponent2 = kMatJellySheenExp;
+    r.tint2 = kMatJellyWetTint;
+    r.tintGain = kMatJellyTintGain;
     break;
   default:
     return MaterialLightResponse{};
@@ -470,6 +481,13 @@ MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
     r.exponent = 0.0f;
   r.tint = Clamp01(r.tint);
   r.wrap = NonNegative(r.wrap);
+  r.highlight2 = NonNegative(r.highlight2);
+  if (r.exponent2 > 0.0f)
+    r.exponent2 = std::max(r.exponent2, 1.0f);
+  else
+    r.exponent2 = 0.0f;
+  r.tint2 = Clamp01(r.tint2);
+  r.tintGain = (std::isfinite(r.tintGain) && r.tintGain > 0.0f) ? r.tintGain : 1.0f;
   return r;
 }
 
@@ -517,45 +535,6 @@ const char* MaterialGetName(int id)
   return row ? row->name : nullptr;
 }
 
-/* Does this stick rep emit any stick_ball sphere?
- *
- * `stick_ball` is an ATOM-level setting (SettingInfo.h: REC_b(276, stick_ball,
- * atom)) and RepCylBond reads it per atom via AtomSettingGetWD. Asking only the
- * object/global value therefore answers the wrong question in both directions:
- * an atom-level `stick_ball 1` under an object-level 0 drew glass balls (the
- * near-invisible discs the rule exists to prevent, and reachable now that the
- * glass-family sphere pipelines are built), while every atom overriding an
- * object-level 1 back to 0 degraded a rep that emits no balls at all.
- *
- * Scanned only for a glass stick rep, which is rare and already expensive; the
- * default path never reaches this.
- */
-bool MaterialRepEmitsStickBalls(
-    PyMOLGlobals* G, const CoordSet* cs, const CSetting* set1,
-    const CSetting* set2)
-{
-  /* int, not bool: AtomSettingGetWD deduces V from this argument, and its
-     `bool` instantiation declares an uninitialised `V out;` that the bool
-     overload then reads -- UB, and a UBSan -fsanitize=bool trap. Every other
-     call site in the tree passes an int, RepCylBond's included. */
-  int const objLevel = SettingGet_b(G, set1, set2, cSetting_stick_ball);
-  if (!cs) {
-    return objLevel; // no atoms to consult; the object value is all there is
-  }
-  /* Indexed directly rather than through CoordSetAtomIterator: that lives in
-     layer3 and this is layer1. */
-  for (int idx = 0; idx < cs->getNIndex(); ++idx) {
-    const AtomInfoType* ai = cs->getAtomInfo(idx);
-    if (!ai || !(ai->visRep & cRepCylBit)) {
-      continue;
-    }
-    if (AtomSettingGetWD(G, ai, cSetting_stick_ball, objLevel)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool MaterialLayerHasOwnMaterial(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType)
 {
@@ -586,50 +565,20 @@ int MaterialSourceRep(PyMOLGlobals* G, const CSetting* set1,
   return cRepCartoon;
 }
 
-static MaterialParams MaterialResolveForDrawCached(PyMOLGlobals* G,
-    const CSetting* set1, const CSetting* set2, int repType,
-    bool emitsStickBalls, const pymol::CObject* obj)
+/* What `repType` draws with once its source layer is known: the one
+   definition both MaterialResolveForDraw and MaterialDrawParams use. */
+static MaterialParams MaterialResolveFromSource(PyMOLGlobals* G,
+    const CSetting* set1, const CSetting* set2, int repType, int source)
 {
-  // The SETTING comes from the source layer (a side chain following its
-  // cartoon reads cartoon_material); the degradations below stay keyed on the
-  // rep that actually draws -- glass on sphere impostors, stick_ball glass.
-  int const id = MaterialResolveSettingId(
-      G, set1, set2, MaterialSourceRep(G, set1, set2, repType, obj));
-  MaterialParams params = MaterialResolve(id, repType);
-  // stick_ball spheres are emitted by the STICK rep, so they arrive as cRepCyl
-  // and take stick_material -- including clear or frosted glass, which
-  // MaterialResolve keeps off sphere impostors. A glassy stick beside
-  // near-invisible ball discs looks broken, so the WHOLE rep degrades to
-  // `default` rather than half of it. Jelly is exempt, as it is from the
-  // sphere rule (#526): its balls read as gummy balls.
-  //
-  // This rule depends on a setting, not on the rep alone, so MaterialResolve
-  // cannot express it. It lives here rather than at the draw site because
-  // implied alpha has to obey it too: a ball-and-stick that shades as `default`
-  // while still building 85% transparent is not "rendering default".
-  if (params.family == cMaterialFamily_glass && repType == cRepCyl &&
-      params.mode != cMaterial_jelly && emitsStickBalls) {
-    return MaterialParams{};
-  }
-  return params;
+  return MaterialResolve(
+      MaterialResolveSettingId(G, set1, set2, source), repType);
 }
 
 MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
-  int const id = MaterialResolveSettingId(G, set1, set2,
+  return MaterialResolveFromSource(G, set1, set2, repType,
       MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr));
-  MaterialParams params = MaterialResolve(id, repType);
-  /* LAZY on purpose: resolve first, and walk atoms only when the answer can
-     change something. Computing it eagerly for every cRepCyl call -- as this
-     briefly did -- put an O(atoms) pass back on the `default` path, which is
-     the exact cost the cached variant exists to remove. */
-  if (params.family == cMaterialFamily_glass && repType == cRepCyl &&
-      params.mode != cMaterial_jelly &&
-      MaterialRepEmitsStickBalls(G, cs, set1, set2)) {
-    return MaterialParams{};
-  }
-  return params;
 }
 
 static MaterialParams MaterialFinalizeParams(
@@ -641,20 +590,12 @@ static MaterialParams MaterialFinalizeParams(
 MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
+  // The source layer is found once: the Metal path calls this per draw op,
+  // per pass, per frame.
   int const source =
       MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr);
   return MaterialFinalizeParams(G, set1, set2, source,
-      MaterialResolveForDraw(G, set1, set2, repType, cs));
-}
-
-MaterialParams MaterialDrawParamsCached(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType, bool emitsStickBalls,
-    const pymol::CObject* obj)
-{
-  return MaterialFinalizeParams(G, set1, set2,
-      MaterialSourceRep(G, set1, set2, repType, obj),
-      MaterialResolveForDrawCached(
-          G, set1, set2, repType, emitsStickBalls, obj));
+      MaterialResolveFromSource(G, set1, set2, repType, source));
 }
 
 /* The Custom material's per-layer overrides (#568): for each material-bearing
@@ -826,9 +767,9 @@ float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
   // so the conversion has to happen exactly here. Returning the alpha unchanged
   // makes clear glass 85% OPAQUE instead of 85% clear, which still shades like
   // glass and so looks plausible rather than broken.
-  // Through MaterialResolveForDraw, so a material that DEGRADES on this rep
-  // implies nothing either -- `mode` carries the row's own id, and the neutral
-  // MaterialParams{} carries 0 (= default, which implies no opacity).
+  // Through MaterialResolveForDraw, so an id that resolves to `default` (one
+  // this build does not implement) implies nothing either -- the neutral
+  // MaterialParams{} carries mode 0.
   float const impliedAlpha =
       MaterialImpliedAlpha(
           MaterialResolveForDraw(G, set1, set2, repType, cs).mode);
@@ -949,11 +890,8 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
   if (peel >= 0) {
     return peel != 0;   // an explicit on/off, at any level, wins outright
   }
-  // Auto: on when a representation resolves to a material whose row asks for
-  // peeling, resolved the same way the DRAW path resolves it -- so a glass
-  // stick that degrades to `default` on a stick_ball object does not turn on a
-  // peel that would cost a depth blit and two encoder boundaries per grid cell
-  // for geometry with no transparent fragments.
+  // Auto: on when a representation the object DRAWS resolves, the same way
+  // the draw path resolves it, to a material whose row asks for peeling.
   //
   // But peeling is OBJECT-scoped: the pre-pass records the nearest transparent
   // depth across ALL of the object's transparent reps, and anything behind it
@@ -976,38 +914,30 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
      pair of table lookups per rep; the VETO costs atom scans. An object with no
      material set -- every object in a default session -- must not pay the
      second, and this runs once per object per FRAME. */
+  /* Resolved once per rep, the way the draw path resolves it, and reused by
+     the second loop: no rule depends on the coordinate set any more (#834). */
+  constexpr size_t kRepCount = sizeof(kReps) / sizeof(kReps[0]);
+  bool repWantsPeel[kRepCount] = {};
   bool maybeWantsPeel = false;
-  for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
-    if (MaterialResolve(MaterialResolveSettingId(G, set1, set2,
-                            MaterialSourceRep(G, set1, set2, kReps[i], obj)),
-            kReps[i])
-            .wantsPeel) {
-      maybeWantsPeel = true;
-      break;
-    }
+  for (size_t i = 0; i < kRepCount; ++i) {
+    repWantsPeel[i] = MaterialResolveFromSource(G, set1, set2, kReps[i],
+        MaterialSourceRep(G, set1, set2, kReps[i], obj)).wantsPeel;
+    maybeWantsPeel = maybeWantsPeel || repWantsPeel[i];
   }
   if (!maybeWantsPeel) {
     return false;
   }
-  /* MAYBE, not "does": the gate reads the material row BEFORE the per-rep
-     degradations, because seeing them needs the coordinate set this pass exists
-     to avoid touching. It is a sound over-approximation -- degradation can only
-     ever clear wantsPeel -- so the answer still has to come from the second
-     loop. Returning true here on the strength of the gate turned peel ON for a
-     ball-and-stick glass object, whose sticks degrade to `default` and have no
-     transparent fragments at all: a depth blit and two encoder boundaries per
-     grid cell for nothing, and enough to evict a real glass object from the
-     three-slot peel cap. */
+  /* MAYBE, not "does": the gate does not know which reps the object DRAWS,
+     nor whether another transparent rep vetoes the peel; both need the
+     coordinate set this pass exists to avoid touching, so the answer still
+     comes from the second loop. */
   /* Indexed, not range-for: the rep and its visibility BIT have to stay in
      step, and a range-for gives a copy whose address says nothing about which
      element it came from. */
   bool wantsPeel = false;
-  for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
+  for (size_t i = 0; i < kRepCount; ++i) {
     int const rep = kReps[i];
-    // Re-resolved through the DRAW path, so a glass stick that degrades to
-    // `default` on a stick_ball object is not treated as asking for a peel it
-    // will never use.
-    if (MaterialResolveForDraw(G, set1, set2, rep, cs).wantsPeel) {
+    if (repWantsPeel[i]) {
       // ...but only if the object actually DRAWS it. `set surface_material,
       // glass` on an object showing nothing but an opaque cartoon would
       // otherwise turn peel on for geometry that does not exist -- a depth blit

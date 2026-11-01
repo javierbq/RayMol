@@ -6,6 +6,46 @@ import SwiftUI
 import UIKit
 #endif
 
+// MARK: - Command Input Normalization
+
+/// Normalizes iOS / iPadOS smart punctuation back to ASCII equivalents (#185).
+///
+/// On iOS/iPadOS, virtual keyboards automatically turn straight quotes into curly
+/// quotes, "--" into em dashes, and "..." into ellipses. Because SwiftUI's
+/// `TextField` has no trait modifier for disabling smart quotes/dashes, commands
+/// with string literals and `/`-prefixed inline Python fail with invalid syntax or
+/// unexpected characters. This utility normalizes those characters back to plain ASCII.
+enum CommandInput {
+    /// Maps smart quotes, dashes, and ellipses to their ASCII equivalents.
+    /// Leaves plain ASCII and other Unicode characters untouched.
+    static func normalizingSmartPunctuation(_ s: String) -> String {
+        var result = ""
+        result.reserveCapacity(s.count)
+        for ch in s {
+            switch ch {
+            // Curly double quotes and double prime → standard ASCII double quote
+            case "“", "”", "„", "‟", "″":
+                result.append("\"")
+            // Curly single quotes, apostrophes, and prime → standard ASCII single quote
+            case "‘", "’", "‚", "‛", "′":
+                result.append("'")
+            // Em dash (iOS smart "--") → "--"
+            case "—":
+                result.append("--")
+            // En dash → "-"
+            case "–":
+                result.append("-")
+            // Ellipsis → "..."
+            case "…":
+                result.append("...")
+            default:
+                result.append(ch)
+            }
+        }
+        return result
+    }
+}
+
 struct CommandPanel: View {
     // When false, the command-input bar is hidden and only the read-only log
     // shows. Used by the iOS App Store "restricted" build (guideline 2.5.2) to
@@ -67,7 +107,9 @@ struct CommandPanel: View {
     // MARK: - Actions
 
     private func submitCommand() {
-        let trimmed = commandText.trimmingCharacters(in: .whitespaces)
+        let trimmed = CommandInput.normalizingSmartPunctuation(
+            commandText.trimmingCharacters(in: .whitespaces)
+        )
         guard !trimmed.isEmpty else { return }
 
         commandHistory.append(trimmed)
@@ -527,6 +569,12 @@ struct CommandTextField: View {
                 .onSubmit {
                     onSubmit()
                     focused = true   // keep focus so multiple commands can be entered
+                }
+                .onChange(of: text) { newValue in
+                    let normalized = CommandInput.normalizingSmartPunctuation(newValue)
+                    if normalized != text {
+                        text = normalized
+                    }
                 }
                 .font(.system(size: fontSize, design: .monospaced))
                 .foregroundColor(textColor)

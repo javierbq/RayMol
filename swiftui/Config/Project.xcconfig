@@ -1,0 +1,11 @@
+// Project.xcconfig — Project-level base configuration for PyMOLViewer.
+//
+// Referenced by swiftui/project.yml `configFiles`. This file exists only so the
+// config file referenced by XcodeGen lives in a subdirectory: when project.yml
+// points at a file at the project root, XcodeGen creates an orphan PBXGroup that
+// gets non-deterministic TEMP_<UUID> object ids and churns project.pbxproj on
+// every regeneration (GitHub issue #642).
+//
+// All real build settings live in PyMOLBridge.xcconfig. Edit that file, not this
+// one.
+#include "../PyMOLBridge.xcconfig"

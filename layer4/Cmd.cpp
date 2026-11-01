@@ -810,6 +810,19 @@ static PyObject * CmdSetVolumeRamp(PyObject * self, PyObject * args)
   return APIResult(G, result);
 }
 
+/* The movie command text of 1-based `frame` ("" outside the movie), so a
+ * caller can edit its own part of a slot without dropping the rest (#655). */
+static PyObject *CmdGetFrameCommand(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  int frame;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &frame);
+  API_ASSERT(APIEnterBlockedNotModal(G));
+  std::string text = MovieGetCommand(G, frame - 1);
+  APIExitBlocked(G);
+  return PyUnicode_FromString(text.c_str());
+}
+
 static PyObject *CmdGetVis(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -819,6 +832,24 @@ static PyObject *CmdGetVis(PyObject * self, PyObject * args)
     result = ExecutiveGetVisAsPyDict(G);
     APIExitBlocked(G);
   return (APIAutoNone(result));
+}
+
+static PyObject *CmdGetAtomReps(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  const char *name = nullptr;
+  PyObject *result = nullptr;
+  API_SETUP_ARGS(G, self, args, "Os", &self, &name);
+  API_ASSERT(APIEnterBlockedNotModal(G));
+  int *reps = ExecutiveGetRepsInSceneForObject(G, name);
+  APIExitBlocked(G);
+  if (reps) {
+    result = PConvIntVLAToPyList(reps);
+    VLAFreeP(reps);
+  } else {
+    result = PyList_New(0);
+  }
+  return APIAutoNone(result);
 }
 
 static PyObject *CmdSetVis(PyObject * self, PyObject * args)
@@ -2496,7 +2527,7 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
  */
 /**
  * The material id a representation EFFECTIVELY draws with, after the per-rep
- * degradation (glass on sphere impostors -> default). The SETTING still holds
+ * resolve (an unimplemented id -> default). The SETTING still holds
  * what the user typed; this is what reaches the shader.
  *
  * _cmd.get_effective_material(id, rep_index)
@@ -2702,33 +2733,8 @@ static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
     int const resolved =
         (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
     CoordSet* cs = objmol->getCoordSet(resolved);
-    /* A BUILT rep carries the stick_ball answer it was built with, which is
-       what the draw path uses (CGOGL.cpp -> MaterialDrawParamsCached). Read it
-       rather than rescanning every atom: the Inspector polls this about twice
-       a second (#530), and for a glass stick rep the scan is O(atoms).
-
-       Only a rep that is built, VALID and shown is trusted. An invalidated one
-       (MaxInvalid set -- e.g. `stick_ball` just changed on some atoms) still
-       holds the answer it was built with, which the next frame's rebuild will
-       replace. For that, and for a rep not built yet, fall back to the scan:
-       the answer the next build would cache. So the two paths agree.
-
-       The Active[] check is defensive. Today hiding a rep invalidates it, so
-       the MaxInvalid test already catches a hidden one (mutation-tested:
-       dropping Active[] alone changes no result); it stays so that a future
-       change that keeps a valid rep around while hidden cannot make this
-       report atoms nothing draws. */
-    const ::Rep* rep = (cs && repType >= 0 && repType < cRepCnt &&
-                        cs->Active[repType])
-                           ? cs->Rep[repType] : nullptr;
-    if (rep && rep->isInvalidated()) {
-      rep = nullptr;
-    }
-    MaterialParams const p = rep
-        ? MaterialDrawParamsCached(G, cs->Setting.get(), objmol->Setting.get(),
-              repType, rep->emitsStickBalls(), objmol)
-        : MaterialDrawParams(G, cs ? cs->Setting.get() : nullptr,
-              objmol->Setting.get(), repType, cs);
+    MaterialParams const p = MaterialDrawParams(G,
+        cs ? cs->Setting.get() : nullptr, objmol->Setting.get(), repType, cs);
     /* The per-material KNOBS are part of "what this draw uses" too, and until
        #496 nothing could see them from Python. They are the half of a material
        that fails QUIETLY: zeroing jelly's absorption renders a white body,
@@ -5490,6 +5496,67 @@ static PyObject* CmdGetLightsRayNotice(PyObject* self, PyObject* args)
   return result;
 }
 
+/// #661: pure rig blend of two dicts at position `e` -> dict
+static PyObject* CmdBlendLightRigs(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* obA = nullptr;
+  PyObject* obB = nullptr;
+  double e = 0.0;
+  API_SETUP_ARGS(G, self, args, "OOOd", &self, &obA, &obB, &e);
+  APIEnterBlocked(G);
+  auto rigA = LightRigFromPyDict(obA);
+  if (!rigA) {
+    APIExitBlocked(G);
+    pymol::Result<> err =
+        pymol::make_error("blend_light_rigs: ", rigA.error().what());
+    return APIResult(G, err);
+  }
+  auto rigB = LightRigFromPyDict(obB);
+  if (!rigB) {
+    APIExitBlocked(G);
+    pymol::Result<> err =
+        pymol::make_error("blend_light_rigs: ", rigB.error().what());
+    return APIResult(G, err);
+  }
+  PyObject* dict = LightRigAsPyDict(pymol::LightRigBlend(*rigA, *rigB, e));
+  APIExitBlocked(G);
+  return dict;
+}
+
+/// #661: recall a scene's rig: blends with camera animation or snaps
+static PyObject* CmdLightsRecall(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* obj = nullptr;
+  int force = 0;
+  API_SETUP_ARGS(G, self, args, "OOi", &self, &obj, &force);
+  APIEnterBlocked(G);
+  pymol::Result<> result;
+  if (auto rig = LightRigFromPyDict(obj)) {
+    result = SceneLightsRecall(G, std::move(*rig), force != 0);
+  } else {
+    result = rig.error_move();
+  }
+  APIExitBlocked(G);
+  if (!result)
+    result = pymol::make_error("lights_recall: ", result.error().what());
+  return APIResult(G, result);
+}
+
+/// #661: test hook: advance the pending recall blend to element cur of n
+static PyObject* CmdLightsRecallStep(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int cur = 0;
+  int n = 0;
+  API_SETUP_ARGS(G, self, args, "Oii", &self, &cur, &n);
+  APIEnterBlocked(G);
+  bool advanced = SceneLightsRecallAdvance(G, cur, n);
+  APIExitBlocked(G);
+  return PyBool_FromLong(advanced);
+}
+
 /* ---- Light shading (#613) ------------------------------------------------
  * What the Metal renderer reads from the lighting each frame
  * (SceneLightsFrame, layer1/SceneLights.h) and the kelvin -> RGB conversion
@@ -5581,6 +5648,19 @@ static PyObject* CmdLightShadowMapSize(PyObject* self, PyObject* args)
   int setting = 0, mobile = 0;
   API_SETUP_ARGS(G, self, args, "Oip", &self, &setting, &mobile);
   return PyLong_FromLong(pymol::LightShadowMapSize(setting, mobile != 0));
+}
+
+/// LightSoftRadius(size, rig_size, shadow, mobile): float (#741)
+static PyObject* CmdLightSoftRadius(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  double size = 0.0, rig_size = 0.0;
+  int shadow = 1, mobile = 0;
+  API_SETUP_ARGS(G, self, args, "Oddpp", &self, &size, &rig_size, &shadow, &mobile);
+  pymol::Light light;
+  light.size = size;
+  light.shadow = (shadow != 0);
+  return PyFloat_FromDouble(pymol::LightSoftRadius(light, rig_size, mobile != 0));
 }
 
 /// LightShadowTileRect(cell, tiles, size): {'x', 'y', 'size', 'uv'}.
@@ -5691,6 +5771,40 @@ static PyObject* CmdGetGpuFrameStats(PyObject* self, PyObject* args)
   return GpuFrameReportAsPyDict(report);
 }
 
+/// Test-only (#667): the Metal renderer's classic shadow map in bytes; 0 while
+/// it is not allocated, and with no Metal renderer. With release=1 the map is
+/// dropped first (the reply is then 0), so a test can watch the next shadowed
+/// frame allocate it again.
+static PyObject* CmdGetClassicShadowMapBytes(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int release = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &release);
+  APIEnterBlocked(G);
+  if (G->Renderer && release)
+    G->Renderer->releaseClassicShadowMap();
+  const size_t bytes = G->Renderer ? G->Renderer->classicShadowMapBytes() : 0;
+  APIExitBlocked(G);
+  return PyLong_FromSize_t(bytes);
+}
+
+/// Test-only (#666): the studio shadow-map slices rendered since the Metal
+/// renderer was made; 0 with no Metal renderer. With forget=1 the kept maps
+/// are dropped first, so a test can watch the next frame render them again.
+static PyObject* CmdGetLightShadowMapPasses(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int forget = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &forget);
+  APIEnterBlocked(G);
+  if (G->Renderer && forget)
+    G->Renderer->forgetLightShadowMaps();
+  const unsigned long long passes =
+      G->Renderer ? G->Renderer->lightShadowMapSlicesRendered() : 0;
+  APIExitBlocked(G);
+  return PyLong_FromUnsignedLongLong(passes);
+}
+
 /* ---- end per-light shadows (#616) -------------------------------------- */
 
 /* ---- the air (#618) ------------------------------------------------------
@@ -5704,7 +5818,8 @@ static PyObject* CmdGetGpuFrameStats(PyObject* self, PyObject* args)
 /// live camera (as get_light_frame); `offscreen` None reads the renderer's
 /// flag, else a bool; `wall` None reads the live clock, else seconds; `grid`
 /// None for the scene's grid, or (n_col, n_row, first_slot) for an active
-/// grid. The scene members are brought up to date first, as a frame does.
+/// grid (shaping the shadow plan, #686). The scene members are brought up to
+/// date first, as a frame does.
 static PyObject* CmdGetLightAirFrame(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
@@ -5745,7 +5860,6 @@ static PyObject* CmdGetLightAirFrame(PyObject* self, PyObject* args)
           "grid must be None or (n_col, n_row, first_slot) with n_col, n_row >= 1"));
     }
     g = over;
-    options.grid = &*g;
   }
   APIEnterBlocked(G);
   ExecutiveUpdateSceneMembers(G);
@@ -5772,13 +5886,13 @@ static PyObject* CmdLightAirClock(PyObject* self, PyObject* args)
   return PyFloat_FromDouble(pymol::LightAirClock(in));
 }
 
-/// LightAirTime(clock, speed): the dust time in seconds.
+/// LightAirTime(clock, speed, phase = 0.0): the dust time in seconds.
 static PyObject* CmdLightAirTime(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
-  double clock = 0.0, speed = 0.0;
-  API_SETUP_ARGS(G, self, args, "Odd", &self, &clock, &speed);
-  return PyFloat_FromDouble(pymol::LightAirTime(clock, speed));
+  double clock = 0.0, speed = 0.0, phase = 0.0;
+  API_SETUP_ARGS(G, self, args, "Odd|d", &self, &clock, &speed, &phase);
+  return PyFloat_FromDouble(pymol::LightAirTime(clock, speed, phase));
 }
 
 /// LightAirResolution(setting, mobile): 1 full or 2 half.
@@ -5809,6 +5923,47 @@ static PyObject* CmdLightAirAnimating(PyObject* self, PyObject* args)
   const bool animating = SceneLightsAirAnimating(G);
   APIExitBlocked(G);
   return PyBool_FromLong(animating);
+}
+
+/// Test-only (#685): the Metal renderer's frame counters since the last
+/// forget, (scene_frames, post_chains, air_frames); forget=1 zeroes them
+/// and drops the kept pre-air image first, so the next frame renders in
+/// full. None with no Metal renderer.
+static PyObject* CmdGetMetalAirCacheStats(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int forget = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &forget);
+  int scene_frames = 0, post_chains = 0, air_frames = 0;
+  bool ok = false;
+  APIEnterBlocked(G);
+  if (G->Renderer) {
+    ok = G->Renderer->airCacheStats(
+        scene_frames, post_chains, air_frames, forget != 0);
+  }
+  APIExitBlocked(G);
+  if (!ok)
+    return APIAutoNone(Py_None);
+  return Py_BuildValue("(iii)", scene_frames, post_chains, air_frames);
+}
+
+/// Test-only (#739): while on, the air pass's haze density reads +inf, so its
+/// term is non-finite and the NaN guards must drop it. None with no Metal
+/// renderer.
+static PyObject* CmdSetMetalAirDebugPoison(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int on = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &on);
+  bool ok = false;
+  APIEnterBlocked(G);
+  if (G->Renderer) {
+    ok = G->Renderer->setAirDebugPoison(on != 0);
+  }
+  APIExitBlocked(G);
+  if (!ok)
+    return APIAutoNone(Py_None);
+  return PyBool_FromLong(1);
 }
 
 /* ---- end the air (#618) ------------------------------------------------- */
@@ -5856,13 +6011,15 @@ PyObject* LightToneList(const std::vector<float>& v)
 } // namespace
 
 /// LightTone (or LightToneInverse when `inverse`) of each [r, g, b] in
-/// `values`: a list of [r, g, b] lists.
+/// `values`: a list of [r, g, b] lists. When `aces` is true, calls LightAces
+/// (or LightAcesInverse) instead (#735).
 static PyObject* CmdLightTone(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
   PyObject* values = nullptr;
   int inverse = 0;
-  API_SETUP_ARGS(G, self, args, "OOp", &self, &values, &inverse);
+  int aces = 0;
+  API_SETUP_ARGS(G, self, args, "OOp|p", &self, &values, &inverse, &aces);
   unique_PyObject_ptr seq(PySequence_Fast(values, "values must be a sequence"));
   if (!seq)
     return nullptr;
@@ -5880,7 +6037,8 @@ static PyObject* CmdLightTone(PyObject* self, PyObject* args)
     }
     const std::array<float, 3> c{rgb[0], rgb[1], rgb[2]};
     const std::array<float, 3> t =
-        inverse ? pymol::LightToneInverse(c) : pymol::LightTone(c);
+        aces ? (inverse ? pymol::LightAcesInverse(c) : pymol::LightAces(c))
+             : (inverse ? pymol::LightToneInverse(c) : pymol::LightTone(c));
     PyObject* item = LightToneList({t[0], t[1], t[2]});
     if (!item)
       return nullptr;
@@ -5890,18 +6048,21 @@ static PyObject* CmdLightTone(PyObject* self, PyObject* args)
 }
 
 /// LightToneScalar (or LightToneScalarInverse when `inverse`) of each float
-/// in `values`.
+/// in `values`. When `aces` is true, calls LightAcesScalar (or
+/// LightAcesScalarInverse) instead (#735).
 static PyObject* CmdLightToneScalar(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
   PyObject* values = nullptr;
   int inverse = 0;
-  API_SETUP_ARGS(G, self, args, "OOp", &self, &values, &inverse);
+  int aces = 0;
+  API_SETUP_ARGS(G, self, args, "OOp|p", &self, &values, &inverse, &aces);
   std::vector<float> v;
   if (!LightToneFloats(values, v))
     return nullptr;
   for (float& x : v)
-    x = inverse ? pymol::LightToneScalarInverse(x) : pymol::LightToneScalar(x);
+    x = aces ? (inverse ? pymol::LightAcesScalarInverse(x) : pymol::LightAcesScalar(x))
+             : (inverse ? pymol::LightToneScalarInverse(x) : pymol::LightToneScalar(x));
   return LightToneList(v);
 }
 
@@ -5954,7 +6115,8 @@ static PyObject* CmdGetLightHdr(PyObject* self, PyObject* args)
 /// tuple _cmd.get_material_draw_params returns -- (family, mode, reflect,
 /// tint, rough, (p0..p5)) -- and `shininess` the frame's (get_light_frame's
 /// 'shininess'). Returns {'diffuse', 'highlight', 'exponent', 'tint',
-/// 'wrap', 'sharpness'}. Pure: reads and writes nothing.
+/// 'wrap', 'sharpness', 'highlight2', 'exponent2', 'tint2', 'tint_gain',
+/// 'sharpness2'}. Pure: reads and writes nothing.
 static PyObject* CmdMaterialLightResponse(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
@@ -5964,10 +6126,13 @@ static PyObject* CmdMaterialLightResponse(PyObject* self, PyObject* args)
       &p.mode, &p.reflect, &p.tint, &p.rough, &p.p[0], &p.p[1], &p.p[2],
       &p.p[3], &p.p[4], &p.p[5], &shininess);
   const MaterialLightResponse r = MaterialLightResponseFor(p);
-  return Py_BuildValue("{sdsdsdsdsdsd}", "diffuse", double(r.diffuse),
+  return Py_BuildValue("{sdsdsdsdsdsdsdsdsdsdsd}", "diffuse", double(r.diffuse),
       "highlight", double(r.highlight), "exponent", double(r.exponent),
       "tint", double(r.tint), "wrap", double(r.wrap), "sharpness",
-      double(MaterialLightSharpness(r.exponent, shininess)));
+      double(MaterialLightSharpness(r.exponent, shininess)),
+      "highlight2", double(r.highlight2), "exponent2", double(r.exponent2),
+      "tint2", double(r.tint2), "tint_gain", double(r.tintGain),
+      "sharpness2", double(MaterialLightSharpness(r.exponent2, shininess)));
 }
 
 /* ---- end material light response (#615) -------------------------------- */
@@ -6290,8 +6455,8 @@ static PyObject *CmdPNG(PyObject * self, PyObject * args)
         Extent2D extent{static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height)};
         bool withOverlay = true; // TODO: Retrieve from python
-        prior = !OrthoDeferImage(G, extent, fileview.c_str(), -1, dpi, format,
-            quiet, nullptr, withOverlay);
+        prior = !OrthoDeferImage(
+            G, extent, fileview.c_str(), -1, dpi, format, quiet, withOverlay);
         result = bool(filename);
       } else if(!SceneGetCopyType(G)) {
         ExecutiveDrawNow(G);      /* TODO STATUS */
@@ -6318,6 +6483,27 @@ static PyObject *CmdPNG(PyObject * self, PyObject * args)
   }
 
   return APIResultCode(result);
+}
+
+/// #643: render the current view to a PNG through the host app's image
+/// export (the RayMol app's Metal Save Image path, which the bridge
+/// registers with PyMOL_SetHiResPNGRenderer). Returns False when no host
+/// renderer is registered (pip/GLUT and headless builds) or it could not
+/// render (no Metal renderer yet, not on the main thread), so the caller
+/// can fall back to the CPU tracer.
+static PyObject* CmdMetalPNG(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* filename = nullptr;
+  int width, height, ray;
+  API_SETUP_ARGS(G, self, args, "Osiii", &self, &filename, &width, &height,
+      &ray);
+  int ok = 0;
+  if (APIEnterNotModal(G)) {
+    ok = PyMOL_RenderHiResPNG(G->PyMOL, filename, width, height, ray);
+    APIExit(G);
+  }
+  return PyBool_FromLong(ok);
 }
 
 static PyObject *CmdMPNG(PyObject * self, PyObject * args)
@@ -7965,16 +8151,22 @@ static PyMethodDef Cmd_methods[] = {
   {"get_lights_ray_notice", CmdGetLightsRayNotice, METH_VARARGS},
   {"light_rig_to_session", CmdLightRigToSession, METH_VARARGS},
   {"light_rig_from_session", CmdLightRigFromSession, METH_VARARGS},
+  {"blend_light_rigs", CmdBlendLightRigs, METH_VARARGS},
+  {"lights_recall", CmdLightsRecall, METH_VARARGS},
+  {"lights_recall_step", CmdLightsRecallStep, METH_VARARGS},
   /* end light rig */
   /* light shading (#613) */
   {"get_light_frame", CmdGetLightFrame, METH_VARARGS},
   {"light_warmth_rgb", CmdLightWarmthRGB, METH_VARARGS},
   {"light_shadow_frustum", CmdLightShadowFrustum, METH_VARARGS},
   {"light_shadow_map_size", CmdLightShadowMapSize, METH_VARARGS},
+  {"light_soft_radius", CmdLightSoftRadius, METH_VARARGS},
   {"light_shadow_tile", CmdLightShadowTile, METH_VARARGS},
   {"get_light_shadow_casters", CmdGetLightShadowCasters, METH_VARARGS},
   {"gpu_time_summary", CmdGpuTimeSummary, METH_VARARGS},
   {"get_gpu_frame_stats", CmdGetGpuFrameStats, METH_VARARGS},
+  {"get_classic_shadow_map_bytes", CmdGetClassicShadowMapBytes, METH_VARARGS},
+  {"get_light_shadow_map_passes", CmdGetLightShadowMapPasses, METH_VARARGS},
   {"gpu_time_replay", CmdGpuTimeReplay, METH_VARARGS},
   /* the air (#618) */
   {"get_light_air_frame", CmdGetLightAirFrame, METH_VARARGS},
@@ -7983,6 +8175,8 @@ static PyMethodDef Cmd_methods[] = {
   {"light_air_resolution", CmdLightAirResolution, METH_VARARGS},
   {"light_air_shadow_filter", CmdLightAirShadowFilter, METH_VARARGS},
   {"light_air_animating", CmdLightAirAnimating, METH_VARARGS},
+  {"get_metal_air_cache_stats", CmdGetMetalAirCacheStats, METH_VARARGS},
+  {"set_metal_air_debug_poison", CmdSetMetalAirDebugPoison, METH_VARARGS},
   /* HDR colour (#624) */
   {"light_tone", CmdLightTone, METH_VARARGS},
   {"light_tone_scalar", CmdLightToneScalar, METH_VARARGS},
@@ -8042,6 +8236,8 @@ static PyMethodDef Cmd_methods[] = {
   {"get_view", CmdGetView, METH_VARARGS},
   {"get_viewport", CmdGetViewPort, METH_VARARGS},
   {"get_vis", CmdGetVis, METH_VARARGS},
+  {"get_atom_reps", CmdGetAtomReps, METH_VARARGS},
+  {"get_frame_command", CmdGetFrameCommand, METH_VARARGS},
   {"get_capabilities", CmdGetCapabilities, METH_NOARGS, "Get a set of compiled-in capabilities"},
   {"get_ccp4str", CmdGetCCP4Str, METH_VARARGS},
   {"get_volume_field", CmdGetVolumeField, METH_VARARGS},
@@ -8111,6 +8307,7 @@ static PyMethodDef Cmd_methods[] = {
   {"overlap", CmdOverlap, METH_VARARGS},
   {"paste", CmdPaste, METH_VARARGS},
   {"png", CmdPNG, METH_VARARGS},
+  {"metal_png", CmdMetalPNG, METH_VARARGS},
   {"pop", CmdPop, METH_VARARGS},
   {"protect", CmdProtect, METH_VARARGS},
   {"pseudoatom", CmdPseudoatom, METH_VARARGS},

@@ -184,12 +184,150 @@ final class LightsBarModelTests: XCTestCase {
         XCTAssertFalse(state.canPickPreset)
     }
 
-    func testPaletteHasSixDistinctColoursThatWrap() {
-        XCTAssertEqual(LightPalette.rgb.count, LightPalette.count)
-        let keys = LightPalette.rgb.map { "\($0.0),\($0.1),\($0.2)" }
-        XCTAssertEqual(Set(keys).count, LightPalette.count)
-        XCTAssertEqual(LightPalette.color(LightPalette.count), LightPalette.color(0))
-        XCTAssertEqual(LightPalette.color(-1), LightPalette.color(LightPalette.count - 1))
+    /// #798: every surface draws a light in its own colour, and one edit of
+    /// Colour or Warmth moves them all together (the markers are rebuilt from
+    /// the controller, so there is nothing to go stale).
+    func testEverySurfaceShowsTheLightsOwnColourAndFollowsEdits() {
+        _ = begin(with: ["key", "fill", "rim"])
+        controller.select(name: "fill")
+        func markers() -> [[LightMarkerColour]] {
+            let gizmo = LightGizmoInputs(controller: controller, viewSize: CGSize(width: 400, height: 300),
+                                         gridMode: false, sceneShadowsOn: nil)
+            return [LightsBarState(controller).chips.map(\.marker),
+                    LightsOrbitState(controller)!.lamps.map(\.marker),
+                    gizmo.lights.map(\.marker),
+                    [LightsInspectorState(controller)!.marker]]
+        }
+        // Untouched lights are white at 6500 K.
+        for surface in markers() {
+            XCTAssertEqual(surface.first, .neutral)
+        }
+        _ = controller.setColour(SIMD3(1, 0, 0))
+        _ = controller.set(.warmth, 3200)
+        let red = LightMarkerColour(color: SIMD3(1, 0, 0), warmth: 3200)
+        let white = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 6500)
+        let all = markers()
+        XCTAssertEqual(all[0], [white, red, white], "chips")
+        XCTAssertEqual(all[1], [white, red, white], "orbit lamps")
+        XCTAssertEqual(all[2], [white, red, white], "gizmo knobs")
+        XCTAssertEqual(all[3].first, red, "the inspector's dot is the selected light's")
+        XCTAssertEqual(red.fill, SIMD3(1, 0, 0), "red at 3200 K: warmth never lifts a zero channel")
+        // Selection does not change a marker's colour.
+        controller.select(name: "key")
+        XCTAssertEqual(LightsBarState(controller).chips.map(\.marker), [white, red, white])
+    }
+
+    func testRevertAsksOnlyForMoreThanOneEdit() {
+        var state = begin(with: ["key", "fill", "rim"])
+        XCTAssertFalse(state.revertNeedsConfirmation)
+        XCTAssertEqual(state.editCount, 0)
+
+        controller.add()
+        state = LightsBarState(controller)
+        XCTAssertTrue(state.canRevert)
+        XCTAssertFalse(state.revertNeedsConfirmation)
+        XCTAssertEqual(state.editCount, 1)
+
+        controller.setEnabled(false)
+        state = LightsBarState(controller)
+        XCTAssertTrue(state.canRevert)
+        XCTAssertTrue(state.revertNeedsConfirmation)
+        XCTAssertEqual(state.editCount, 2)
+
+        XCTAssertEqual(LightsBar.revertConfirmLabel(2), "Revert 2 edits")
+    }
+
+    // MARK: the Atmosphere entry (#795)
+
+    func testAtmosphereEntryOpensThePopoverWhereThereIsNoCard() {
+        // Atmosphere is scene-wide, so every bar carries its entry: on a
+        // phone it reveals the sheet's or side panel's section (#795); on
+        // macOS and the iPad float, which have no Atmosphere card, it opens
+        // the popover (#889).
+        for placement in LightsToolsPlacement.allCases {
+            let popover = placement == .column || placement == .floating
+            XCTAssertEqual(LightsBarState.atmosphereOpensPopover(placement: placement), popover, "\(placement)")
+        }
+    }
+
+    func testLightMenuReplacesTheChipsExceptInIPhoneLandscape() {
+        // #885 (phone portrait) and #889 (macOS, the iPad float): a
+        // dropdown; iPhone landscape's side panel keeps the chips.
+        for placement in LightsToolsPlacement.allCases {
+            XCTAssertEqual(LightsBarState.showsLightMenu(placement: placement), placement != .sidePanel,
+                           "\(placement)")
+        }
+    }
+
+    func testAtmosphereEntryStateDoesNotDependOnTheSelectedLight() {
+        // Same entry, same state, whichever light is selected and with none.
+        _ = begin(with: ["key", "fill", "rim"])
+        store.air = atmosphereOnAir
+        controller.refresh()
+        var seen = Set<Bool>()
+        for name in ["key", "fill", "rim"] {
+            controller.select(name: name)
+            seen.insert(LightsBarState(controller).atmosphereIsOn)
+        }
+        XCTAssertEqual(seen, [true], "on for every selected light")
+        // No light at all (the air-only sheet's case): the state is the same.
+        let emptyStore = FakeRigStore()
+        emptyStore.setRig([], enabled: true)
+        emptyStore.air = atmosphereOnAir
+        let empty = LightsController(seams: emptyStore.seams)
+        empty.begin()
+        XCTAssertNil(empty.selectedLight)
+        XCTAssertTrue(LightsBarState(empty).atmosphereIsOn, "and with no light selected")
+    }
+
+    func testAtmosphereMenuItemShowsTheState() {
+        XCTAssertEqual(LightsBarState.atmosphereMenuTitle(isOn: true), "Atmosphere: On")
+        XCTAssertEqual(LightsBarState.atmosphereMenuTitle(isOn: false), "Atmosphere: Off")
+        XCTAssertEqual(LightsBarState.atmosphereMenuImage(isOn: true), "cloud.fog.fill")
+        XCTAssertEqual(LightsBarState.atmosphereMenuImage(isOn: false), "cloud.fog")
+        let off = begin(with: ["key", "fill", "rim"])
+        XCTAssertFalse(off.atmosphereIsOn, "the default air is off")
+        store.air = atmosphereOnAir
+        controller.refresh()
+        XCTAssertTrue(LightsBarState(controller).atmosphereIsOn)
+    }
+
+    func testAtmosphereEntryIsNamedAsASceneSetting() {
+        XCTAssertEqual(AtmosphereCardIDs.sheetButtonLabel, "Scene atmosphere")
+        XCTAssertEqual(AtmosphereCardIDs.menuItem, "lights.atmosphere.menu")
+        XCTAssertNotEqual(AtmosphereCardIDs.menuItem, AtmosphereCardIDs.sheetButton)
+    }
+}
+
+final class LightsBarTests: XCTestCase {
+    func testPortraitLightMenuStrings() {
+        XCTAssertEqual(LightsBarState.lightMenuTitle(selected: "key"), "key")
+        XCTAssertEqual(LightsBarState.lightMenuTitle(selected: nil), "No light")
+        XCTAssertEqual(LightsBarState.noLightTitle, "No light")
+        XCTAssertEqual(LightsBarState.lightMenuItemIdentifier("fill"), "lights.menu.light.fill")
+        XCTAssertEqual(LightsBarState.editLightTitle, "Edit light…")
+        XCTAssertEqual(LightsBarState.editLightIdentifier, "lights.menu.edit")
+        XCTAssertEqual(LightsBarState.lightMenuIdentifier, "lights.menu")
+        XCTAssertEqual(LightsBarState.lightMenuLabel, "Light")
+    }
+
+    /// The menu's Shadow toggle is disabled under the cap notice once
+    /// `maxShadowed` other lights cast shadows (#886 review), since the
+    /// inspector's notice is not on screen with the portrait editor closed.
+    func testLightMenuAccessibilityValue() {
+        XCTAssertEqual(LightsBarState.lightMenuAccessibilityValue(selected: "key", behind: false),
+                       "key, in front of the molecule")
+        XCTAssertEqual(LightsBarState.lightMenuAccessibilityValue(selected: "rim", behind: true),
+                       "rim, behind the molecule")
+        XCTAssertEqual(LightsBarState.lightMenuAccessibilityValue(selected: nil, behind: true), "No light")
+    }
+
+    func testShadowCapReached() {
+        let cap = LightsController.maxShadowed
+        XCTAssertFalse(LightsBarState.shadowCapReached(isShadowed: false, shadowedCount: cap - 1))
+        XCTAssertTrue(LightsBarState.shadowCapReached(isShadowed: false, shadowedCount: cap))
+        // A shadowed light can always turn its own shadow off.
+        XCTAssertFalse(LightsBarState.shadowCapReached(isShadowed: true, shadowedCount: cap))
     }
 }
 
@@ -214,6 +352,12 @@ final class LightsBarSnapshotTests: XCTestCase {
         var dark: Bool
         /// The touch profile's minimum target (44: iOS, drawn on macOS).
         var touch: CGFloat = 0
+        /// A phone's Atmosphere entry (#795): the bar's `onAtmosphere`.
+        var atmosphere = false
+        var air: LightRigSnapshot.Air?
+        /// The macOS and iPad float bar (#889): the light menu and the
+        /// Atmosphere popover button.
+        var macOS = false
     }
 
     private static let three = ["key", "fill", "rim"]
@@ -257,8 +401,37 @@ final class LightsBarSnapshotTests: XCTestCase {
                  dark: false, touch: 44),
             Shot(name: "compact_6_ios44_375_dark", lights: Self.six, width: 375, dark: true, touch: 44),
             Shot(name: "compact_0_ios44_375_light", lights: nil, width: 375, dark: false, touch: 44),
+            // #795: the phone's Atmosphere entry. Portrait: an item in the
+            // overflow menu (the bar itself looks as before). Landscape:
+            // a bar button, at the widths of an iPhone in landscape (932,
+            // 852, 667, 568 pt) with the air on and off.
+            Shot(name: "atmosphere_compact_ios44_375_light", lights: Self.three, select: "fill", width: 375,
+                 dark: false, touch: 44, atmosphere: true),
+            Shot(name: "atmosphere_wide_ios44_932_light", lights: Self.three, select: "fill", width: 932,
+                 dark: false, touch: 44, atmosphere: true),
+            Shot(name: "atmosphere_wide_on_ios44_852_dark", lights: Self.three, select: "fill", width: 852,
+                 dark: true, touch: 44, atmosphere: true, air: atmosphereOnAir),
+            Shot(name: "atmosphere_wide_ios44_667_light", lights: Self.three, select: "fill", width: 667,
+                 dark: false, touch: 44, atmosphere: true),
+            Shot(name: "atmosphere_wide_ios44_568_light", lights: Self.three, select: "fill", width: 568,
+                 dark: false, touch: 44, atmosphere: true),
+            // #889: the macOS bar, with the light menu and the Atmosphere
+            // button, wide and in a narrow window, the air off and on.
+            Shot(name: "macos_wide_3_fill_light", lights: Self.three, select: "fill", width: 900,
+                 dark: false, macOS: true),
+            Shot(name: "macos_wide_3_air_on_dark", lights: Self.three, select: "key", width: 900,
+                 dark: true, air: atmosphereOnAir, macOS: true),
+            Shot(name: "macos_wide_0_light", lights: nil, width: 900, dark: false, macOS: true),
+            Shot(name: "macos_compact_3_light", lights: Self.three, select: "rim", width: 420,
+                 dark: false, macOS: true),
+            // The iPad float's bar (#889): the same controls with 44 pt
+            // targets, at an 11-inch iPad's landscape and portrait widths.
+            Shot(name: "ipad44_wide_3_1194_light", lights: Self.three, select: "fill", width: 1194,
+                 dark: false, touch: 44, macOS: true),
+            Shot(name: "ipad44_3_834_air_on_dark", lights: Self.three, select: "key", width: 834,
+                 dark: true, touch: 44, air: atmosphereOnAir, macOS: true),
         ]
-        XCTAssertEqual(shots.count, 13)
+        XCTAssertEqual(shots.count, 24)
 
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -281,11 +454,14 @@ final class LightsBarSnapshotTests: XCTestCase {
     private func render(_ shot: Shot, to url: URL) throws {
         let store = FakeRigStore()
         if let lights = shot.lights { store.setRig(lights, enabled: shot.enabled) }
+        if let air = shot.air { store.air = air }
         let controller = LightsController(seams: store.seams)
         controller.begin()
         if let name = shot.select { controller.select(name: name) }
 
-        let root = LightsBar(controller: controller, style: style(dark: shot.dark), onDone: {})
+        let root = LightsBar(controller: controller, style: style(dark: shot.dark),
+                             onAtmosphere: shot.atmosphere ? {} : nil,
+                             atmospherePopover: shot.macOS, lightMenu: shot.macOS, onDone: {})
             .frame(width: shot.width)
             .fixedSize(horizontal: false, vertical: true)
             .environment(\.lightsTouchMinimum, shot.touch)

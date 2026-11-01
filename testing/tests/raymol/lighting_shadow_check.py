@@ -78,10 +78,7 @@ def load_module(name, filename):
 
 
 def restore_set_lights():
-    """Undo the scene files' shim (what tearDown does)."""
-    original = vars(cmd).pop('_l616_set', None)
-    if original is not None:
-        cmd.set_lights = original
+    """Undo the scene files' rig state (what tearDown does)."""
     vars(cmd).pop('_l616_rig', None)
 
 
@@ -485,10 +482,16 @@ class TestSceneFiles(testing.PyMOLTestCase):
         for which, spec in self.specs.items():
             self.assertEqual(spec['rig'], 'on', which)
             self.assertIsNone(spec['base'], which)
+            applier = [
+                "if getattr(cmd, '_l616_rig', None) is not None: "
+                "cmd.set_lights(cmd._l616_rig(_lh_rig) if callable(cmd._l616_rig) else cmd._l616_rig)"
+            ]
+            self.assertEqual(spec.get('after_rig'), applier, which)
             for job in self.jobs[which]:
+                self.assertEqual(job.after_rig, applier, job.tag)
                 self.assertEqual(job.size, (1280, 720), job.tag)
                 tag_parts(job.tag)
-                # every scene sets the shim's rig, as its last line
+                # every scene sets after_rig's rig, as its last line
                 self.assertTrue(job.extra[-1].startswith(RIG_LINE), job.tag)
 
     def testEveryCheckHasItsImages(self):
@@ -558,7 +561,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
         job = self.job('l2', 'cartoon_ab_rt0')
         marker = self.run_job(job, times=2)       # the app runs it twice
         self.assertIsNone(self.render.check_marker(marker, job.tag, 'on'))
-        self.assertIs(cmd._l616_set, self.original_set_lights)
+        self.assertNotIn('_l616_set', vars(cmd))
+        self.assertIs(cmd.set_lights, self.original_set_lights)
         rig = cmd.get_lights()
         self.assertEqual((rig['ambient'], rig['classic']), (0.05, 0.0))
         self.assertEqual([l['name'] for l in rig['lights']], ['amber', 'cyan'])
@@ -574,7 +578,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
 
         # a function of the harness rig (the noshadow file's rig3 scenes)
         self.run_job(self.job('noshadow', 'rig3all_surface_rt1'), times=2)
-        self.assertIs(cmd._l616_set, self.original_set_lights)
+        self.assertNotIn('_l616_set', vars(cmd))
+        self.assertIs(cmd.set_lights, self.original_set_lights)
         rig = cmd.get_lights()
         self.assertEqual([l['name'] for l in rig['lights']], ['key', 'fill', 'rim'])
         self.assertEqual([l['shadow'] for l in rig['lights']], [True, True, True])

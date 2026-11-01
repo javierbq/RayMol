@@ -22,9 +22,9 @@ L1, the regression renders against master and L3 prove on a Mac:
   with kLightShadow false is #613's fragment verbatim (pinned against
   master aea4e74c6, the forms of the plan's D8 table);
 * no other library sees kLightShadow (the ray tracer, the tubes, the post
-  chain);
+  chain; kBezierTubeRigSrc takes the studio shadow maps as plain arguments, #663);
 * materialFragmentFunction sets index 2 on every specialisation, the tube's
-  fallback sets it false, and the shadow variants (VBO, sphere, cylinder)
+  fallback sets it false, and the shadow variants (VBO, sphere, cylinder, tube)
   are chosen only under lightShadowsReady(), keyed apart from every classic
   and #613 key, fall back to the rig's own pipeline, and are released with
   the rig's;
@@ -32,19 +32,26 @@ L1, the regression renders against master and L3 prove on a Mac:
   on a size change; beginLightShadowMap chains the slices (depth-only, the
   full slice, never the classic map's validity or the camera viewport) and
   endLightShadowMaps reopens the scene pass once with endShadowPass's own
-  statements; the modelview premultiply and u.ortho = 0 only while a slice
-  is open; the maps bound with the rig only when ready; the whole-pixel
+  statements; the modelview premultiply while a studio slice or the classic
+  map is open, u.ortho = 0 for a slice and 1 for the classic map (#665);
+  the maps bound with the rig only when ready; the whole-pixel
   shadow off, raster and traced, while studio shadows are on;
 * SceneRenderMetal: the frame read once, the studio maps only under
   lights.shadows with every caster but the overlays, the classic pre-pass
   as the else branch, the camera matrices restored;
+* studio shadow-map reuse (#666): the map pass skipped when the key of
+  everything the maps depend on matches the last frame and the renderer
+  still holds complete maps (reuseLightShadowMaps); ContentGeneration
+  tracks scene content changes; kept maps dropped on slice start, size
+  change or forget;
 * grid_mode (Part 5): the map pass draws each cell into its own tile of the
   atlas (setLightShadowViewport, I->grid.slot per cell, reset after) and
   never calls SceneSetMetalGridCell or setGridSlot; setGridSlot stores the
   cell before its early returns; bindLightRig gives each draw its cell's
   tile (zero outside every cell); today's grid loops are master's (sha);
   the classic pass (beginShadowPass, endShadowPass, SceneBuildLightViewProjEye,
-  the pre-pass body) pinned by sha against master aea4e74c6;
+  the pre-pass body) pinned by sha against master aea4e74c6 (re-pinned for #665,
+  whose casters face the light);
 * the GPU-time readout (Part 6): SceneRenderMetal hands metal_gpu_timing to
   the renderer every frame; endFrame adds its completed handler only while
   the mode is above 0 (the store and the frame's maps captured by value),
@@ -124,9 +131,10 @@ SHADOWED_COPIES = {
     'kMaterialSrc': {'light_terms_view_shadowed': 'light_terms_view',
                      'light_terms_shadowed': 'light_terms',
                      'light_apply_shadowed': 'light_apply'},
+    # #635: sphere_glass_rig_shadowed deleted with sphere_glass_rig;
+    # sphere glass coverage split uses the cylinder impostor structure.
     'kSphereImpostorSrc': {
-        'sphere_shade_material_rig_shadowed': 'sphere_shade_material_rig',
-        'sphere_glass_rig_shadowed': 'sphere_glass_rig'},
+        'sphere_shade_material_rig_shadowed': 'sphere_shade_material_rig'},
     'kCylinderImpostorSrc': {
         'cyl_shade_material_rig_shadowed': 'cyl_shade_material_rig'},
 }
@@ -150,29 +158,34 @@ SHADOW_TOKENS = re.compile(r'\bkLightShadow\b|\blightShadow\w*|\w+_shadowed\b')
 # never from this branch: with kLightShadow false every rig fragment, rig
 # helper and light helper must be exactly what #613 shipped.
 MASTER_613 = {
-    ('kVBOSrc', 'vbo_fragment'): ('1be74e6af4d56e9d', 'a40bc7ab03b56474'),
-    ('kVBOSrc', 'vbo_fragment_oit'): ('fa4a6d1608274485', '25ba2c47075b0478'),
+    # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
+    ('kVBOSrc', 'vbo_fragment'): ('1be74e6af4d56e9d', '9e7b204b31b48e14'),
+    # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
+    ('kVBOSrc', 'vbo_fragment_oit'): ('fa4a6d1608274485', '6672309308dbd574'),
     ('kSphereImpostorSrc', 'sphere_impostor_fragment'):
         ('8ff00c9aa8dab448', '3c25a1c606d32503'),
+    # #635: retaken after sphere glass coverage split
     ('kSphereImpostorSrc', 'sphere_impostor_fragment_oit'):
-        ('40c85eabe7e7fbde', 'a82a724bba7fef13'),
+        ('40c85eabe7e7fbde', '89450b8465627663'),
+    # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
     ('kSphereImpostorSrc', 'sphere_shade_material_rig'):
-        ('07c482db02f7600c', '7f29ebf73bd315ca'),
-    ('kSphereImpostorSrc', 'sphere_glass_rig'):
-        ('6febcc0900e0fcd6', '57d962cc7214ad2a'),
+        ('07c482db02f7600c', 'bdeb298db5e0fb3f'),
     ('kCylinderImpostorSrc', 'cyl_impostor_fragment'):
         ('ece804d6981b5b5c', 'e5df5087332f4379'),
     ('kCylinderImpostorSrc', 'cyl_impostor_fragment_oit'):
         ('99fab7e91e0cc052', '6837bc3562529bdb'),
+    # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
     ('kCylinderImpostorSrc', 'cyl_shade_material_rig'):
-        ('2eb0f1493ffb3b10', 'd201685b5438c819'),
+        ('2eb0f1493ffb3b10', 'fbd218eb47d2587e'),
+    # #712 B: retaken, light_response_neutral sets the four new fields
     ('kMaterialSrc', 'light_response_neutral'):
-        ('f9d29c479d573b42', '54a48318b1bd91ef'),
+        ('f9d29c479d573b42', 'c677a078ed68932a'),
     # ('kMaterialSrc', 'light_response') is left out since #615: its body is
     # #615's own (the material's response from MaterialU), and
     # lighting_material_msl.py pins it. Every other #613 helper is master's.
     ('kMaterialSrc', 'light_visibility'): ('0fa4d419dcaabf46', 'c6f76bc0d21bd512'),
-    ('kMaterialSrc', 'light_terms_view'): ('c3ee53eb972837b6', 'bcd134015fcc1123'),
+    # #712 B: retaken, second specular lobe and tint gain in light_terms_view
+    ('kMaterialSrc', 'light_terms_view'): ('c3ee53eb972837b6', '3c44990f15f286fa'),
     ('kMaterialSrc', 'light_terms'): ('8eb781b0326cac3f', '5700796aaac4b937'),
     ('kMaterialSrc', 'light_finish'): ('481469f10a37eec2', 'ee8660f541d2d01f'),
     ('kMaterialSrc', 'light_outline'): ('a7b110ee96452011', 'b6293663981b312a'),
@@ -303,25 +316,77 @@ class TestShadowBlock(ShadowMSLCase):
         # the C++ side
         for name, value in (('kLightShadowConstantIndex', 2),
                             ('kLightShadowTextureIndex', 7),
-                            ('kLightShadowSamplerIndex', 7)):
+                            ('kLightShadowSamplerIndex', 7),
+                            ('kRTLightShadowConstantIndex', 3),
+                            ('kRTLightShadowTextureIndex', 5)):
             self.assertRegex(self.code, r'constexpr NSUInteger %s = %d;'
                              % (name, value))
         # and nowhere else: no other literal declares or reads it
         for name, literal in self.msl.items():
             if name == 'kMaterialSrc' or name in SHADOW_LIBRARIES:
                 continue
+            if name == 'kBezierTubeRigSrc':
+                # #663: kBezierTubeRigSrc carries lightShadowMaps, lightShadowSmp
+                # and light_apply_shadowed only in bezier_tube_fragment_rig_shadow,
+                # but never kLightShadow
+                code = strip_comments(literal)
+                self.assertNotIn('kLightShadow', code)
+                funcs = msl_functions(literal)
+                for fn_name, (sig, body) in funcs.items():
+                    if fn_name != 'bezier_tube_fragment_rig_shadow':
+                        self.assertNotRegex(sig + body, SHADOW_TOKENS, fn_name)
+                    else:
+                        self.assertNotIn('kLightShadow', sig + body)
+                        self.assertIn('depth2d_array<float> lightShadowMaps [[texture(7)]]', sig)
+                        self.assertIn('sampler lightShadowSmp [[sampler(7)]]', sig)
+                        self.assertIn('light_apply_shadowed', body)
+                continue
+            if name == 'kRTSrc':
+                # #664: kRTSrc declares kRTLightShadow [[function_constant(3)]],
+                # never kLightShadow. lightShadowMaps appears only in rt_composite
+                # at texture(5) under kRTLightShadow, and _shadowed only in the
+                # copies, in rt_rig_hit_shadowed and at the two call sites.
+                code = strip_comments(literal)
+                self.assertNotIn('kLightShadow', code)
+                self.assertRegex(code, r'constant\s+bool\s+kRTLightShadow\s*\[\[\s*'
+                                       r'function_constant\(3\)\s*\]\];')
+                funcs = msl_functions(literal)
+                for fn_name, (sig, body) in funcs.items():
+                    if fn_name in ('light_visibility_shadowed',
+                                   'light_terms_view_shadowed'):
+                        # verbatim copies (lighting_msl.py RT_COPIES)
+                        self.assertNotRegex(sig + body, r'\bkRTLightShadow\b|\blightShadow\w*')
+                    elif fn_name in ('rt_rig_hit_shadowed', 'rt_rig_glass_hit_shadowed'):
+                        self.assertIn('light_terms_view_shadowed(rig, maps, smp,', body)
+                        self.assertNotRegex(sig + body, r'\bkRTLightShadow\b|\blightShadow\w*')
+                    elif fn_name == 'rt_composite':
+                        self.assertIn('depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]]', sig)
+                        self.assertEqual(len(re.findall(r'\blightShadowMaps\b', body)), 3)
+                        self.assertEqual(len(re.findall(r'\brt_rig_hit_shadowed\b', body)), 2)
+                        self.assertEqual(len(re.findall(r'\brt_rig_glass_hit_shadowed\b', body)), 1)
+                        body_without = re.sub(r'\brt_rig_hit_shadowed\b|\brt_rig_glass_hit_shadowed\b|\blightShadowMaps\b', '', body)
+                        self.assertNotRegex(body_without, SHADOW_TOKENS, fn_name)
+                    else:
+                        self.assertNotRegex(sig + body, SHADOW_TOKENS, fn_name)
+                continue
             self.assertNotRegex(strip_comments(literal), SHADOW_TOKENS, name)
         for name in ('kRTSrc', 'kBezierTubeSrc', 'kBezierTubeRigSrc', 'kPostSrc',
                      'kEyeReconSrc'):
             self.assertIn(name, self.msl)
         # texture(7) and sampler(7) are the maps' alone
-        for lib in ('kMaterialSrc', 'kMaterialImpostorSrc') + SHADOW_LIBRARIES:
+        for lib in ('kMaterialSrc', 'kMaterialImpostorSrc', 'kBezierTubeRigSrc') + SHADOW_LIBRARIES:
             code = strip_comments(self.msl[lib])
             for m in re.finditer(r'[^\n,(]*\[\[\s*(?:texture|sampler)\(7\)[^\]]*\]\]',
                                  code):
-                self.assertTrue(MAPS_ARGUMENT.search(m.group(0)) or
-                                SAMPLER_ARGUMENT.search(m.group(0)),
-                                '%s: %r' % (lib, m.group(0).strip()))
+                if lib == 'kBezierTubeRigSrc':
+                    self.assertTrue(
+                        re.search(r'depth2d_array<float>\s+lightShadowMaps\s*\[\[\s*texture\(7\)\s*\]\]', m.group(0)) or
+                        re.search(r'sampler\s+lightShadowSmp\s*\[\[\s*sampler\(7\)\s*\]\]', m.group(0)),
+                        '%s: %r' % (lib, m.group(0).strip()))
+                else:
+                    self.assertTrue(MAPS_ARGUMENT.search(m.group(0)) or
+                                    SAMPLER_ARGUMENT.search(m.group(0)),
+                                    '%s: %r' % (lib, m.group(0).strip()))
 
     def testHelpersAreUnusedStaticAndReadNoConstant(self):
         constant = re.compile(r'\bkLightRig\b|\bkLightShadow\b|\bkMat[A-Z]\w*|'
@@ -343,9 +408,19 @@ class TestShadowBlock(ShadowMSLCase):
                          if c in self.material]
             # light_response is #615's; the helpers take a LightResponse
             self.assertNotIn('light_response', seen, helper)
-        # defined only in kMaterialSrc
+        # defined only in kMaterialSrc (and kRTSrc for its verbatim copies, #664)
         for name, literal in self.msl.items():
             if name == 'kMaterialSrc':
+                continue
+            if name == 'kRTSrc':
+                # #664: kRTSrc carries verbatim copies of light_shadow_lookup,
+                # light_visibility_shadowed and light_terms_view_shadowed
+                rt_funcs = msl_functions(literal)
+                for helper in ('light_shadow_lookup', 'light_visibility_shadowed',
+                               'light_terms_view_shadowed'):
+                    self.assertIn(helper, rt_funcs, helper)
+                for helper in ('light_terms_shadowed', 'light_apply_shadowed'):
+                    self.assertNotIn(helper, rt_funcs, helper)
                 continue
             for helper in SHADOW_HELPERS:
                 self.assertNotIn(helper, msl_functions(literal), name)
@@ -474,6 +549,19 @@ class TestFragments(ShadowMSLCase):
     def testEachRigFragmentTakesTheMapsUnderTheConstant(self):
         for lib in self.msl:
             for name, (sig, body) in fragments(self.msl[lib]).items():
+                if lib == 'kBezierTubeRigSrc' and name == 'bezier_tube_fragment_rig_shadow':
+                    # #663: the tube's studio-shadow fragment takes the maps as plain arguments
+                    self.assertNotIn('kLightShadow', sig + body)
+                    self.assertIn('depth2d_array<float> lightShadowMaps [[texture(7)]]', sig)
+                    self.assertIn('sampler lightShadowSmp [[sampler(7)]]', sig)
+                    self.assertIn('light_apply_shadowed', body)
+                    continue
+                if lib == 'kRTSrc' and name == 'rt_composite':
+                    # #664: rt_composite takes lightShadowMaps under kRTLightShadow at texture(5)
+                    self.assertNotIn('kLightShadow', sig + body)
+                    self.assertIn('depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]]', sig)
+                    self.assertEqual(len(re.findall(r'\brt_rig_hit_shadowed\b', body)), 2)
+                    continue
                 takes = lib in RIG_FRAGMENTS and name in RIG_FRAGMENTS[lib]
                 if not takes:
                     self.assertNotRegex(sig + body, SHADOW_TOKENS,
@@ -511,13 +599,16 @@ class TestFragments(ShadowMSLCase):
         the _shadowed function and the maps."""
         vbo = fragments(self.msl['kVBOSrc'])
         body = squash(vbo['vbo_fragment'][1])
+        # #710: the rig lights the material's albedo (mat_rig_albedo)
         self.assertIn(
             'if(kLightRig){constfloat3shaded=vbo_material_shade(in.color.rgb,'
             'in.normalEye,in.posModel,lt,mat,envMap,envSmp);'
-            'if(kLightShadow)returnfloat4(light_apply_shadowed(shaded,in.color.rgb,'
+            'constfloat3albedo=mat_rig_albedo(in.color.rgb,in.normalEye,'
+            'in.posModel,mat);'
+            'if(kLightShadow)returnfloat4(light_apply_shadowed(shaded,albedo,'
             'in.normalEye,in.posEye,rig,lightShadowMaps,lightShadowSmp,'
             'light_response(mat)),in.color.a);'
-            'returnfloat4(light_apply(shaded,in.color.rgb,in.normalEye,in.posEye,'
+            'returnfloat4(light_apply(shaded,albedo,in.normalEye,in.posEye,'
             'rig,light_response(mat)),in.color.a);}', body)
         body = squash(vbo['vbo_fragment_oit'][1])
         self.assertIn(
@@ -525,10 +616,13 @@ class TestFragments(ShadowMSLCase):
             'lightShadowMaps,lightShadowSmp,in.color.rgb,N,in.posEye,'
             'light_response(mat)):light_terms(rig,in.color.rgb,N,in.posEye,'
             'light_response(mat));', body)
+        # #710: the rig lights the material's albedo (mat_rig_albedo)
         self.assertIn(
-            'c.rgb=kLightShadow?light_apply_shadowed(c.rgb,in.color.rgb,'
+            'constfloat3albedo=mat_rig_albedo(in.color.rgb,in.normalEye,'
+            'in.posModel,mat);'
+            'c.rgb=kLightShadow?light_apply_shadowed(c.rgb,albedo,'
             'in.normalEye,in.posEye,rig,lightShadowMaps,lightShadowSmp,'
-            'light_response(mat)):light_apply(c.rgb,in.color.rgb,in.normalEye,'
+            'light_response(mat)):light_apply(c.rgb,albedo,in.normalEye,'
             'in.posEye,rig,light_response(mat));', body)
         three_way = re.compile(
             r'if\(kLightRig&&kLightShadow\)(\w+)_rig_shadowed\(([^;]*)\);'
@@ -545,11 +639,16 @@ class TestFragments(ShadowMSLCase):
                                                'rig,', 1), rargs, name)
         sphere = squash(fragments(self.msl['kSphereImpostorSrc'])
                         ['sphere_impostor_fragment_oit'][1])
+        # #635: sphere impostor glass branch mirrors cylinder glass branch
         self.assertIn(
-            'if(kLightRig&&kLightShadow)rgb=sphere_glass_rig_shadowed(rgb,'
-            'in.color.rgb,n,pt,u,mat,envMap,envSmp,rig,lightShadowMaps,'
-            'lightShadowSmp);elseif(kLightRig)rgb=sphere_glass_rig(rgb,'
-            'in.color.rgb,n,pt,u,mat,envMap,envSmp,rig);', sphere)
+            'constLightTermsrigLight=kLightShadow?light_terms_shadowed(rig,'
+            'lightShadowMaps,lightShadowSmp,base,n,pt,light_response(mat))'
+            ':light_terms(rig,base,n,pt,light_response(mat));', sphere)
+        self.assertIn(
+            'if(kLightRig&&kLightShadow)rgb=light_apply_shadowed(rgb,in.color.rgb,n,pt,'
+            'rig,lightShadowMaps,lightShadowSmp,light_response(mat));'
+            'elseif(kLightRig)rgb=light_apply(rgb,in.color.rgb,n,pt,rig,'
+            'light_response(mat));', sphere)
         cyl = squash(fragments(self.msl['kCylinderImpostorSrc'])
                      ['cyl_impostor_fragment_oit'][1])
         self.assertIn(
@@ -799,6 +898,23 @@ class TestPipelines(ShadowMSLCase):
         self.assertLess(draw.index('buildCylinderImpostorPipeline(call, false);'),
                         block.start())
 
+    def testTubeShadowVariantChosenOnlyWhenReady(self):
+        """#663: the tube's shadow variant is chosen only under lightShadowsReady()
+        (mirroring the sphere/VBO ones)."""
+        draw = self.body('RendererMetal::drawBezierTubes')
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*!_shadowMode\s*\)\s*\{', draw)
+        self.assertIsNotNone(block)
+        inside = draw[block.end():match_brace(draw, block.end() - 1)]
+        shadow_block = re.search(r'if\s*\(\s*tubeRig\s*&&\s*lightShadowsReady\(\)\s*\)\s*\{', inside)
+        self.assertIsNotNone(shadow_block)
+        shadow_inside = inside[shadow_block.end():match_brace(inside, shadow_block.end() - 1)]
+        self.assertRegex(shadow_inside,
+                         r'id<MTLRenderPipelineState>\s+shadowTube\s*=\s*'
+                         r'_bezierTubeRigShadowPipeline\[_lightHdrOn\s*\?\s*1\s*:\s*0\];')
+        self.assertIn('tubePipeline = shadowTube;', shadow_inside)
+        self.assertIn('_lightShadowWarned = true;', shadow_inside)
+        self.assertLess(inside.index('buildBezierTubeRigPipeline();'), shadow_block.start())
+
     def testShadowNeverChosenWithoutTheRig(self):
         """Every shadow-variant choice sits under lightShadowsReady(), which
         needs the rig on and a colour draw."""
@@ -809,7 +925,9 @@ class TestPipelines(ShadowMSLCase):
                          ('RendererMetal::drawSphereImpostors',
                           r'ensureSphereRigShadowPipelines\('),
                          ('RendererMetal::drawCylinderImpostors',
-                          r'buildCylinderImpostorPipeline\(call,\s*true,\s*true,')):
+                          r'buildCylinderImpostorPipeline\(call,\s*true,\s*true,'),
+                         ('RendererMetal::drawBezierTubes',
+                          r'_bezierTubeRigShadowPipeline\[')):
             body = strip_block_comments(self.body(fn))
             found = list(re.finditer(call, body))
             self.assertTrue(found, fn)
@@ -820,6 +938,23 @@ class TestPipelines(ShadowMSLCase):
         cached = self.body('RendererMetal::cachedVBOPipeline')
         self.assertIn('const bool lightShadow = lightRig && lightShadowsReady();', cached)
 
+    def testRTShadowPipelinesAndDispatch(self):
+        """#664: RT composite shadow variant and its dispatch."""
+        build = self.body('RendererMetal::buildRTPipelines')
+        self.assertRegex(build, r'bool\s+shadow\s*=\s*false;\s*\[fc\s+setConstantValue:&shadow\s+'
+                                r'type:MTLDataTypeBool\s+atIndex:kRTLightShadowConstantIndex\];')
+        variant = self.body('RendererMetal::buildRTRigComposite')
+        self.assertRegex(variant, r'bool\s+s\s*=\s*shadow;\s*\[fc\s+setConstantValue:&s\s+'
+                                  r'type:MTLDataTypeBool\s+atIndex:kRTLightShadowConstantIndex\];')
+        post = self.body('RendererMetal::runPostChain')
+        self.assertRegex(post, r'const bool rtShadow = lightShadowsReady\(\) && '
+                               r'\(int\)_lightRigBlock\.shadowGrid\[1\] <= 0;')
+        self.assertRegex(post, r'buildRTRigComposite\(doRTTrans,\s*_lightHdrOn,\s*rtShadow,\s*doSoft\)')
+        # binds _lightShadowArray at kRTLightShadowTextureIndex only under the shadow variant
+        bind_block = re.search(r'if\s*\(\s*rigS\s*\)\s*\{[^}]*\[er\s+setFragmentTexture:_lightShadowArray\s+'
+                               r'atIndex:kRTLightShadowTextureIndex\];\s*\}', post)
+        self.assertIsNotNone(bind_block)
+
 
 SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 
@@ -827,13 +962,18 @@ SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 # function (comments stripped, whitespace removed, the first 16 hex digits),
 # and of the classic pre-pass body in SceneRenderMetal (inside the braces of
 # its `if`, from `float shadowRadius` to the restore of the camera matrices).
-# Taken from master with lighting_msl.py's parsers, never from this branch:
-# studio shadows replace the classic pass, they never edit it.
+# Updated for #433 / #662: the classic pre-pass and light frustum exclude
+# overlays (SceneLightShadowOverlays and SceneGetLightShadowExtent).
+# Updated for #667: beginShadowPass makes the shadow map lazily (ensureShadowMap)
+# and reports whether the pass opened; the pre-pass replays only when it did.
+# Updated for #665: the classic pass opens with the light's view (premultiplied
+# onto every modelview) and SceneBuildLightViewProjEye returns the view and the
+# projection apart, with an up vector that is never parallel to the light.
 MASTER_CLASSIC = {
-    'RendererMetal::beginShadowPass': 'c421447f5f77a489',
-    'RendererMetal::endShadowPass': '5dd9374e7be0fb2f',
-    'SceneBuildLightViewProjEye': '6b975b5c9dc7bec8',
-    'classic pre-pass body': 'b3b5919caf1bbff4',
+    'RendererMetal::beginShadowPass': '5eb1721676008f76',
+    'RendererMetal::endShadowPass': 'e7cc6973c0584cd7',
+    'SceneBuildLightViewProjEye': 'bf60a49daa88d2a3',
+    'classic pre-pass body': '2a3fc69cf0876da4',
 }
 # The statements both passes end with: the scene pass reopened with CLEAR.
 # Today's grid code on master (aea4e74c6), hashed as MASTER_CLASSIC is: the
@@ -844,7 +984,7 @@ MASTER_CLASSIC = {
 # taken out.
 MASTER_GRID = {
     'SceneRenderMetal grid and scene passes': '2f21cf55fa47c5af',
-    'SceneSetMetalGridCell': '034aaa521b356a8c',
+    'SceneSetMetalGridCell': '628b235ead556ae9',  # #689: sets the cell's unit context for gadgets
     'SceneRenderMetalSelections': '37c869d18ac858bd',
 }
 MASTER_SET_GRID_SLOT = 'bd39d8b8d26168bd'
@@ -861,8 +1001,9 @@ def classic_pre_pass_body(scene_render):
 
 
 class TestClassicShadowUnchanged(ShadowMSLCase):
-    """Sha pins: the classic pass, its light frustum and the pre-pass body
-    are master's."""
+    """Sha pins: the classic pass, its light frustum and the pre-pass body,
+    as #665 left them (master's, but for the light view the pass opens
+    with)."""
 
     def testClassicCodeIsMasters(self):
         scene_render = read(SCENE_RENDER)
@@ -876,6 +1017,340 @@ class TestClassicShadowUnchanged(ShadowMSLCase):
             'classic pre-pass body': digest(classic_pre_pass_body(scene_render)),
         }
         self.assertEqual(found, MASTER_CLASSIC)
+
+
+class TestClassicShadowCastersFaceTheLight(ShadowMSLCase):
+    """#665: the classic pre-pass opens with its light's view, premultiplied
+    onto every modelview until endShadowPass (as a studio map), so impostor
+    casters face the light; they ray-cast orthographically (u.ortho = 1).
+    The GPU side is ClassicShadowImpostorCasterTests
+    (LightsAtmosphereLiveTests.swift)."""
+
+    def testBeginShadowPassStoresTheViewOnceOpen(self):
+        body = strip_comments(cpp_function(self.mm, 'RendererMetal::beginShadowPass'))
+        self.assertIn('if (!view ||', body)
+        self.assertIn('ensureShadowMap()', body)
+        self.assertLess(body.index('if (!view ||'), body.index('ensureShadowMap()'))
+        store = 'std::memcpy(_lightShadowView, view, sizeof(_lightShadowView));'
+        open_flag = '_classicShadowViewOpen = true;'
+        self.assertIn(store, body)
+        self.assertIn(open_flag, body)
+        early_exit = 'if (!_encoder) { _passDesc = _scenePassDesc; return false; }'
+        self.assertIn(early_exit, body)
+        self.assertIn('_shadowMode = true;', body)
+        self.assertLess(body.index('_shadowMode = true;'), body.index(store))
+        self.assertLess(body.index('_shadowMode = true;'), body.index(open_flag))
+        self.assertLess(body.index(early_exit), body.index(store))
+        self.assertLess(body.index(early_exit), body.index(open_flag))
+
+    def testEndShadowPassClosesItBeforeTheReopen(self):
+        end = cpp_function(self.mm, 'RendererMetal::endShadowPass')
+        self.assertIn('_classicShadowViewOpen = false;', end)
+        self.assertIn(REOPEN_MARKER, end)
+        self.assertLess(end.index('_classicShadowViewOpen = false;'), end.index(REOPEN_MARKER))
+        begin = cpp_function(self.mm, 'RendererMetal::beginFrame')
+        self.assertIn('_classicShadowViewOpen = false;', begin)
+        header = read(METAL_H)
+        self.assertIn('bool _classicShadowViewOpen = false;', header)
+
+    def testPrePassLoadsTheLightAfterOpening(self):
+        scene_render = read(SCENE_RENDER)
+        prepass = classic_pre_pass_body(scene_render)
+        self.assertIn('SceneBuildLightViewProjEye(G, lightView, lightProj, &shadowRadius);', prepass)
+        self.assertIn('const glm::mat4 lightVP_eye = lightProj * lightView;', prepass)
+        self.assertIn('setLightViewProjEye(glm::value_ptr(lightVP_eye));', prepass)
+        open_pass = 'beginShadowPass(glm::value_ptr(lightView))'
+        load_proj = 'loadMatrixf(glm::value_ptr(lightProj))'
+        load_mvp1 = 'loadMatrixf(mvp)'
+        render_all = 'SceneRenderAll('
+        close_pass = 'endShadowPass()'
+        load_cam_proj = 'loadMatrixf(SceneGetProjectionMatrixPtr(G))'
+
+        idx_open = prepass.index(open_pass)
+        idx_proj = prepass.index(load_proj)
+        idx_mvp1 = prepass.index(load_mvp1)
+        idx_render = prepass.index(render_all)
+        idx_close = prepass.index(close_pass)
+        idx_cam_proj = prepass.index(load_cam_proj)
+        idx_mvp2 = prepass.rindex(load_mvp1)
+
+        self.assertLess(idx_open, idx_proj)
+        self.assertLess(idx_proj, idx_mvp1)
+        self.assertLess(idx_mvp1, idx_render)
+        self.assertLess(idx_render, idx_close)
+        self.assertLess(idx_close, idx_cam_proj)
+        self.assertLess(idx_cam_proj, idx_mvp2)
+
+        self.assertNotIn('loadMatrixf(glm::value_ptr(lightVP_eye))', prepass)
+
+        fn = cpp_function(scene_render, 'SceneBuildLightViewProjEye')
+        self.assertIn('lightView=glm::lookAt(', squash(fn))
+        self.assertIn('lightProj=glm::ortho(', squash(fn))
+        self.assertNotIn('return lightProj', fn)
+        # lookAt's up is never parallel to the light: +x when the light is
+        # near the view axis or near the y axis (a light straight above)
+        self.assertIn('glm::vec3up=(Ldir.z*Ldir.z<0.81f&&std::fabs(Ldir.y)<0.95f)'
+                      '?glm::vec3(0,1,0):glm::vec3(1,0,0);',
+                      squash(strip_comments(fn)))
+
+
+class TestLazyClassicShadowMap(ShadowMSLCase):
+    """The classic shadow map is allocated by the first classic pre-pass, not
+    with the post targets (#667). Source-level pins; the GPU side is the
+    ClassicShadowMapLazyTests XCTest (SmokeTests.swift)."""
+
+    def setUp(self):
+        super().setUp()
+        self.header = strip_comments(read(METAL_H))
+
+    def testPostTargetsDoNotAllocateIt(self):
+        body = cpp_function(self.mm, 'RendererMetal::ensurePostTargets')
+        code = strip_comments(body)
+        self.assertNotIn('_shadowDepth', code)
+        self.assertNotIn('_shadowPassDesc', code)
+        self.assertNotIn('kShadowDim', code)
+
+    def testOnlyEnsureShadowMapAllocatesIt(self):
+        # Every assignment sits in ensureShadowMap, or is the test-only
+        # release's `= nil` (the destructor's release is a message send).
+        spans = {}
+        for fn in ('RendererMetal::ensureShadowMap',
+                   'RendererMetal::releaseClassicShadowMap'):
+            body = cpp_function(self.mm, fn)
+            self.assertEqual(self.code.count(body), 1, fn)
+            start = self.code.index(body)
+            spans[fn] = (start, start + len(body))
+        release = squash(cpp_function(
+            self.mm, 'RendererMetal::releaseClassicShadowMap'))
+        for name in ('_shadowDepth', '_shadowPassDesc'):
+            sites = [m.start() for m in re.finditer(
+                r'\b%s\s*=\s*(?!=)' % name, self.code)]
+            self.assertTrue(sites, name)
+            inside = {fn: [at for at in sites if lo <= at < hi]
+                      for fn, (lo, hi) in spans.items()}
+            self.assertEqual(sum(len(v) for v in inside.values()), len(sites),
+                             '%s assigned outside ensureShadowMap' % name)
+            self.assertTrue(inside['RendererMetal::ensureShadowMap'], name)
+            self.assertEqual(len(inside['RendererMetal::releaseClassicShadowMap']),
+                             release.count('%s=' % name), name)
+            self.assertEqual(release.count('%s=' % name),
+                             release.count('%s=nil;' % name), name)
+        body = squash(strip_comments(
+            cpp_function(self.mm, 'RendererMetal::ensureShadowMap')))
+        self.assertIn('newTextureWithDescriptor:sd', body)
+        self.assertIn('_shadowMapFailed=true', body)
+
+    def testFirstPrePassMakesIt(self):
+        body = squash(strip_comments(
+            cpp_function(self.mm, 'RendererMetal::beginShadowPass')))
+        self.assertIn('if(!ensureShadowMap())returnfalse;', body)
+        self.assertLess(body.index('ensureShadowMap()'),
+                        body.index('renderCommandEncoderWithDescriptor:_shadowPassDesc'))
+        self.assertNotIn('!_shadowPassDesc', body)
+        # no map, no replay (the pass would draw into the scene targets)
+        scene = squash(strip_comments(read(SCENE_RENDER)))
+        self.assertIn('if(G->Renderer->beginShadowPass(glm::value_ptr(lightView))){'
+                      'G->Renderer->matrixMode(0x1701);'
+                      'G->Renderer->loadMatrixf(glm::value_ptr(lightProj));'
+                      'G->Renderer->matrixMode(0x1700);'
+                      'G->Renderer->loadMatrixf(mvp);SceneRenderAll(', scene)
+        self.assertRegex(scene, r'SceneRenderAll\([^;]*&overlays\);'
+                                r'G->Renderer->endShadowPass\(\);\}')
+        self.assertIn('virtual bool beginShadowPass(const float* /*view*/) { return true; }',
+                      read(os.path.join(ROOT, 'layerGraphics', 'Renderer.h')))
+
+    def testEveryPostReaderToleratesNoMap(self):
+        # No post pass binds _shadowDepth raw (nil without shadows): they
+        # bind shadowTextureForBind(), the map or a 1x1 stand-in.
+        binds = re.findall(r'setFragmentTexture:(\S[^;]*?) atIndex:2\]',
+                           self.code)
+        self.assertEqual([x for x in binds if x == '_shadowDepth'], [])
+        self.assertEqual(binds.count('shadowTextureForBind()'), 2)
+        body = squash(strip_comments(
+            cpp_function(self.mm, 'RendererMetal::shadowTextureForBind')))
+        self.assertIn('if(_shadowDepth)return_shadowDepth;', body)
+        # the debug blit (texture index 1) is already gated on the map
+        self.assertIn('shadowDebug && _shadowDebugPipeline && _shadowDepth',
+                      self.code)
+        # and the composite samples only after this frame's pre-pass ran
+        self.assertIn('bool doShadowMap = doShadow && _shadowMapValid;', self.code)
+        self.assertIn('u.shadowEnabled = doShadowMap ? 1.0f : 0.0f;', self.code)
+
+    def testSmallerOnIOS(self):
+        self.assertRegex(squash(self.header),
+                         r'#ifTARGET_OS_IPHONEstaticconstexprNSUIntegerkShadowDim=2048;'
+                         r'#elsestaticconstexprNSUIntegerkShadowDim=4096;#endif')
+
+    def testCompositeScalesByTheMapsWidth(self):
+        post = strip_comments(self.msl['kPostSrc'])
+        self.assertNotIn('4096', post)
+        self.assertIn('float shadowDim = float(shadowTex.get_width());', post)
+        self.assertIn('2.0 * u.shadowRadius / shadowDim', post)
+        self.assertIn('1.0 / shadowDim', post)
+        # the ray tracer's shadow-map fallback does the same
+        rt = strip_comments(self.msl['kRTSrc'])
+        self.assertNotIn('4096', rt)
+        self.assertIn('float shadowDim = float(shadowTex.get_width());', rt)
+        self.assertIn('2.0 * u.shadowRadius / shadowDim', rt)
+        self.assertIn('1.0 / shadowDim', rt)
+
+    def testTestOnlyReadout(self):
+        self.assertIn('size_t classicShadowMapBytes() const override',
+                      self.header)
+        self.assertIn('void releaseClassicShadowMap() override;', self.header)
+        self.assertIn('[_shadowDepth release];     _shadowDepth = nil;',
+                      strip_comments(cpp_function(
+                          self.mm, 'RendererMetal::releaseClassicShadowMap')))
+        cmd_cpp = read(os.path.join(ROOT, 'layer4', 'Cmd.cpp'))
+        self.assertIn('{"get_classic_shadow_map_bytes", CmdGetClassicShadowMapBytes',
+                      cmd_cpp)
+
+
+class TestStudioShadowMapReuse(ShadowMSLCase):
+    """Studio shadow-map reuse across frames (#666). Source-level pins; the
+    GPU side is the StudioShadowMapCacheTests XCTest (SmokeTests.swift)."""
+
+    def setUp(self):
+        super().setUp()
+        self.header = strip_comments(read(METAL_H))
+        self.scene_render = read(SCENE_RENDER)
+        self.renderer_h = read(
+            os.path.join(ROOT, 'layerGraphics', 'Renderer.h'))
+        self.scene_cpp = read(os.path.join(ROOT, 'layer1', 'Scene.cpp'))
+        self.cmd_cpp = read(os.path.join(ROOT, 'layer4', 'Cmd.cpp'))
+
+    def body(self, name):
+        return strip_block_comments(cpp_function(self.mm, name))
+
+    def testSceneRenderPassReuse(self):
+        maps = cpp_function(self.scene_render, 'SceneRenderLightShadowMaps')
+        self.assertIn('I->LightShadowMapKey', maps)
+        self.assertIn('reuseLightShadowMaps(shadows.count)', maps)
+        loop_idx = maps.index('for (int slot = 0;')
+        reuse_idx = maps.index('reuseLightShadowMaps(shadows.count)')
+        self.assertLess(reuse_idx, loop_idx)
+        self.assertLess(maps.index('I->LightShadowMapKey'), loop_idx)
+        early_return_idx = maps.index('return;')
+        first_load_matrix = maps.index('loadMatrixf')
+        self.assertLess(early_return_idx, first_load_matrix)
+        end_maps_idx = maps.index('G->Renderer->endLightShadowMaps();')
+        move_key_idx = maps.index('I->LightShadowMapKey = std::move(key);')
+        self.assertLess(end_maps_idx, move_key_idx)
+
+    def testSceneLightShadowMapKey(self):
+        key_fn = cpp_function(self.scene_render, 'SceneLightShadowMapKey')
+        for token in ('ContentGeneration', 'SceneGetState(G)',
+                      'SceneGetFrame(G)', 'SceneGetProjectionMatrixPtr(G)',
+                      'm_front', 'm_back', 'VertexScale', 'shadows.view[',
+                      '.proj', 'TTT', 'I->Obj'):
+            self.assertIn(token, key_fn)
+
+    def testSceneRenderMetalClearsKeyWithoutShadows(self):
+        render = cpp_function(self.scene_render, 'SceneRenderMetal')
+        clear_idx = render.index(
+            'if (!lights.shadows)\n    I->LightShadowMapKey.clear();')
+        branch_idx = render.index('if (lights.shadows) {')
+        self.assertLess(clear_idx, branch_idx)
+
+    def testSceneCounter(self):
+        dirty = cpp_function(self.scene_cpp, 'SceneDirty')
+        self.assertIn('++G->Scene->ContentGeneration;', dirty)
+        self.assertIn('SceneDirtyView(G);', dirty)
+        self.assertLess(dirty.index('++G->Scene->ContentGeneration;'),
+                        dirty.index('SceneDirtyView(G);'))
+
+        reshape = cpp_function(self.scene_cpp, 'CScene::reshape')
+        self.assertIn('SceneDirtyView(G);', reshape)
+        self.assertNotIn('SceneDirty(G);', reshape)
+
+        extent = cpp_function(self.scene_cpp, 'SceneInvalidateExtentCache')
+        self.assertIn('++I->ContentGeneration;', extent)
+
+    def testRendererMetalKeptLogic(self):
+        begin = self.body('RendererMetal::beginLightShadowMap')
+        self.assertRegex(begin, r'^\{\s*_lightShadowMapsKept\s*=\s*false\s*;')
+
+        end = self.body('RendererMetal::endLightShadowMaps')
+        self.assertIn('_lightShadowMapsKept = _lightShadowMapsReady;', end)
+        self.assertLess(end.index('_lightShadowMapsReady ='),
+                        end.index('_lightShadowMapsKept = _lightShadowMapsReady;'))
+        self.assertLess(
+            end.index('_lightShadowMapsKept = _lightShadowMapsReady;'),
+            end.index('_passDesc = _scenePassDesc;'))
+
+        ensure = self.body('RendererMetal::ensureLightShadowArray')
+        self.assertIn('_lightShadowMapsKept = false;', ensure)
+
+        self.assertNotRegex(self.code, r'\b_lightShadowMapsKept\s*=\s*true\b')
+        self.assertNotIn(
+            '_lightShadowMapsKept', self.body('RendererMetal::beginFrame'))
+
+        reuse = self.body('RendererMetal::reuseLightShadowMaps')
+        self.assertIn('_lightShadowMapsKept', reuse)
+        self.assertIn('head[3]', reuse)
+        self.assertIn('_lightShadowArraySize != _lightShadowSize', reuse)
+        self.assertIn('_lightShadowMapsReady = true;', reuse)
+        self.assertLess(reuse.index('_lightShadowMapsKept'),
+                        reuse.index('_lightShadowMapsReady = true;'))
+        self.assertLess(reuse.index('head[3]'),
+                        reuse.index('_lightShadowMapsReady = true;'))
+        self.assertLess(reuse.index('_lightShadowArraySize != _lightShadowSize'),
+                        reuse.index('_lightShadowMapsReady = true;'))
+
+    def testCmdAndRendererDeclarations(self):
+        self.assertIn(
+            '{"get_light_shadow_map_passes", CmdGetLightShadowMapPasses, '
+            'METH_VARARGS},', self.cmd_cpp)
+        self.assertIn(
+            'virtual bool reuseLightShadowMaps(int /*count*/) { return false; }',
+            self.renderer_h)
+        self.assertIn(
+            'virtual unsigned long long lightShadowMapSlicesRendered() const '
+            '{ return 0; }', self.renderer_h)
+        self.assertIn('virtual void forgetLightShadowMaps() {}',
+                      self.renderer_h)
+
+
+class TestOverlayShadowExclusion(ShadowMSLCase):
+    """Overlays (Move gizmo, gadgets, gizmos) must not cast shadows in the
+    classic pre-pass, widen the classic light frustum, or enter the ray
+    tracing acceleration structure (#433 / #662)."""
+
+    def setUp(self):
+        super().setUp()
+        self.header = strip_comments(read(METAL_H))
+        self.scene_render = read(SCENE_RENDER)
+        self.renderer_h = read(os.path.join(ROOT, 'layerGraphics', 'Renderer.h'))
+
+    def testClassicPrePassExcludesOverlays(self):
+        body = classic_pre_pass_body(self.scene_render)
+        self.assertIn('SceneLightShadowOverlays(G)', body)
+        self.assertRegex(body, r'SceneRenderAll\([^;]*&overlays\s*\);')
+
+    def testClassicLightFrustumUsesLightShadowExtent(self):
+        body = cpp_function(self.scene_render, 'SceneBuildLightViewProjEye')
+        self.assertIn('SceneGetLightShadowExtent(G, mn, mx)', body)
+        self.assertNotIn('SceneGetShadowExtent(G, mn, mx)', body)
+
+    def testOverlayDrawSuppressesRayTracingGeometry(self):
+        for method in ('RendererMetal::drawVBO',
+                       'RendererMetal::drawVBOIndexed',
+                       'RendererMetal::drawSphereImpostors',
+                       'RendererMetal::drawCylinderImpostors'):
+            body = strip_block_comments(cpp_function(self.mm, method))
+            self.assertRegex(body, r'if\s*\([^;]*!_overlayDraw[^;]*rtNoteGeometry',
+                             f'{method} must guard rtNoteGeometry with !_overlayDraw')
+
+    def testSceneRenderAllObjectSetsOverlayDraw(self):
+        body = cpp_function(self.scene_render, 'SceneRenderAllObject')
+        self.assertIn('SceneObjectIsOverlay', body)
+        self.assertIn('setOverlayDraw(true)', body)
+        self.assertIn('setOverlayDraw(false)', body)
+
+    def testRendererBaseHasSetOverlayDraw(self):
+        self.assertIn('virtual void setOverlayDraw(bool', self.renderer_h)
+        self.assertIn('void setOverlayDraw(bool overlay) override', self.header)
+        self.assertIn('bool _overlayDraw = false;', self.header)
 
 
 class TestMapPass(ShadowMSLCase):
@@ -986,7 +1461,7 @@ class TestMapPass(ShadowMSLCase):
         for m in re.finditer(r'\b_lightShadowMapsReady\s*=(?!=)', self.code):
             owners.append(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
                                      self.code[:m.start()], re.M)[-1])
-        self.assertEqual(sorted(owners), ['beginFrame', 'endLightShadowMaps'])
+        self.assertEqual(sorted(owners), ['beginFrame', 'endLightShadowMaps', 'reuseLightShadowMaps'])
         self.assertIn('_lightShadowMapsReady = false;', self.body('RendererMetal::beginFrame'))
 
     def testBeginFrameResets(self):
@@ -998,9 +1473,12 @@ class TestMapPass(ShadowMSLCase):
         self.assertRegex(self.header, r'int _lightShadowSlotOpen = -1;')
         self.assertRegex(self.header, r'bool _lightStudioShadows = false;')
 
-    def testPremultiplyOnlyWhileASliceIsOpen(self):
+    def testPremultiplyOnlyWhileAMapIsOpen(self):
+        header = strip_comments(read(METAL_H))
+        self.assertIn('boolshadowCasterViewOpen()const{return_lightShadowSlotOpen>=0||_classicShadowViewOpen;}',
+                      squash(header))
         load = self.body('RendererMetal::loadMatrixf')
-        block = re.search(r'if\s*\(\s*_matrixMode == 0 && _lightShadowSlotOpen >= 0\s*\)\s*\{',
+        block = re.search(r'if\s*\(\s*_matrixMode == 0 && shadowCasterViewOpen\(\)\s*\)\s*\{',
                           load)
         self.assertIsNotNone(block)
         inside = load[block.end():match_brace(load, block.end() - 1)]
@@ -1009,10 +1487,11 @@ class TestMapPass(ShadowMSLCase):
         self.assertIn('mat = multiplyMatrices(lightView, mat);', inside)
         # before the inverse is taken, so the inverse is the stored matrix's
         self.assertLess(block.start(), load.index('simd_inverse'))
-        self.assertEqual(load.count('_lightShadowSlotOpen'), 1)
+        self.assertEqual(load.count('shadowCasterViewOpen'), 1)
+        self.assertNotIn('_lightShadowSlotOpen', load)
         identity = self.body('RendererMetal::loadIdentity')
         self.assertRegex(identity, r'_modelviewMatrix = identityMatrix\(\);\s*'
-                                   r'if\s*\(\s*_lightShadowSlotOpen >= 0\s*\)\s*'
+                                   r'if\s*\(\s*shadowCasterViewOpen\(\)\s*\)\s*'
                                    r'std::memcpy\(_modelviewMatrix\.data\(\), _lightShadowView,')
         # the slot opens only in beginLightShadowMap and closes at its end and
         # at every frame start
@@ -1023,17 +1502,34 @@ class TestMapPass(ShadowMSLCase):
             owners.setdefault(owner, []).append(m.group(1).strip())
         self.assertEqual(owners, {'beginFrame': ['-1'], 'beginLightShadowMap': ['slot'],
                                   'endLightShadowMaps': ['-1']})
+        classic_owners = {}
+        for m in re.finditer(r'\b_classicShadowViewOpen\s*=(?!=)\s*([^;]*);', self.code):
+            owner = re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                               self.code[:m.start()], re.M)[-1]
+            classic_owners.setdefault(owner, []).append(m.group(1).strip())
+        self.assertEqual(classic_owners, {'beginFrame': ['false'], 'beginShadowPass': ['true'],
+                                          'endShadowPass': ['false']})
+        view_owners = []
+        for m in re.finditer(r'std::memcpy\(_lightShadowView,\s*view,', self.code):
+            owner = re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                               self.code[:m.start()], re.M)[-1]
+            view_owners.append(owner)
+        self.assertEqual(sorted(view_owners), ['beginLightShadowMap', 'beginShadowPass'])
         # the other matrix calls post-multiply, as before
         for fn in ('RendererMetal::multMatrixf', 'RendererMetal::translatef',
                    'RendererMetal::scalef', 'RendererMetal::popMatrix'):
             self.assertNotIn('_lightShadow', self.body(fn), fn)
+            self.assertNotIn('shadowCasterViewOpen', self.body(fn), fn)
+            self.assertNotIn('_classicShadowView', self.body(fn), fn)
 
     def testImpostorsRayCastFromTheLight(self):
         for fn in ('RendererMetal::drawSphereImpostors',
                    'RendererMetal::drawCylinderImpostors'):
             body = self.body(fn)
-            self.assertEqual(re.findall(r'\bu\.ortho\s*=\s*([^;]*);', body),
-                             ['_lightShadowSlotOpen >= 0 ? 0.0f : (float)call.ortho'], fn)
+            self.assertEqual([' '.join(x.split()) for x in
+                              re.findall(r'\bu\.ortho\s*=\s*([^;]*);', body)],
+                             ['_lightShadowSlotOpen >= 0 ? 0.0f : '
+                              '_classicShadowViewOpen ? 1.0f : (float)call.ortho'], fn)
 
     def testMapsBoundOnlyWithTheRigWhenReady(self):
         bind = self.body('RendererMetal::bindLightRig')
@@ -1095,7 +1591,7 @@ class TestSceneRenderPass(ShadowMSLCase):
                       r'cSetting_metal_shadows\)\s*\)\s*\{\s*float shadowRadius', body)
         self.assertIsNotNone(m)
         self.assertEqual(body.count('SceneRenderLightShadowMaps('), 1)
-        self.assertEqual(body.count('beginShadowPass()'), 1)
+        self.assertEqual(body.count('beginShadowPass('), 1)
         # the studio maps run before every scene pass
         self.assertLess(m.start(), body.index('SceneRenderAll('))
         self.assertLess(m.start(), body.index('SceneRenderTransparentMetal('))

@@ -49,11 +49,17 @@ int LightAirShadowFilter(int setting, bool mobile)
   return kLightAirOneTap;
 }
 
+bool LightAirClockIsMovie(const LightAirClockInputs& in)
+{
+  return !(in.pinned >= 0.0 && std::isfinite(in.pinned)) &&
+         in.frames > 1 && (in.offscreen || in.playing);
+}
+
 double LightAirClock(const LightAirClockInputs& in)
 {
   if (in.pinned >= 0.0 && std::isfinite(in.pinned))
     return in.pinned;
-  if (in.frames > 1 && (in.offscreen || in.playing)) {
+  if (LightAirClockIsMovie(in)) {
     const double fps =
         in.fps > 0.0 && std::isfinite(in.fps) ? in.fps : kLightAirDefaultFps;
     return std::max(in.frame, 0) / fps;
@@ -63,12 +69,15 @@ double LightAirClock(const LightAirClockInputs& in)
   return std::isfinite(in.wallSeconds) ? in.wallSeconds : 0.0;
 }
 
-double LightAirTime(double clock, double speed)
+double LightAirTime(double clock, double speed, double phase)
 {
-  const double t = std::max(clock, 0.0) * std::max(speed, 0.0);
-  if (!std::isfinite(t))
+  const double p = std::max(clock, 0.0) * std::max(speed, 0.0);
+  if (!std::isfinite(p))
     return 0.0;
-  return std::fmod(t, kLightAirTimeWrap);
+  const double sum = p + (std::isfinite(phase) ? phase : 0.0);
+  if (!std::isfinite(sum) || sum <= 0.0)
+    return 0.0;
+  return std::fmod(sum, kLightAirTimeWrap);
 }
 
 float LightAirSeedOffset(int seed)
@@ -78,14 +87,14 @@ float LightAirSeedOffset(int seed)
 }
 
 bool LightAirAnimating(const LightAir& air, double pinned, bool playing,
-    bool geometry, bool grid)
+    bool geometry)
 {
   return air.dust > 0.0 && air.dustSpeed > 0.0 && !(pinned >= 0.0) &&
-         !playing && !grid && geometry;
+         !playing && geometry;
 }
 
 std::optional<LightAirBlock> LightAirPack(const LightAirSource& source,
-    double clock, int resolution, int shadowFilter)
+    double clock, int resolution, int shadowFilter, bool alpha, double phase)
 {
   const LightAir& air = source.air;
   if (!LightAirActive(air))
@@ -110,12 +119,15 @@ std::optional<LightAirBlock> LightAirPack(const LightAirSource& source,
   b.range[1] = float(farZ);
   b.range[2] = float(zc);
   b.range[3] = float(cell);
-  b.motion[0] = float(LightAirTime(clock, air.dustSpeed));
+  b.motion[0] = float(LightAirTime(clock, air.dustSpeed, phase));
   b.motion[1] = float(air.dustSize * kLightAirMoteCells * cell);
   b.motion[2] = float(kLightAirDefocus / s);
   b.motion[3] = float(shadowFilter == kLightAirLookup ? kLightAirLookup
                                                       : kLightAirOneTap);
   b.view[0] = resolution == kLightAirHalf ? 0.5f : 1.0f;
+  b.view[2] = alpha ? 1.0f : 0.0f;
+  b.mote[0] = float(std::clamp(air.dustGlow, 0.0, 4.0));
+  b.mote[1] = float(std::clamp(air.dustOpacity, 0.0, 1.0));
   return b;
 }
 

@@ -374,6 +374,60 @@ final class LightGizmoLayoutTests: XCTestCase {
         XCTAssertEqual(b.projection.sceneRect, CGRect(x: 100, y: 0, width: 600, height: 600))
         assertPoint(b.centre, CGPoint(x: 400, y: 300), accuracy: 1e-3)
     }
+
+    func testGridModeShowsTheGizmoInTheCellUnderThePointer() throws {
+        let (_, controller) = gizmoRig()
+
+        // with gridMode: true and no cell, make is nil (today's rule)
+        let inputsNoCell = LightGizmoInputs(controller: controller, viewSize: viewSize,
+                                            gridMode: true, gridCell: nil, sceneShadowsOn: true)
+        XCTAssertNil(LightGizmoLayout.make(inputsNoCell))
+
+        // with gridMode: true, gridCell: index 1 of a 2x1 grid over the 800x600 view
+        let cell0 = LightGizmoGridCell(columns: 2, rows: 1, index: 0)
+        let cell1 = LightGizmoGridCell(columns: 2, rows: 1, index: 1)
+        let inputs0 = LightGizmoInputs(controller: controller, viewSize: viewSize,
+                                       gridMode: true, gridCell: cell0, sceneShadowsOn: true)
+        let inputs1 = LightGizmoInputs(controller: controller, viewSize: viewSize,
+                                       gridMode: true, gridCell: cell1, sceneShadowsOn: true)
+
+        let l0 = try XCTUnwrap(LightGizmoLayout.make(inputs0))
+        let l1 = try XCTUnwrap(LightGizmoLayout.make(inputs1))
+
+        let rightHalf = CGRect(x: 400, y: 0, width: 400, height: 600)
+        XCTAssertTrue(rightHalf.contains(l1.centre), "centre lies inside CGRect(400,0,400,600)")
+        XCTAssertEqual(l1.centre.x, l0.centre.x + 400, accuracy: 1e-3)
+        XCTAssertEqual(l1.centre.y, l0.centre.y, accuracy: 1e-3)
+
+        // every knob centre is inside the right half
+        for knob in l1.knobs {
+            XCTAssertTrue(rightHalf.contains(knob.centre), "knob \(knob.name) inside right half: \(knob.centre)")
+        }
+    }
+
+    func testGridCellStaysWithTheDragItBegan() {
+        let ui = LightGizmoUIState()
+        let cellA = LightGizmoGridCell(columns: 2, rows: 1, index: 0)
+        let cellB = LightGizmoGridCell(columns: 2, rows: 1, index: 1)
+
+        XCTAssertTrue(ui.follow(cellA, held: false), "the gizmo moves into A")
+        XCTAssertEqual(ui.gridCell, cellA)
+        XCTAssertFalse(ui.follow(cellA, held: false), "already in A: a press there may hit it")
+
+        XCTAssertFalse(ui.follow(cellB, held: true))
+        XCTAssertEqual(ui.gridCell, cellA)
+
+        XCTAssertTrue(ui.follow(cellB, held: false))
+        XCTAssertEqual(ui.gridCell, cellB)
+
+        XCTAssertFalse(ui.follow(nil, held: false), "hiding is not a move into a cell")
+        XCTAssertNil(ui.gridCell)
+
+        ui.follow(cellA, held: false)
+        XCTAssertEqual(ui.gridCell, cellA)
+        ui.reset()
+        XCTAssertNil(ui.gridCell)
+    }
 }
 
 // MARK: - Hit test
@@ -1128,6 +1182,164 @@ final class LightGizmoPointerTests: XCTestCase {
                                             interaction: interaction), .gizmo)
         XCTAssertEqual(controller.selection.name, "fill")
         XCTAssertEqual(pointer.touchEnded(at: offset(fill, 0, 20), interaction: interaction), .gizmo)
+    }
+}
+
+// MARK: - Re-aim at the centre (#699)
+
+/// A double-click (macOS) or double-tap (iOS) on the selected light's aim dot
+/// runs one `lights <name>, aim=centre`; a single click, a drag, or a
+/// double-click anywhere else stays today's.
+@MainActor
+final class LightGizmoAimRecentreTests: XCTestCase {
+
+    /// key aims at a point off the centre.
+    private func aimedRig() -> (FakeRigStore, LightsController) {
+        gizmoRig { $0.lights[0].aimPoint = SIMD3(5, -3, 0) }
+    }
+
+    private func aimDot(_ l: LightGizmoLayout, file: StaticString = #filePath,
+                        line: UInt = #line) throws -> CGPoint {
+        let aim = try XCTUnwrap(l.selected?.aimDot, "no aim dot", file: file, line: line)
+        XCTAssertEqual(LightGizmoHitTest.target(at: aim, layout: l), .aimDot, file: file, line: line)
+        return aim
+    }
+
+    func testOnlyADoubleClickOnTheAimDotThatNeverDraggedRecentres() {
+        XCTAssertTrue(LightAimRecentre.onRelease(target: .aimDot, clickCount: 2, hasMoved: false))
+        XCTAssertTrue(LightAimRecentre.onRelease(target: .aimDot, clickCount: 3, hasMoved: false))
+        XCTAssertFalse(LightAimRecentre.onRelease(target: .aimDot, clickCount: 1, hasMoved: false))
+        XCTAssertFalse(LightAimRecentre.onRelease(target: .aimDot, clickCount: 2, hasMoved: true))
+        XCTAssertFalse(LightAimRecentre.onRelease(target: .knob("key"), clickCount: 2, hasMoved: false))
+        XCTAssertFalse(LightAimRecentre.onRelease(target: .outerHandle, clickCount: 2, hasMoved: false))
+        XCTAssertFalse(LightAimRecentre.onRelease(target: .innerRing, clickCount: 2, hasMoved: false))
+        XCTAssertFalse(LightAimRecentre.onRelease(target: nil, clickCount: 2, hasMoved: false))
+    }
+
+    func testADoubleClickOnTheAimDotRunsOneCommand() throws {
+        let (store, controller) = aimedRig()
+        XCTAssertEqual(controller.selectedLight?.aim, .point)
+        let l = try XCTUnwrap(layout(controller))
+        let aim = try aimDot(l)
+        let interaction = LightGizmoInteraction(controller: controller, picker: FakePicker().seam)
+        var pointer = LightGizmoPointer()
+        let numbers = store.numberWrites.count, vectors = store.vectorWrites.count
+        // The first click: as today, nothing written or run.
+        XCTAssertEqual(pointer.press(at: aim, option: false, layout: l, interaction: interaction), .gizmo)
+        XCTAssertEqual(pointer.release(at: aim, interaction: interaction), .gizmo)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertNil(pointer.lastRecentre)
+        // The second: one aim=centre command.
+        XCTAssertEqual(pointer.press(at: aim, option: false, layout: l, interaction: interaction,
+                                     clickCount: 2), .gizmo)
+        XCTAssertTrue(store.performed.isEmpty, "nothing at the press")
+        XCTAssertEqual(pointer.release(at: aim, interaction: interaction), .gizmo)
+        XCTAssertEqual(store.performed, [.aimAtCentre("key")])
+        XCTAssertEqual(pointer.lastRecentre, true)
+        XCTAssertEqual(controller.selectedLight?.aim, .centre)
+        XCTAssertEqual(store.numberWrites.count, numbers, "no bridge write")
+        XCTAssertEqual(store.vectorWrites.count, vectors, "no bridge write")
+    }
+
+    func testADoubleClickDragOnTheAimDotStillAims() throws {
+        let (store, controller) = aimedRig()
+        let l = try XCTUnwrap(layout(controller))
+        let aim = try aimDot(l)
+        let interaction = LightGizmoInteraction(controller: controller, picker: FakePicker().seam)
+        var pointer = LightGizmoPointer()
+        XCTAssertEqual(pointer.press(at: aim, option: false, layout: l, interaction: interaction,
+                                     clickCount: 2), .gizmo)
+        for dx in [10, 20, 30] as [CGFloat] {
+            XCTAssertEqual(pointer.drag(to: offset(aim, dx, 0), interaction: interaction), .gizmo)
+        }
+        XCTAssertEqual(pointer.release(at: offset(aim, 30, 0), interaction: interaction), .gizmo)
+        XCTAssertTrue(store.performed.isEmpty, "a drag is today's aim drag")
+        XCTAssertGreaterThan(store.vectorWrites.filter { $0.field == "aim_point" }.count, 0)
+        XCTAssertNil(pointer.lastRecentre)
+        XCTAssertEqual(controller.selectedLight?.aim, .point)
+    }
+
+    func testADoubleClickElsewhereRunsNothing() throws {
+        let (store, controller) = aimedRig()
+        let l = try XCTUnwrap(layout(controller))
+        let interaction = LightGizmoInteraction(controller: controller, picker: FakePicker().seam)
+        var pointer = LightGizmoPointer()
+        let fill = l.knobs[1].centre
+        XCTAssertEqual(pointer.press(at: fill, option: false, layout: l, interaction: interaction,
+                                     clickCount: 2), .gizmo)
+        XCTAssertEqual(pointer.release(at: fill, interaction: interaction), .gizmo)
+        XCTAssertEqual(controller.selection.name, "fill")
+        let empty = CGPoint(x: 5, y: 5)
+        XCTAssertEqual(pointer.press(at: empty, option: false, layout: l, interaction: interaction,
+                                     clickCount: 2), .camera)
+        XCTAssertEqual(pointer.release(at: empty, interaction: interaction), .camera)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertNil(pointer.lastRecentre)
+    }
+
+    func testAlreadyAimedAtTheCentreRunsNothing() throws {
+        let (store, controller) = gizmoRig()
+        XCTAssertEqual(controller.selectedLight?.aim, .centre)
+        let l = try XCTUnwrap(layout(controller))
+        let aim = try aimDot(l)
+        let interaction = LightGizmoInteraction(controller: controller, picker: FakePicker().seam)
+        var pointer = LightGizmoPointer()
+        XCTAssertEqual(pointer.press(at: aim, option: false, layout: l, interaction: interaction,
+                                     clickCount: 2), .gizmo)
+        XCTAssertEqual(pointer.release(at: aim, interaction: interaction), .gizmo)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertEqual(pointer.lastRecentre, false)
+    }
+
+    func testAnEndedSessionNeverRecentres() throws {
+        let (store, controller) = aimedRig()
+        let l = try XCTUnwrap(layout(controller))
+        let aim = try aimDot(l)
+        let interaction = LightGizmoInteraction(controller: controller, picker: FakePicker().seam)
+        var pointer = LightGizmoPointer()
+        XCTAssertEqual(pointer.press(at: aim, option: false, layout: l, interaction: interaction,
+                                     clickCount: 2), .gizmo)
+        pointer.endSession()   // Esc mid-press
+        XCTAssertEqual(pointer.release(at: aim, interaction: interaction), .gizmo)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertNil(pointer.lastRecentre)
+    }
+
+    func testInteractionRefusals() throws {
+        let (store, controller) = aimedRig()
+        let interaction = LightGizmoInteraction(controller: controller)
+        XCTAssertFalse(interaction.aimAtCentre(name: "fill"), "fill is not selected")
+        controller.end()
+        XCTAssertFalse(interaction.aimAtCentre(name: "key"), "not editable")
+        XCTAssertTrue(store.performed.isEmpty)
+    }
+
+    func testDoubleTapRecognition() {
+        let p = CGPoint(x: 100, y: 100)
+        var taps = LightAimDoubleTap()
+        XCTAssertFalse(taps.tap(on: .aimDot, light: "key", at: p, time: 0))
+        XCTAssertTrue(taps.tap(on: .aimDot, light: "key", at: offset(p, 3, 2), time: 0.2))
+        XCTAssertFalse(taps.tap(on: .aimDot, light: "key", at: p, time: 0.3), "a third tap starts over")
+        XCTAssertTrue(taps.tap(on: .aimDot, light: "key", at: p, time: 0.5))
+
+        func pair(_ a: (LightGizmoTarget?, String?, CGPoint, TimeInterval),
+                  _ b: (LightGizmoTarget?, String?, CGPoint, TimeInterval),
+                  between: (LightGizmoTarget?, CGPoint)? = nil) -> Bool {
+            var t = LightAimDoubleTap()
+            _ = t.tap(on: a.0, light: a.1, at: a.2, time: a.3)
+            if let between { _ = t.tap(on: between.0, light: "key", at: between.1, time: (a.3 + b.3) / 2) }
+            return t.tap(on: b.0, light: b.1, at: b.2, time: b.3)
+        }
+        XCTAssertFalse(pair((.aimDot, "key", p, 0), (.aimDot, "key", p, 0.5)), "too slow")
+        XCTAssertFalse(pair((.aimDot, "key", p, 0), (.aimDot, "key", offset(p, 40, 0), 0.1)), "too far")
+        XCTAssertFalse(pair((.aimDot, "key", p, 0), (.aimDot, "fill", p, 0.1)), "another light")
+        XCTAssertFalse(pair((.aimDot, "key", p, 0), (.aimDot, "key", p, 0.2), between: (nil, offset(p, 200, 0))),
+                       "a tap off the gizmo between")
+        XCTAssertFalse(pair((.aimDot, "key", p, 0), (.aimDot, "key", p, 0.2), between: (.outerHandle, p)),
+                       "a tap on a handle between")
+        XCTAssertFalse(pair((.aimDot, nil, p, 0), (.aimDot, nil, p, 0.1)), "no selected light")
+        XCTAssertFalse(pair((.knob("key"), "key", p, 0), (.knob("key"), "key", p, 0.1)), "a knob")
+        XCTAssertTrue(pair((.aimDot, "Key", p, 0), (.aimDot, "key", p, 0.1)), "names ignore case")
     }
 }
 

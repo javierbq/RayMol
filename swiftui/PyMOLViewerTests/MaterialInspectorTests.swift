@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import ImageIO
 @testable import RayMol
 
 /// The Inspector's OBJECT-wide material controls (#498): the peel tri-state
@@ -171,7 +172,7 @@ final class MaterialInspectorTests: XCTestCase {
     }
 
     /// The gate that keeps Custom off a layer that has degraded to `default`
-    /// (glass on spheres or ball-and-stick): knobs come from the DRAWN
+    /// (a material id from a newer build): knobs come from the DRAWN
     /// material, and only when it is the one the setting names.
     func testCustomIsOfferedOnlyForTheMaterialTheLayerDraws() {
         let rough = MaterialKnobInfo(suffix: "rough", label: "Roughness", min: 0, max: 1)
@@ -265,26 +266,19 @@ final class MaterialInspectorTests: XCTestCase {
         XCTAssertTrue(names.contains("metal_rt_reflect_samples"))
     }
 
-    func testTheSceneCatalogOffersBothMaterialRows() {
+    func testTheSceneCatalogOffersMaterialDefaultButNoEnvironmentRow() {
         let byName = Dictionary(uniqueKeysWithValues:
             SceneCatalog.params.map { ($0.setting, $0) })
         XCTAssertNotNil(byName["material_default"])
-        XCTAssertNotNil(byName["material_env"])
         XCTAssertEqual(byName["material_default"]?.kind, .menu)
-        XCTAssertEqual(byName["material_env"]?.kind, .menu)
+        XCTAssertNil(byName["material_env"])
     }
 
-    /// The trap the `materialSettings` set exists for: `material_default` holds
-    /// a material ID and takes the runtime table; `material_env` is an enum
-    /// over environments that merely sits next to it. Serving the material list
-    /// to it would offer "marble" as an environment and write a material id to
-    /// a setting that reads 0/1/2.
+    /// `SceneCatalog.materialSettings` lists `material_default`, which holds a
+    /// material ID and takes the runtime table, and excludes non-material settings.
     func testOnlyTheMaterialValuedSceneRowTakesTheMaterialTable() {
         XCTAssertTrue(SceneCatalog.materialSettings.contains("material_default"))
         XCTAssertFalse(SceneCatalog.materialSettings.contains("material_env"))
-        let env = SceneCatalog.params.first { $0.setting == "material_env" }
-        XCTAssertEqual(env?.options.map { $0.label }, ["background", "studio", "none"])
-        XCTAssertEqual(env?.options.map { Int($0.value) }, [0, 1, 2])
     }
 
     // The "is it in SCENE_SETTINGS" check that used to live here has been
@@ -295,4 +289,646 @@ final class MaterialInspectorTests: XCTestCase {
     // recurring shape: an assertion on a nearby observable that survives the
     // feature's death. The real check is Python-side and reads the list
     // itself: TestSceneMaterialRows.testTheSceneParamsArePolled.
+}
+
+/// Glass glints on sphere impostors (#713). The sphere OIT fragment used to
+/// fold glass's glints into the colour, and weighted-blended OIT scales a
+/// fragment's colour by its coverage -- glass's body coverage, 0.15 -- so the
+/// glints reached the screen at 15% of their strength: on surface dots the
+/// glints-on and glints-off renders differed by at most 7 levels. #833 gave
+/// the fragment the coverage split the VBO and cylinder paths have
+/// (mat_glass_cover / light_glass_cover): the body sits at its coverage and the
+/// glints go on top at full strength. These pin that.
+///
+/// Each test renders a red glass scene over black twice, glints on and off.
+/// A pure red body has no green or blue, and over black the room reflection
+/// adds none, so green and blue come from the (white) glints alone: the
+/// glints-off renders measure 0 in both. The `specular` setting is not the
+/// switch -- glass's glints are its own (mat_glass_shade) and ignore it -- so
+/// the classic glints are toggled the way the rig scales them, by its
+/// `classic` (1 vs 0) with every rig light dark, and a light's glint by its
+/// `highlight`.
+@MainActor
+final class SphereGlassGlintTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+    private let w = 400, h = 300
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('gg713')
+            for _n in globals().pop('_gg713_enabled', []):
+                _c.enable(_n)
+            _c.set('bg_rgb', globals().pop('_gg713_bg', [0.0, 0.0, 0.0]))
+            _c.set('ray_opaque_background', globals().pop('_gg713_ray_bg', 1))
+            _c.set_lights(globals().pop('_gg713_rig', None))
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+        // No export until the Metal renderer exists (a cold launch before the
+        // first live frame, #654): wait for it, as McpCaptureMetalTests does.
+        while !engine.metalRendererReady() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.metalRendererReady() else {
+            throw XCTSkip("no Metal renderer under the test host")
+        }
+    }
+
+    /// A red glass sphere -- or, with `dots`, a red glass dot surface, which
+    /// draws its dots as sphere impostors through the same fragment -- at the
+    /// centre of a black background, with no rig.
+    private func setupScene(dots: Bool) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        let rep = dots
+            ? """
+            _c.alter('gg713', 'vdw=1.5')
+            _c.set('surface_type', 1, 'gg713')
+            _c.set('dot_as_spheres', 1, 'gg713')
+            _c.show_as('surface', 'gg713')
+            _c.set('surface_material', 'glass', 'gg713')
+            """
+            : """
+            _c.alter('gg713', 'vdw=1.0')
+            _c.show_as('spheres', 'gg713')
+            _c.set('sphere_scale', 1.0, 'gg713')
+            _c.set('sphere_material', 'glass', 'gg713')
+            """
+        engine.runPython("""
+        from pymol import cmd as _c
+        _gg713_enabled = _c.get_names('objects', enabled_only=1)
+        _gg713_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _gg713_ray_bg = _c.get_setting_int('ray_opaque_background')
+        _gg713_rig = _c.get_lights()
+        for _n in _gg713_enabled:
+            _c.disable(_n)
+        _c.set_lights(None)
+        _c.pseudoatom('gg713', pos=[0.0, 0.0, 0.0])
+        \(rep)
+        _c.color('red', 'gg713')
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('ray_opaque_background', 1)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -\(dots ? "20.0" : "12.0"), 0.0, 0.0, 0.0, 5.0, 100.0, -20.0))
+        """)
+    }
+
+    /// One camera-anchored key light, framed on the scene explicitly (so it
+    /// sits well outside the dot surface), with the rig's classic and the
+    /// light's intensity and highlight as given.
+    private func setRig(classic: Double, intensity: Double, highlight: Double) {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights({'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 3.0,
+                       'classic': \(classic),
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0,
+                                   'pitch': 20.0, 'intensity': \(intensity),
+                                   'highlight': \(highlight)}]})
+        """)
+    }
+
+    private func render(_ tag: String) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "gg713_\(tag)_\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+                                   "no export written (\(tag))")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil),
+                                  "export unreadable (\(tag))")
+        guard image.width == w, image.height == h else {
+            XCTFail("export is \(image.width)x\(image.height), not \(w)x\(h) (\(tag))")
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// The largest green or blue difference between two renders -- the glints'
+    /// channels; red also carries the body, whose lighting the classic toggle
+    /// changes too -- and how many pixels have every channel >= `floor` in
+    /// `on` but not in `off`.
+    private func compare(_ on: [UInt8], _ off: [UInt8], floor: Int) -> (maxDelta: Int, onOnly: Int) {
+        var maxDelta = 0, onOnly = 0
+        for i in 0..<(w * h) {
+            var onBright = true, offBright = true
+            for c in 0..<3 {
+                let a = Int(on[i * 4 + c]), b = Int(off[i * 4 + c])
+                if c > 0 { maxDelta = max(maxDelta, abs(a - b)) }
+                if a < floor { onBright = false }
+                if b < floor { offBright = false }
+            }
+            if onBright && !offBright { onOnly += 1 }
+        }
+        return (maxDelta, onOnly)
+    }
+
+    /// PyMOL's own lights' glints (the key light and the headlight). They are
+    /// soft by design (glass's glints peak near 0.49, #590), so they are pinned
+    /// as visible, not white: >= 40 levels where the folded glints reached 7,
+    /// and a glint patch whose green and blue -- absent from the red body --
+    /// both clear 60. Also checked without a rig, the classic pipeline proper.
+    private func assertClassicGlints(dots: Bool) throws {
+        let what = dots ? "glass dots" : "glass sphere"
+        setRig(classic: 0.0, intensity: 0.0, highlight: 0.0)
+        let off = try render("c0")
+        setRig(classic: 1.0, intensity: 0.0, highlight: 0.0)
+        let onRig = try render("c1")
+        engine.runPython("from pymol import cmd as _c\n_c.set_lights(None)")
+        let onClassic = try render("norig")
+        // Glass's body is 85% see-through, so over black it stays dark: no
+        // bright, glint-free red. An opaque red sphere fills its disc with it
+        // (before #833 -- and #635 -- a glass sphere drew as `default`).
+        var opaqueRed = 0
+        for i in stride(from: 0, to: onClassic.count, by: 4)
+            where onClassic[i] >= 150 && onClassic[i + 1] < 40 && onClassic[i + 2] < 40 {
+            opaqueRed += 1
+        }
+        print("713-body \(what) opaque red pixels: \(opaqueRed)")
+        XCTAssertLessThan(opaqueRed, 50, "\(what) should draw as glass, not as an opaque red body")
+        for (name, on) in [("rig classic 1", onRig), ("no rig", onClassic)] {
+            let r = compare(on, off, floor: 60)
+            print("713-classic \(what) \(name) vs classic 0: \(r)")
+            XCTAssertGreaterThanOrEqual(r.maxDelta, 40,
+                "\(what), \(name): the classic glints should move a pixel >= 40 levels (#713)")
+            XCTAssertGreaterThanOrEqual(r.onOnly, 10,
+                "\(what), \(name): the classic glints should leave a patch with green and blue >= 60 (#713)")
+        }
+    }
+
+    /// A studio light's glint at full highlight: sharp and near white.
+    private func assertKeyLightGlint(dots: Bool) throws {
+        let what = dots ? "glass dots" : "glass sphere"
+        setRig(classic: 0.0, intensity: 1.0, highlight: 0.0)
+        let off = try render("hi0")
+        setRig(classic: 0.0, intensity: 1.0, highlight: 1.0)
+        let on = try render("hi1")
+        let r = compare(on, off, floor: 200)
+        print("713-key \(what) highlight 1 vs 0: \(r)")
+        XCTAssertGreaterThanOrEqual(r.maxDelta, 40,
+            "\(what): the key light's glint should move a pixel >= 40 levels (#713)")
+        XCTAssertGreaterThanOrEqual(r.onOnly, 10,
+            "\(what): the key light's glint should be near white (every channel >= 200) (#713)")
+    }
+
+    func testClassicGlintsShowOnAGlassSphere() throws {
+        try requireEngine()
+        setupScene(dots: false)
+        try assertClassicGlints(dots: false)
+    }
+
+    func testStudioKeyLightGlintShowsOnAGlassSphere() throws {
+        try requireEngine()
+        setupScene(dots: false)
+        try assertKeyLightGlint(dots: false)
+    }
+
+    /// The case #713 was measured on: surface dots in glass, drawn as sphere
+    /// impostors through the same OIT fragment.
+    func testGlintsShowOnGlassSurfaceDots() throws {
+        try requireEngine()
+        setupScene(dots: true)
+        try assertClassicGlints(dots: true)
+        try assertKeyLightGlint(dots: true)
+    }
+}
+
+/// Glass and frosted glass on ball-and-stick spheres (issue #834). The same
+/// scene as `SphereGlassRenderTests`, but the red 1 A ball at the centre is a
+/// `stick_ball` of a stick rep (radius = ratio 20 x stick_radius 0.05); the
+/// thin stick runs off to the right through a sliver of the centre box.
+@MainActor
+final class StickBallGlassRenderTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('sb834')
+            _c.set('bg_rgb', globals().pop('_sb834_bg', [0.0, 0.0, 0.0]))
+            _c.set('ray_opaque_background', globals().pop('_sb834_ray_bg', 1))
+            for _n in globals().pop('_sb834_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func setupScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sb834_enabled = _c.get_names('objects', enabled_only=1)
+        _sb834_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _sb834_ray_bg = _c.get_setting_int('ray_opaque_background')
+        for _n in _sb834_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('sb834', name='A1', pos=[0.0, 0.0, 0.0])
+        _c.pseudoatom('sb834', name='A2', pos=[3.5, 0.0, 0.0])
+        _c.bond('sb834 and name A1', 'sb834 and name A2')
+        _c.show_as('sticks', 'sb834')
+        _c.color('red', 'sb834')
+        _c.set('stick_radius', 0.05, 'sb834')
+        _c.set('stick_ball', 1, 'sb834')
+        _c.set('stick_ball_ratio', 20.0, 'sb834')
+        _c.set('bg_rgb', [0.0, 0.0, 1.0])
+        _c.set('ray_opaque_background', 1)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -12.0, 0.0, 0.0, 0.0, 5.0, 100.0, -20.0))
+        """)
+    }
+
+    private func render(_ material: String) throws -> [UInt8] {
+        let w = 400, h = 300
+        engine.runPython("from pymol import cmd as _c\n_c.set('stick_material', '\(material)', 'sb834')")
+        let png = NSTemporaryDirectory() + "sb834_\(material)_\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            XCTFail("no export written (\(material))")
+            return []
+        }
+        XCTAssertEqual(image.width, w)
+        XCTAssertEqual(image.height, h)
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// Mean RGB over the 40x40 box at the image centre.
+    private func centreBoxMeans(_ rgba: [UInt8]) -> (r: Double, g: Double, b: Double) {
+        boxMeans(rgba, x0: 180, y0: 130, size: 40)
+    }
+
+    /// Mean RGB over the `size` x `size` box with top-left corner `x0`, `y0`
+    /// in a 400x300 image.
+    private func boxMeans(_ rgba: [UInt8], x0: Int, y0: Int, size: Int,
+                          width: Int = 400) -> (r: Double, g: Double, b: Double) {
+        var sumR = 0.0, sumG = 0.0, sumB = 0.0
+        for y in y0..<(y0 + size) {
+            for x in x0..<(x0 + size) {
+                let idx = (y * width + x) * 4
+                sumR += Double(rgba[idx])
+                sumG += Double(rgba[idx + 1])
+                sumB += Double(rgba[idx + 2])
+            }
+        }
+        let total = Double(size * size)
+        return (sumR / total, sumG / total, sumB / total)
+    }
+
+    func testGlassStickBallShowsTheBackgroundThrough() throws {
+        try requireEngine()
+        setupScene()
+
+        let defPixels = try render("default")
+        let defMeans = centreBoxMeans(defPixels)
+        XCTAssertLessThan(defMeans.b, 40, "default centre box mean B should be < 40")
+        XCTAssertGreaterThan(defMeans.r, 120, "default centre box mean R should be > 120")
+
+        let glassPixels = try render("glass")
+        let glassMeans = centreBoxMeans(glassPixels)
+        print("834-centre default \(defMeans) glass \(glassMeans)")
+        XCTAssertGreaterThanOrEqual(glassMeans.b, defMeans.b + 80, "glass centre box mean B should be >= default B + 80")
+        XCTAssertGreaterThan(glassMeans.b, glassMeans.r, "glass centre box mean B should exceed mean R")
+    }
+
+    func testFrostedGlassStickBallDiffersFromClearGlass() throws {
+        try requireEngine()
+        setupScene()
+
+        let clear = try render("glass")
+        let frost = try render("frosted_glass")
+        let totalPixels = 400 * 300
+        var diffCount = 0
+        for i in 0..<totalPixels {
+            let dr = abs(Int(clear[i * 4]) - Int(frost[i * 4]))
+            let dg = abs(Int(clear[i * 4 + 1]) - Int(frost[i * 4 + 1]))
+            let db = abs(Int(clear[i * 4 + 2]) - Int(frost[i * 4 + 2]))
+            let maxDiff = max(dr, max(dg, db))
+            if maxDiff > 6 {
+                diffCount += 1
+            }
+        }
+        print("834-frost-diff \(diffCount)")
+        XCTAssertGreaterThan(diffCount, 1000, "frosted glass should differ from clear glass in > 1000 pixels")
+    }
+
+    /// Mean RGB over a 20x20 box 20 px right of and below the image centre:
+    /// inside the ball but clear of the sticks along the axes.
+    private func offAxisBoxMeans(_ rgba: [UInt8]) -> (r: Double, g: Double, b: Double) {
+        boxMeans(rgba, x0: 220, y0: 170, size: 20)
+    }
+
+    /// Gives the centre atom A1 three more bonds (four in all), in the image
+    /// plane, so RepCylBond meets its ball once per bond.
+    private func addThreeBondsToTheCentre() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        for _i, _p in enumerate(([-3.5, 0.0, 0.0], [0.0, 3.5, 0.0], [0.0, -3.5, 0.0])):
+            _c.pseudoatom('sb834', name='E%d' % _i, pos=_p)
+            _c.bond('sb834 and name A1', 'sb834 and name E%d' % _i)
+        _c.show_as('sticks', 'sb834')
+        _c.color('red', 'sb834')
+        """)
+    }
+
+    /// RepCylBond emits an atom's ball once per bond and skipped a repeat only
+    /// when it was strictly smaller, so an atom with four bonds drew four
+    /// coincident glass balls: under OIT they stack to about 1 - 0.85^4, half
+    /// opaque, where a one-bond atom's ball is 15%. A glass ball has to look
+    /// the same whatever its bond count.
+    func testAGlassBallLooksTheSameWhateverItsBondCount() throws {
+        try requireEngine()
+        setupScene()
+
+        let one = offAxisBoxMeans(try render("glass"))
+        addThreeBondsToTheCentre()
+        let four = offAxisBoxMeans(try render("glass"))
+        print("834-bonds one \(one) four \(four)")
+        XCTAssertGreaterThan(one.b, one.r, "the one-bond glass ball shows the background")
+        XCTAssertEqual(four.r, one.r, accuracy: 8, "a four-bond ball is no redder")
+        XCTAssertEqual(four.b, one.b, accuracy: 8, "a four-bond ball is no less clear")
+    }
+
+    /// The printed hashes are compared by hand against the same test run on a
+    /// master core (see the PR); they are not pinned here, because the exact
+    /// bytes depend on the GPU. Jelly is hashed with one bond only: it is
+    /// translucent, so its four-bond ball changes on purpose (one ball, not
+    /// four stacked).
+    func testNonGlassStickBallsAreUnchanged() throws {
+        try requireEngine()
+        setupScene()
+
+        // One bond on the centre atom, then four: the four-bond scene covers
+        // the opaque balls RepCylBond no longer emits twice (#834).
+        for bonds in [1, 4] {
+            if bonds == 4 { addThreeBondsToTheCentre() }
+            var firstDefault: [UInt8] = []
+            let opaque = ["default", "matte", "plastic", "metallic"]
+            for name in bonds == 1 ? opaque + ["jelly"] : opaque {
+                let px = try render(name)
+                if name == "default" {
+                    firstDefault = px
+                }
+                var hash: UInt64 = 0xcbf29ce484222325
+                for byte in px { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+                print("834-hash \(bonds)-bond \(name) \(String(hash, radix: 16))")
+            }
+
+            _ = try render("glass")
+            let secondDefault = try render("default")
+            XCTAssertEqual(firstDefault, secondDefault, "second default render must be byte-identical to first default render (\(bonds) bonds)")
+        }
+    }
+}
+
+/// Under the studio light rig, the rig's diffuse lights the procedural
+/// material's albedo, not the raw base colour (#710). Marble's veins, the grain
+/// of matte, clay, and rubber, and clay's grazing-edge darkening stay visible
+/// under a rig at classic 0 instead of fading away.
+///
+/// Tested against a control render of the SAME material with its procedural knobs
+/// zeroed out (vein contrast for marble; grain amplitude and edge darkening for
+/// clay), preserving the material's studio light response (such as marble's wrap)
+/// while isolating the procedural pattern. Before the fix the two renders
+/// differed by at most 5 levels (the classic ambient's share of the pattern):
+/// marble moved no pixel by 30 and clay none by 12.
+@MainActor
+final class StudioRigAlbedoTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+    private let w = 400, h = 300
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('ra710')
+            for _n in globals().pop('_ra710_enabled', []):
+                _c.enable(_n)
+            _c.set('bg_rgb', globals().pop('_ra710_bg', [0.0, 0.0, 0.0]))
+            _c.set('ray_opaque_background', globals().pop('_ra710_ray_bg', 1))
+            _c.set_lights(globals().pop('_ra710_rig', None))
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+        while !engine.metalRendererReady() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.metalRendererReady() else {
+            throw XCTSkip("no Metal renderer under the test host")
+        }
+    }
+
+    private func setupScene(rep: String, material: String) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        let repSetup = rep == "sphere"
+            ? """
+            _c.show_as('spheres', 'ra710')
+            _c.set('sphere_scale', 1.0, 'ra710')
+            _c.set('sphere_material', '\(material)', 'ra710')
+            """
+            : """
+            _c.show_as('surface', 'ra710')
+            _c.set('surface_material', '\(material)', 'ra710')
+            """
+        engine.runPython("""
+        from pymol import cmd as _c
+        _ra710_enabled = _c.get_names('objects', enabled_only=1)
+        _ra710_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _ra710_ray_bg = _c.get_setting_int('ray_opaque_background')
+        _ra710_rig = _c.get_lights()
+        for _n in _ra710_enabled:
+            _c.disable(_n)
+        _c.delete('ra710')
+        _c.pseudoatom('ra710', pos=[0.0, 0.0, 0.0])
+        _c.alter('ra710', 'vdw=5.0')
+        _c.color('grey80', 'ra710')
+        \(repSetup)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('ray_opaque_background', 1)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 20.0, 60.0, -20.0))
+        """)
+    }
+
+    private func setRig(orbit: Double, pitch: Double) {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights({'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 10.0, 'classic': 0.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': \(orbit), 'pitch': \(pitch),
+                                   'intensity': 1.0, 'highlight': 0.0}]})
+        """)
+    }
+
+    private func render(_ tag: String) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "ra710_\(tag)_\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+                                   "no export written (\(tag))")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil),
+                                  "export unreadable (\(tag))")
+        guard image.width == w, image.height == h else {
+            XCTFail("export is \(image.width)x\(image.height), not \(w)x\(h) (\(tag))")
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func measure(_ patterned: [UInt8], _ control: [UInt8], threshold: Int, caseName: String = #function) {
+        var lit = 0
+        var moved = 0
+        var maxDelta = 0
+        for i in 0..<(w * h) {
+            let cr = Int(control[i * 4])
+            let cg = Int(control[i * 4 + 1])
+            let cb = Int(control[i * 4 + 2])
+            let cMax = max(cr, max(cg, cb))
+            if cMax >= 20 {
+                lit += 1
+                let pr = Int(patterned[i * 4])
+                let pg = Int(patterned[i * 4 + 1])
+                let pb = Int(patterned[i * 4 + 2])
+                let delta = max(abs(pr - cr), max(abs(pg - cg), abs(pb - cb)))
+                maxDelta = max(maxDelta, delta)
+                if delta >= threshold {
+                    moved += 1
+                }
+            }
+        }
+        let fraction = lit > 0 ? Double(moved) / Double(lit) : 0.0
+        print("710-\(caseName): lit=\(lit) moved=\(moved) fraction=\(fraction) maxDelta=\(maxDelta)")
+        XCTAssertGreaterThanOrEqual(lit, 2000, "710-\(caseName): scene should be lit (#710)")
+        XCTAssertGreaterThanOrEqual(fraction, 0.02,
+            "710-\(caseName): procedural pattern albedo should show under the studio rig (#710)")
+    }
+
+    func testMarbleVeinsShowUnderTheRigOnSpheres() throws {
+        try requireEngine()
+        setupScene(rep: "sphere", material: "marble")
+        setRig(orbit: -30.0, pitch: 20.0)
+        let patterned = try render("marble_spheres_pattern")
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('sphere_material_knob5', 0.0, 'ra710')
+        """)
+        let control = try render("marble_spheres_control")
+        measure(patterned, control, threshold: 30, caseName: "marble-spheres")
+    }
+
+    func testMarbleVeinsShowUnderTheRigOnASurface() throws {
+        try requireEngine()
+        setupScene(rep: "surface", material: "marble")
+        setRig(orbit: -30.0, pitch: 20.0)
+        let patterned = try render("marble_surface_pattern")
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('surface_material_knob5', 0.0, 'ra710')
+        """)
+        let control = try render("marble_surface_control")
+        measure(patterned, control, threshold: 30, caseName: "marble-surface")
+    }
+
+    func testClayGrainAndEdgeShowUnderTheRigOnSpheres() throws {
+        try requireEngine()
+        setupScene(rep: "sphere", material: "clay")
+        setRig(orbit: -60.0, pitch: 20.0)
+        let patterned = try render("clay_spheres_pattern")
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('sphere_material_knob1', 0.0, 'ra710')
+        _c.set('sphere_material_knob3', 0.0, 'ra710')
+        """)
+        let control = try render("clay_spheres_control")
+        // Clay's pattern is subtler than marble's veins: grain of 0.10 and an
+        // edge darkening that peaks where the light already grazes. Measured
+        // at 6.5% of lit pixels moving >= 12 levels with the fix; on master
+        // no pixel moves more than 3. A brighter light does not help: the
+        // tone knee compresses the difference.
+        measure(patterned, control, threshold: 12, caseName: "clay-spheres")
+    }
 }

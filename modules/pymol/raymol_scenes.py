@@ -304,12 +304,11 @@ def preserved(_self=cmd):
     (#508, #617). Nests.
 
     For code that has to DISPLAY movie frames only to read something off them
-    -- appkit_movie._scene_keyframes scrubs every frame to find the scene cuts
-    -- because displaying a frame runs its authored commands: each scene
-    keyframe's enter_scene and each interpolated `set`. Without this, building
-    a movie left the live session carrying whatever the last scrubbed frame
-    applied. Restored through the same conditional writes as a recall, so an
-    unchanged value costs nothing."""
+    because displaying a frame runs its authored commands: each scene
+    keyframe's enter_scene and each interpolated `set`. Without this,
+    displaying frames leaves the live session carrying whatever the last
+    displayed frame applied. Restored through the same conditional writes as a
+    recall, so an unchanged value costs nothing."""
     return _Preserved(_self)
 
 
@@ -721,15 +720,17 @@ def _warn_lights(name, text):
         pass
 
 
-def _apply_lights_target(target, _self=cmd, report=None):
+def _apply_lights_target(target, _self=cmd, report=None, recall=False):
     """Make the rig match a scene entry, writing only what changes.
 
     None: nothing (an older scene). 'off': a live, enabled rig is disabled
     (its lights are kept); no rig stays no rig. A dict: the rig is replaced
-    with lighting.set_lights, only when it differs from get_lights(). A
-    failure (a hand-edited or newer rig) leaves the rig as it was and warns
-    once for scene `report`, so a movie that applies it every frame prints one
-    line, not one per frame."""
+    with lighting.set_lights only when it differs from get_lights(); with
+    recall=True it goes to lighting._lights_recall, which writes nothing when
+    the rig already matches and otherwise blends while the recall's camera
+    animation runs (#661). A failure (a hand-edited or newer rig)
+    leaves the rig as it was and warns once for scene `report`, so a movie
+    that applies it every frame prints one line, not one per frame."""
     if target is None:
         return
     try:
@@ -739,20 +740,25 @@ def _apply_lights_target(target, _self=cmd, report=None):
             if isinstance(live, dict) and live.get('enabled'):
                 lighting._light_set(-1, 'enabled', 0, _self=_self)
         elif isinstance(target, dict):
-            if live != target:
+            if recall:
+                # Always through the core, even when the rig already matches:
+                # it drops a blend from an earlier recall that is still
+                # heading to another scene's rig (and writes nothing else).
+                lighting._lights_recall(target, _self=_self)
+            elif live != target:
                 lighting.set_lights(target, _self=_self)
     except Exception as exc:
         _warn_lights(report, 'light rig of scene "%s" could not be restored: %s'
                      % (report, exc))
 
 
-def apply_lights(name, _self=cmd):
+def apply_lights(name, _self=cmd, recall=False):
     """Apply scene `name`'s stored rig (recall, and the movie animator at a
-    scene keyframe). A scene with no entry does nothing and never touches
-    pymol.lighting."""
+    scene keyframe; recall blends while the camera animation runs, #661).
+    A scene with no entry does nothing and never touches pymol.lighting."""
     if name not in _scene_lights:
         return
-    _apply_lights_target(_scene_lights[name], _self, report=name)
+    _apply_lights_target(_scene_lights[name], _self, report=name, recall=recall)
 
 
 def scene_lights(name):
@@ -791,21 +797,23 @@ def snapshot_current(_self=cmd):
     return name
 
 
-def apply(name, _self=cmd):
+def apply(name, _self=cmd, recall=False):
     """Re-apply scene `name`'s captured render settings, per-object TTT,
-    autofocus target and light rig."""
+    autofocus target and light rig (recall blends the rig while the camera
+    animates, #661)."""
     apply_settings(name, _self)
     # After the globals: a per-object override has to win over the fallback the
     # same recall just wrote.
     _apply_object_settings(name, _self)
     _apply_ttt(name, _self)
     _apply_focus(name, _self)
-    apply_lights(name, _self)
+    apply_lights(name, _self, recall=recall)
 
 
-def apply_current(_self=cmd):
-    """Apply the now-current scene's settings (after prev/next navigation)."""
-    apply(_current(_self), _self)
+def apply_current(_self=cmd, recall=False):
+    """Apply the now-current scene's settings (after prev/next navigation;
+    recall blends the rig while the camera animates, #661)."""
+    apply(_current(_self), _self, recall=recall)
 
 
 def prune(_self=cmd):
@@ -872,6 +880,24 @@ def rename(old, new, _self=cmd):
         _scene_lights[new] = _scene_lights.pop(old)
 
 
+def _emit_rename(old, new):
+    """Tell the app a scene was renamed (#655): `SCENERENAME:<b64 old>:<b64
+    new>` on the feedback stream, so the Timeline re-keys its scene items for
+    console, Python and MCP renames too. Base64 because names may hold any
+    character. pcatch when embedded (a stdout capture cannot swallow it, as
+    movie_exporting._emit); a plain print otherwise."""
+    if not old or not new or old == new:
+        return
+    import base64
+    b = lambda v: base64.b64encode(v.encode('utf-8')).decode('ascii')
+    line = 'SCENERENAME:%s:%s' % (b(old), b(new))
+    try:
+        import pcatch
+        pcatch.write(line + '\n')
+    except ImportError:
+        print(line)
+
+
 def on_scene_action(key, action, new_key=None, _self=cmd):
     """Central hook called from cmd.scene AFTER the native op completes. `action`
     is already normalized by cmd.scene (update/append -> store, clear -> delete,
@@ -881,7 +907,7 @@ def on_scene_action(key, action, new_key=None, _self=cmd):
     if action in ('store', 'insert_after', 'insert_before'):
         snapshot_current(_self)
     elif action in ('recall', 'next', 'previous'):
-        apply_current(_self)
+        apply_current(_self, recall=True)
     elif action == 'delete':
         if key == '*':
             clear_all(_self)
@@ -889,6 +915,17 @@ def on_scene_action(key, action, new_key=None, _self=cmd):
             prune(_self)
     elif action == 'rename':
         rename(key, new_key, _self)
+        try:
+            from pymol import raymol_scene_anim as _anim
+            _anim.rename_scene(key, new_key, _self)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+        try:
+            from pymol import appkit_movie as _am
+            _am.rename_scene(key, new_key)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+        _emit_rename(key, new_key)
 
 
 # --- .pse persistence (registered in cmd._deferred_init_pymol_internals) ---

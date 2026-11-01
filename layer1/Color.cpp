@@ -32,6 +32,9 @@ Z* -------------------------------------------------------------------
 #include"Scene.h"
 #include "Feedback.h"
 
+#include <algorithm>
+#include <cmath>
+
 static int AutoColor[] = {
   26,                           /* carbon */
   5,                            /* cyan */
@@ -137,16 +140,64 @@ unsigned int ColorGet32BitWord(PyMOLGlobals * G, const float *rgba)
   return result;
 }
 
+// Issue #392: an automatic carbon colour must stay distinguishable from the
+// background. A swatch whose every channel is within this distance of the
+// background colour (e.g. `hydrogen` 0.9 grey on a white background) is
+// skipped by ColorGetNext. 0.3 skips hydrogen, grey70, lightpink and
+// bluewhite on white (plus wheat on Dawn's off-white) and nothing on black.
+static const float AutoColorMinBkrdDistance = 0.3F;
+
+static bool AutoColorContrastsWith(PyMOLGlobals * G, int color, const float *bg)
+{
+  const float *rgb = ColorGet(G, color);
+  float d = 0.0F;
+  for (int a = 0; a < 3; a++)
+    d = std::max(d, (float) fabs(rgb[a] - bg[a]));
+  return d >= AutoColorMinBkrdDistance;
+}
+
+/*
+ * Issue #392: pick the next auto-colour swatch that maintains a minimum
+ * contrast with the viewport background, skipping pale swatches on light
+ * backgrounds.
+ */
 int ColorGetNext(PyMOLGlobals * G)
 {
-  int result;
-  int next;
-  next = SettingGetGlobal_i(G, cSetting_auto_color_next);
+  int next = SettingGetGlobal_i(G, cSetting_auto_color_next);
 
-  if(next >= nAutoColor)
+  if(next >= nAutoColor || next < 0)
     next = 0;
-  result = AutoColor[next];
-  next++;
+
+  // The background the viewport actually shows, resolved exactly as
+  // ColorUpdateFrontFromSettings does: the average of the gradient's top and
+  // bottom when bg_gradient is on; black (so nothing is skipped) under a
+  // background image; else bg_rgb. Copied out of ColorGet's scratch buffer
+  // (#542) before any swatch lookup.
+  float bg[3] = {0.0F, 0.0F, 0.0F};
+  const char *bg_image_filename =
+      SettingGet_s(G, nullptr, nullptr, cSetting_bg_image_filename);
+  bool bg_image = (bg_image_filename && bg_image_filename[0]) ||
+                  OrthoBackgroundDataIsSet(*G->Ortho);
+  if (SettingGet_b(G, nullptr, nullptr, cSetting_bg_gradient)) {
+    float bottom[3];
+    copy3f(ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb_bottom)), bottom);
+    const float *top = ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb_top));
+    average3f(bottom, top, bg);
+  } else if (!bg_image) {
+    copy3f(ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb)), bg);
+  }
+
+  int chosen = next;
+  for(int i = 0; i < nAutoColor; i++) {
+    int candidate = (next + i) % nAutoColor;
+    if(AutoColorContrastsWith(G, AutoColor[candidate], bg)) {
+      chosen = candidate;
+      break;
+    }
+  }
+
+  int result = AutoColor[chosen];
+  next = chosen + 1;
   if(next >= nAutoColor)
     next = 0;
   SettingSetGlobal_i(G, cSetting_auto_color_next, next);

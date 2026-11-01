@@ -312,6 +312,36 @@ final class LightGizmoUIStateTests: XCTestCase {
         XCTAssertEqual(ui.readout, l.readout(for: .outerRing))
     }
 
+    /// A drag records its pointer (the readout sits beside it, #703); no
+    /// drag, an ended one and a radius readout record none.
+    func testTrackRecordsThePointer() throws {
+        let (_, controller) = viewController()
+        let l = try XCTUnwrap(viewLayout(controller))
+        let key = try XCTUnwrap(l.knob(named: "key"))
+        let session = try XCTUnwrap(LightGizmoInteraction(controller: controller).press(at: key.centre, layout: l))
+        let ui = LightGizmoUIState()
+        let p = CGPoint(x: 10, y: 20)
+        ui.track(session, layout: l, pointer: p)
+        XCTAssertEqual(ui.pointer, p)
+        ui.track(session, layout: l)
+        XCTAssertNil(ui.pointer)
+        ui.track(session, layout: l, pointer: p)
+        ui.track(nil, layout: l, pointer: p)
+        XCTAssertNil(ui.pointer, "no drag, no pointer")
+        ui.track(session, layout: l, pointer: p)
+        ui.showRadius(of: "fill", layout: l)
+        XCTAssertNil(ui.pointer, "a radius readout keeps its place beside the knob")
+
+        let changes = LightsChangeCounter()
+        let watch = ui.objectWillChange.sink { _ in changes.count += 1 }
+        defer { watch.cancel() }
+        ui.track(session, layout: l, pointer: p)
+        ui.track(session, layout: l, pointer: p)
+        XCTAssertEqual(changes.count, 1, "the same pointer publishes once")
+        ui.track(session, layout: l, pointer: CGPoint(x: 11, y: 20))
+        XCTAssertEqual(changes.count, 2, "a moved pointer publishes")
+    }
+
     func testShowRadius() throws {
         let (_, controller) = viewController()
         let l = try XCTUnwrap(viewLayout(controller))
@@ -367,6 +397,38 @@ final class LightGizmoOverlayTests: XCTestCase {
         let h = OffscreenHost(view, size: size)
         hosts.append(h)
         return h
+    }
+
+    /// #693: the macOS Lights bar, laid out at the top of the viewport,
+    /// publishes its rendered height as the gizmo's top chrome inset, and
+    /// publishes it again when Lights mode ends (a reset) and returns.
+    func testLightsBarPublishesItsHeightAsTheTopInset() throws {
+        let (_, controller) = viewController()
+        let ui = LightGizmoUIState()
+        let bar = LightsBar(controller: controller, style: viewStyle, onDone: {})
+        let expected = NSHostingView(rootView: bar.frame(width: viewTestSize.width)).fittingSize.height
+        XCTAssertGreaterThan(expected, 0)
+        let overlay = VStack(spacing: 8) {
+            bar.lightGizmoTopChrome(ui)
+            Spacer()
+        }
+        .frame(width: viewTestSize.width, height: viewTestSize.height)
+
+        let first = host(overlay)
+        XCTAssertEqual(ui.chromeInsets.top, expected, accuracy: 1)
+        XCTAssertEqual(ui.chromeInsets.left, 0)
+        XCTAssertEqual(ui.chromeInsets.bottom, 0)
+        XCTAssertEqual(ui.chromeInsets.right, 0)
+
+        // Leave the mode: the bar goes away and the state resets.
+        first.window.contentView = NSView()
+        first.settle()
+        ui.reset()
+        XCTAssertEqual(ui.chromeInsets, .zero)
+
+        // Enter it again: the new bar publishes its height again.
+        _ = host(overlay)
+        XCTAssertEqual(ui.chromeInsets.top, expected, accuracy: 1)
     }
 
     /// Drawn only while the gizmo shows: in Lights mode with lights and eye
@@ -842,7 +904,7 @@ private struct GizmoHitRegions: View {
                     let colour: Color
                     switch LightGizmoHitTest.target(at: CGPoint(x: x + 1, y: y + 1), layout: layout) {
                     case .knob(let name)?:
-                        colour = LightPalette.color(layout.knob(named: name)?.slot ?? 0)
+                        colour = layout.knob(named: name)?.marker.fillColor ?? .white
                     case .aimDot?: colour = .white
                     case .outerHandle?, .innerHandle?: colour = .yellow
                     case .outerRing?, .innerRing?: colour = .cyan
@@ -1016,5 +1078,53 @@ final class LightGizmoCompositeTests: XCTestCase {
         XCTAssertTrue(widened.allSatisfy { $0 == .ok })
         XCTAssertGreaterThan(try XCTUnwrap(controller.value(.beam)), beamBefore, "the beam widened")
         try composite("03_after_beam_drag")
+    }
+}
+
+// MARK: - Readout placement (#703)
+
+/// The readout during a drag: beside the pointer, flipped near the edges,
+/// kept inside the view and its chrome insets.
+final class LightGizmoReadoutPlacementTests: XCTestCase {
+    private let view = CGSize(width: 800, height: 600)
+    private let box = CGSize(width: 120, height: 20)
+
+    private func origin(_ x: CGFloat, _ y: CGFloat, insets: LightGizmoInsets = .zero,
+                        view: CGSize? = nil) -> CGPoint {
+        LightGizmoReadoutPlacement.origin(pointer: CGPoint(x: x, y: y), box: box,
+                                          viewSize: view ?? self.view, insets: insets)
+    }
+
+    func testNormalCaseSitsRightOfAndAbovePointer() {
+        XCTAssertEqual(origin(400, 300), CGPoint(x: 414, y: 266))
+    }
+
+    func testNearTheRightEdgeFlipsLeft() {
+        let o = origin(760, 300)
+        XCTAssertEqual(o, CGPoint(x: 760 - 14 - 120, y: 266))
+        XCTAssertLessThanOrEqual(o.x + box.width, view.width - 8)
+    }
+
+    func testNearTheTopFlipsBelow() {
+        XCTAssertEqual(origin(400, 10), CGPoint(x: 414, y: 24))
+        // Under the macOS Lights bar: below the pointer, not under the bar.
+        let o = origin(400, 60, insets: LightGizmoInsets(top: 52))
+        XCTAssertEqual(o.y, 74)
+        XCTAssertGreaterThanOrEqual(o.y, 52 + 8)
+    }
+
+    func testNearTheBottomStaysAboveAndInside() {
+        XCTAssertEqual(origin(400, 598).y, 564, "above the pointer")
+        let o = origin(400, 590, insets: LightGizmoInsets(bottom: 40))
+        XCTAssertEqual(o.y, 600 - 40 - 8 - 20)
+        XCTAssertLessThanOrEqual(o.y + box.height, 552)
+    }
+
+    func testTopRightCornerFlipsBoth() {
+        XCTAssertEqual(origin(790, 5), CGPoint(x: 656, y: 19))
+    }
+
+    func testTinyViewPinsToTheMargin() {
+        XCTAssertEqual(origin(25, 15, view: CGSize(width: 50, height: 30)), CGPoint(x: 8, y: 8))
     }
 }

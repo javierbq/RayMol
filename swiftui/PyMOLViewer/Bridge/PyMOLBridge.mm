@@ -13,6 +13,7 @@
 #include "SceneLights.h"  // the light rig (#611): no Python
 #include "MyPNG.h"        // MyPNGSetFastWrite (#601)
 #include "SurfacePick.h"  // ScenePickSurface / Prepare / Release (#614)
+#include "Color.h"        // ColorGet (#628)
 
 #include "PyMOLBridgeLights.h"  // PyMOLLightRigEye, PyMOLLightEye, PYMOL_LIGHT_SET_*
 
@@ -52,6 +53,8 @@ extern void ImmBatch_SetActiveRenderer(pymol::Renderer *r);
 // names and the link fails.
 extern "C" {
 
+static int bridgeRenderHiResPNG(CPyMOL *I, const char *path, int width, int height, int rayTraced);
+
 // --- Lifecycle ---
 
 PyMOLHandle PyMOLBridge_New(void)
@@ -66,6 +69,8 @@ PyMOLHandle PyMOLBridge_New(void)
 
     CPyMOL *instance = PyMOL_NewWithOptions(options);
     PyMOLOptions_Free(options);
+    if (instance)
+        PyMOL_SetHiResPNGRenderer(instance, bridgeRenderHiResPNG);
     return static_cast<PyMOLHandle>(instance);
 }
 
@@ -322,13 +327,17 @@ int PyMOLBridge_InvokeKey(const char *key)
     if (!G) return 0;
     int blk = PAutoBlock(G);
     int fired = 0;
-    // pymol.internal._invoke_key(key, quiet=1) — the same routine cmd._special
-    // and cmd._ctrl funnel through. Reached via pymol.internal because cmd
-    // re-exports only _special/_ctrl/_alt, not _invoke_key. quiet=1 suppresses
-    // the "No key mapping" print for the (very common) unbound case.
-    PyObject *mod = PyImport_ImportModule("pymol.internal");
+    // pymol.raymol_keys.invoke(key) — fires the cmd.set_key binding via
+    // pymol.internal._invoke_key(key, quiet=1) (the routine cmd._special and
+    // cmd._ctrl funnel through), then for a bare F-key / special-key name with
+    // no binding recalls the scene or view of that name, as desktop PyMOL's
+    // _special does (#260). _special itself is not called: it also grabs the
+    // arrow keys for the core's hidden Ortho prompt, which RayMol doesn't use.
+    // quiet=1 suppresses the "No key mapping" print for the (very common)
+    // unbound case.
+    PyObject *mod = PyImport_ImportModule("pymol.raymol_keys");
     if (mod) {
-        PyObject *res = PyObject_CallMethod(mod, "_invoke_key", "si", key, 1);
+        PyObject *res = PyObject_CallMethod(mod, "invoke", "s", key);
         if (res) {
             fired = PyObject_IsTrue(res) == 1 ? 1 : 0;
             Py_DECREF(res);
@@ -342,13 +351,39 @@ int PyMOLBridge_InvokeKey(const char *key)
         }
         Py_DECREF(mod);
     } else {
-        // pymol.internal could not be imported (shutdown, corrupted state).
+        // pymol.raymol_keys could not be imported (shutdown, corrupted state).
         // No binding could have fired, so leave fired = 0 so the key falls
         // through to the macOS menus. Print the error and clear it.
         PyErr_Print();
     }
     PAutoUnblock(G, blk);
     return fired;
+}
+
+int PyMOLBridge_IsUserBoundKey(const char *key)
+{
+    if (!key || !key[0]) return 0;
+    PyMOLGlobals *G = SingletonPyMOLGlobals;
+    if (!G) return 0;
+    int blk = PAutoBlock(G);
+    int bound = 0;
+    // pymol.raymol_keys.is_user_bound(key): true for an ALT-/CTSH- key whose
+    // cmd.key_mappings entry differs from the stock table (#261). It never
+    // raises; a failed import leaves bound = 0 so the text field keeps the key.
+    PyObject *mod = PyImport_ImportModule("pymol.raymol_keys");
+    if (mod) {
+        PyObject *res = PyObject_CallMethod(mod, "is_user_bound", "s", key);
+        if (res) {
+            bound = PyObject_IsTrue(res) == 1 ? 1 : 0;
+            Py_DECREF(res);
+        }
+        if (PyErr_Occurred()) PyErr_Clear();
+        Py_DECREF(mod);
+    } else {
+        PyErr_Clear();
+    }
+    PAutoUnblock(G, blk);
+    return bound;
 }
 
 // --- Context management ---
@@ -408,6 +443,18 @@ int PyMOLBridge_SetView(PyMOLHandle h, const float *view, int count, float anima
     for (std::size_t i = 0; i < cSceneViewSize; ++i) captured[i] = view[i];
     SceneSetView(G, captured, 1, animate, 1);
     return 1;
+}
+
+int PyMOLBridge_TurnZ(PyMOLHandle h, float degrees)
+{
+    // PyMOL's C API turn (layer5/PyMOL.cpp): SceneRotate about z under
+    // PYMOL_API_LOCK, the API lock cmd.turn's `with lockcm` holds and the
+    // one-finger rotate (PyMOL_Drag) takes, the same rotation CmdTurn's
+    // SceneRotateAxis does. PYMOL_API_LOCK skips the body during a modal
+    // draw, where cmd.turn refuses (APIEnterNotModal); that is reported as 0
+    // here. SceneRotate invalidates the scene, so the display link redraws.
+    if (!h || PyMOL_GetModalDraw(INST(h))) return 0;
+    return PyMOL_CmdTurn(INST(h), 'z', degrees).status == PyMOLstatus_SUCCESS ? 1 : 0;
 }
 
 // --- Light rig (#611, spec §4.4) ---
@@ -478,6 +525,24 @@ int PyMOLBridge_LightsEyeSpace(PyMOLHandle h, PyMOLLightRigEye *rig, PyMOLLightE
         dst.aim = src.aim == pymol::LightAim::Point ? 1 : 0;
         dst.shadow = src.shadow ? 1 : 0;
         dst.outline = src.outline ? 1 : 0;
+        dst.shadowSlot = -1;
+    }
+    // #673: each light's shadow-map slot, from the same plan the renderer and
+    // _light_frame make (SceneLightsFrame). Planned only when a shadow could
+    // exist (the rig on and some light shadowed), so the per-frame read stays
+    // cheap otherwise; SceneLightsFrame writes nothing.
+    bool hasShadow = false;
+    for (int i = 0; i < count && !hasShadow; ++i) hasShadow = eye->lights[i].shadow;
+    if (filled > 0 && eye->enabled && hasShadow) {
+        const SceneLightFrame frame = SceneLightsFrame(G, SceneGetWorldToEye(G));
+        if (frame.shadows) {
+            for (int s = 0; s < frame.shadows->count; ++s) {
+                const int l = frame.shadows->light[s];
+                if (l >= 0 && l < filled) {
+                    lights[l].shadowSlot = s;
+                }
+            }
+        }
     }
     return count;
 }
@@ -493,6 +558,14 @@ int PyMOLBridge_AirAnimating(PyMOLHandle h)
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
     if (!G) return 0;
     return SceneLightsAirAnimating(G) ? 1 : 0;
+}
+
+unsigned PyMOLBridge_DocumentGeneration(PyMOLHandle h)
+{
+    if (!h) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    return SceneGetDocumentGeneration(G);
 }
 
 char *PyMOLBridge_Complete(const char *text)
@@ -644,6 +717,16 @@ float PyMOLBridge_GetLetterboxAspect(PyMOLHandle h)
     return r ? r->letterboxAspect() : 0.f;
 }
 
+int PyMOLBridge_GridSize(PyMOLHandle h)
+{
+    if (!h) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    auto mode = SettingGet<GridMode>(G, cSetting_grid_mode);
+    if (mode == GridMode::NoGrid) return 0;
+    return SceneGetGridSize(G, mode);
+}
+
 char *PyMOLBridge_GetFeedback(PyMOLHandle h)
 {
     if (!h) return nullptr;
@@ -722,8 +805,17 @@ void PyMOLBridge_SetupMetalRenderer(PyMOLHandle h, void *mtkViewPtr)
     G->Renderer = new pymol::RendererMetal(g_metalDevice, g_metalQueue);
 }
 
+static void syncClearColor(PyMOLGlobals* G, pymol::RendererMetal* renderer)
+{
+    const float* bg = ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb));
+    int opaqueBg = SettingGetGlobal_b(G, cSetting_ray_opaque_background);
+    if (bg) {
+        renderer->clearColor(bg[0], bg[1], bg[2], opaqueBg ? 1.0f : 0.0f);
+    }
+}
+
 int PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *mtkViewPtr,
-                                 int width, int height)
+                                 int width, int height, int airTick)
 {
     if (!h || !mtkViewPtr) return 0;
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
@@ -767,7 +859,12 @@ int PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *mtkViewPtr,
     renderer->beginLiveFrame(width, height);
     renderer->setLetterboxOrigin(ox, oy);
     renderer->viewport(ox, oy, vpW, vpH);
-    renderer->beginFrame();
+    syncClearColor(G, renderer);
+    // #685: on a dust-only tick the pre-check armed the renderer, which deferred
+    // beginFrame. SceneRenderMetal makes the final call.
+    renderer->setAirTickFrame(airTick != 0);
+    if (!(airTick && SceneRenderMetalArmAirTick(G)))
+        renderer->beginFrame();
     ImmBatch_SetActiveRenderer(renderer);
     PyMOL_PushValidContext(INST(h));
     SceneRenderMetal(G);
@@ -815,6 +912,7 @@ static void renderOneOffscreen(PyMOLHandle h, PyMOLGlobals* G,
                                int width, int height, const std::string& path)
 {
     renderer->beginOffscreen(width, height, path);
+    syncClearColor(G, renderer);
     renderer->beginFrame();
     ImmBatch_SetActiveRenderer(renderer);
     PyMOL_PushValidContext(INST(h));
@@ -880,6 +978,23 @@ void PyMOLBridge_RenderHiResPNG(PyMOLHandle h, const char* path,
     G->Option->winX = savedW;
     G->Option->winY = savedH;
     PyMOL_Reshape(INST(h), savedW, savedH, 0);
+}
+
+// #643: the core's _cmd.metal_png (the MCP capture_viewport tool) renders
+// through this, so it gets exactly the Save Image / Export render. Main
+// thread only, like every other core access in the app; and no renderer
+// means a cold launch before the first live frame. Either way say no, so
+// the caller falls back to the CPU tracer.
+static int bridgeRenderHiResPNG(CPyMOL *I, const char *path, int width,
+                                int height, int rayTraced)
+{
+    if (![NSThread isMainThread]) return 0;
+    if (!I || !path || width < 1 || height < 1) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(I);
+    if (!G || !G->Renderer) return 0;
+    PyMOLBridge_RenderHiResPNG(static_cast<PyMOLHandle>(I), path, width,
+                               height, rayTraced);
+    return 1;
 }
 
 // Rebuild any dirty object representations for the current frame/state on the

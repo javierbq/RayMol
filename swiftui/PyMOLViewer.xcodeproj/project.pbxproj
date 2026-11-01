@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		012182FD275AE30AF5663457 /* GlycanTopologyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */; };
 		0162102F61A7D39A781DCB53 /* LightsOrbitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3595D421CC5DB21F3162789F /* LightsOrbitTests.swift */; };
 		020822B7AD61092433C2F78E /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
 		0289EAA2F61546F2DD2430BA /* LightRigBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED82B93C6739F52D7124AE90 /* LightRigBridge.swift */; };
@@ -18,13 +19,16 @@
 		07107979C9C3FB3967B754E5 /* LightGizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 854A92930838D84391F46022 /* LightGizmoOverlay.swift */; };
 		079B071AB492B995CF57638D /* ConsoleLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2525A88C5285B866035F9B8C /* ConsoleLogTests.swift */; };
 		08A70D51DF9F99AD0951EB6D /* RFD3SizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */; };
+		093D4A9965F9F632B853C815 /* whatsnew-1130-atmosphere.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */; };
 		096FA7333E120551F0CC84A8 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
 		09A0D4D2ABB5138809537A02 /* whatsnew-1110-boxselect.png in Resources */ = {isa = PBXBuildFile; fileRef = 6316D26C663083E0E595CE15 /* whatsnew-1110-boxselect.png */; };
 		0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */; };
 		0C7AFC549798A22C0FE22112 /* PredictCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */; };
 		0D7CDD9E16A9A064CE8C3414 /* whatsnew-1120-inspector.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = E3B941EE9F1C7855A8447162 /* whatsnew-1120-inspector.mp4 */; };
 		0DDA865CB0C8ACAC1BFD0FE9 /* NotesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */; };
+		0E50F595AA133DD1548EBC39 /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */; };
 		0F6C6BD0DB9B077E51D1EFAF /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
+		0FDC151AF9199F82402C844C /* MorphSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5BED19C590F00A894126D46 /* MorphSettings.swift */; };
 		0FFCBEB460CD541E932326AB /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		107F92D982CDBA1632A6EEBD /* whatsnew-1110-raytrace.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B402EB5834127D4E6B217EFE /* whatsnew-1110-raytrace.mp4 */; };
@@ -41,12 +45,14 @@
 		15DA981AD21097BFFD1CE170 /* LightsFloatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2E04AAE95A3210E0090C69 /* LightsFloatTests.swift */; };
 		1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		1691ECBD7CEDBFFB64B1D690 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
+		169623811F1570B6FD3F5681 /* MorphEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */; };
 		174EA423F2E0ED999474C506 /* DesignInferenceSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */; };
 		17D4129435A0B8E793A5B687 /* whatsnew-1120-looks.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 00A00E2879DD065A94A31D21 /* whatsnew-1120-looks.jpg */; };
 		1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */; };
 		1A70AA9F48AEED67CB42092A /* LightsInspectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BEE4A89F9323D032B1F5F3B /* LightsInspectorTests.swift */; };
 		1BB834E64B2DFAF59645C1EB /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		1BD51D786A5D6DFD98F3E6FA /* MPNNRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */; };
+		1E9B1EAEFBEB7C293331B026 /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */; };
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		2271B125CA7B637F85F2FA65 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
 		238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */; };
@@ -63,6 +69,7 @@
 		2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		300656C47AD9A9C18C129C42 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		303210F410E1AD9DBCCF57F3 /* BoltzJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4B5DB2F82A55E25041FE28 /* BoltzJobManager.swift */; };
+		31D695FD43081FF7BE38907C /* GlycanTopologyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */; };
 		31E2886301F34D938627FF2D /* PanelLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */; };
 		32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */; };
 		325EE49F9617F5A907D7BDF7 /* whatsnew-1100-msa.png in Resources */ = {isa = PBXBuildFile; fileRef = 727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */; };
@@ -89,6 +96,7 @@
 		42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		42F2467DC338FA8435632918 /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
 		4328A7D903B06B6115075B3B /* PredictController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0D207800BE2DDAF04598C1 /* PredictController.swift */; };
+		4420254DE2A9825D077EED1A /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */; };
 		456DECCC2554044FEC17F470 /* LightsAtmosphere.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */; };
 		45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */; };
 		4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73267D4D7B506E647B7A995 /* ObjectPanel.swift */; };
@@ -104,6 +112,7 @@
 		4BE37F7CA13DEB10F2AE62D6 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
 		4C175FC1BC1E83D7C66EC414 /* whatsnew-1120-sidechains.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 1926971439F96C03DB81AA8E /* whatsnew-1120-sidechains.jpg */; };
 		4C754E670F4EB9FDE0000E74 /* LightsEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C14BA8BC49311C1D073B8E10 /* LightsEditingTests.swift */; };
+		4D8DF048FC4285E17546DE34 /* whatsnew-1130-shadows.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */; };
 		4E1CFC49EFB50160C3D388B2 /* DesignAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4300265954DF2B8309EDAA6C /* DesignAvailability.swift */; };
 		4FF61FB384E2C1B9388BA273 /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		506C87D1E2B2026BFFC9C607 /* whatsnew-1110-boxselect.png in Resources */ = {isa = PBXBuildFile; fileRef = 6316D26C663083E0E595CE15 /* whatsnew-1110-boxselect.png */; };
@@ -153,6 +162,7 @@
 		6E945630A8B9A6195B98A958 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = FBA4CCD670BAF318F243E692 /* MLX */; };
 		6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */; };
 		6F45C01C9E3DE3CC89268445 /* MLXRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E93358875495F499780A00 /* MLXRuntime.swift */; };
+		6F52C05E18364C406E853BB0 /* whatsnew-1130-movie-export.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */; };
 		709CFA72F2FF7502C4043BB3 /* LightGizmoGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEE394EC8EC4DF566360104C /* LightGizmoGeometry.swift */; };
 		7125F9B9B28B6CF122F087E5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
 		72C53CF3B3DE0AC1001A6981 /* CameraOverlayUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */; };
@@ -160,6 +170,7 @@
 		74E99B05BC014BA3D289E566 /* LightsInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 051212FB14CE38F9CAFC3546 /* LightsInspector.swift */; };
 		76065C249F1901F993E708A6 /* BoltzJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4B5DB2F82A55E25041FE28 /* BoltzJobManager.swift */; };
 		768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
+		76B529726C7FCD5839431DB0 /* whatsnew-1130-movie-export.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */; };
 		7758593457A49366EBBAE30C /* whatsnew-1100-metrics.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */; };
 		77612C0A58360E932EDC3CA7 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
@@ -169,6 +180,7 @@
 		7B6E4F8683D469C6984163AA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589928DEEE69075B965DB9F2 /* Assets.xcassets */; };
 		7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		7CE181E4C54482BD67384013 /* RFD3TrayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3441C46AD1B569C623A36B7 /* RFD3TrayTests.swift */; };
+		7DBBB20A7BB5117162D3EA93 /* whatsnew-1130-atmosphere.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */; };
 		7E655BB536F6CD067C2B0084 /* LightsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C675D41EFF244D46FCD0F46 /* LightsSheet.swift */; };
 		7F9C46E519B7180C507053BB /* MLXRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */; };
 		809165FC9A0F411860956BD6 /* PredictAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0825BFE369DAF40A6F3AA5D4 /* PredictAvailabilityTests.swift */; };
@@ -180,6 +192,7 @@
 		8471766417221874246F5252 /* WhatsNewLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */; };
 		848682B247E00ECDD720FF73 /* DesignResidues.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFE9998F68625C92B8BCD710 /* DesignResidues.swift */; };
 		852DCDD1E141CB8BB8128F7C /* LightsTouchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22FE54E560183FF94E1451C6 /* LightsTouchTests.swift */; };
+		85F0DFA22E8C1AF2A35D575F /* whatsnew-1130-glycans.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */; };
 		86F8E58F4BAA9E8B03380DBB /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		876C79ECB2F8DA63EE7BAC84 /* BinderDesignBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4B03344972863CC1362ECB /* BinderDesignBar.swift */; };
 		8852A9FA93BDAAB188D4103C /* PyMOLEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D6A753E4525628B96C259C /* PyMOLEngine.swift */; };
@@ -188,6 +201,7 @@
 		8C4A92BCDC371C53E06902F0 /* LightsGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BF254CC0F7ADEE10473F87A /* LightsGestureUITests.swift */; };
 		8CDF44341FE9E9CB053BFC76 /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		8DC572A1863238F8B919ED70 /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
+		8DD3F322033248C1DAC4F31F /* whatsnew-1130-glycans.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */; };
 		8E33AC50510ECB1DA4277904 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
 		8E62E0244A99E106F6D57428 /* whatsnew-1110-sessions.png in Resources */ = {isa = PBXBuildFile; fileRef = BFE8C2D90AA047E31EBBC54C /* whatsnew-1110-sessions.png */; };
 		8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
@@ -236,6 +250,7 @@
 		B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */; };
 		B5C4C6AA1972C0CED1527FB1 /* LightsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35444C782524F25C4DDD4F9F /* LightsBar.swift */; };
 		B5CC8EFFCE99E9813AEC1422 /* DesignRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */; };
+		B6E84D5397FD9B6522888A78 /* whatsnew-1130-lights.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */; };
 		B6FBF55DD1FA97A86C678618 /* BoltzMLX in Frameworks */ = {isa = PBXBuildFile; productRef = 8426817F16C801044FDCCB94 /* BoltzMLX */; };
 		B751FE54B6347A0677DEA713 /* whatsnew-1110-colormenu.png in Resources */ = {isa = PBXBuildFile; fileRef = CC71792A917723EA5E462007 /* whatsnew-1110-colormenu.png */; };
 		B806C9AB4B89EAE3676F25E2 /* PanelLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */; };
@@ -246,6 +261,7 @@
 		B936D1EEC4FAB31339D4CB2E /* LightsAtmosphereCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6743F01EAFCBFE01B6ADD02 /* LightsAtmosphereCard.swift */; };
 		BA5F8346B75009D86D7C7815 /* LightsFloatingTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
+		BA974256A8C0FC7B47483AD4 /* MorphSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */; };
 		BAAE4478A0C2B308D407E7C1 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
 		BAF51FE61B64C23C51DF4AAF /* ProtenixJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B2D0B8DEF98F905922AE2FD /* ProtenixJobManager.swift */; };
 		BDF58C2A00D4BFACD41D6462 /* ProgressTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4857D1284B60EB0C750C02F /* ProgressTray.swift */; };
@@ -253,6 +269,7 @@
 		BF09C330B7686E39A51C8626 /* BoltzRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */; };
 		BF97400ECA54F56EB9D96FC2 /* RFD3Trajectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F41684D508836307667157 /* RFD3Trajectory.swift */; };
 		C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
+		C0E5F9D9FA0CE3995618FC55 /* whatsnew-1130-lights.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */; };
 		C2FCBB63D8533AF61056C0C2 /* DesignCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */; };
 		C2FE6360EC57133D61DC3FAD /* CopyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4CC639810B19E8F5E637E93 /* CopyRouting.swift */; };
 		C55DDA064774EC13D91649B2 /* LightsEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79E014A631DA05BA1F8C7E8A /* LightsEditing.swift */; };
@@ -283,6 +300,7 @@
 		D70F90009D4B06C4EC31C5F0 /* LightsOrbitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142BDBF375FA246776AB2CD1 /* LightsOrbitView.swift */; };
 		D755890977A4E8D8351D767E /* LightsAtmosphere.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */; };
 		DA6EB8C81B26582A4F3AB478 /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
+		DAC47DC47A669C86E8232361 /* whatsnew-1130-shadows.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */; };
 		DB3B352985BA33D0583519E6 /* ObjectActionMenuUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BCB83A35EA5E97D5BBD172 /* ObjectActionMenuUITests.swift */; };
 		DC5CF59CDC22D0FCB6A58BE5 /* whatsnew-190-design.png in Resources */ = {isa = PBXBuildFile; fileRef = 2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */; };
 		DC8A9C1AA5EB1946175041FA /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
@@ -294,6 +312,7 @@
 		E2F5A088F804B59B38054C81 /* LightsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40FC41A2798A30FE8E223CEC /* LightsController.swift */; };
 		E3E4D527F2D9B262BA530D00 /* LightRigBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */; };
 		E4297BB35BAA562115F71EF2 /* LightsOrbitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142BDBF375FA246776AB2CD1 /* LightsOrbitView.swift */; };
+		E4312B988564A872D81EBBA0 /* MorphSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */; };
 		E51EFBE3A58396C4934721ED /* PredictScreenAwake.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */; };
 		E6905FCF1AF24B2A2838E777 /* LightsTouch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1507FB2A1549FB5126C07E81 /* LightsTouch.swift */; };
 		E71A74DE36694D8CDEAA9AE0 /* LightsSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA477E87A3CFBE90788E6805 /* LightsSheetTests.swift */; };
@@ -312,6 +331,7 @@
 		F03621597BA93F7EADDEF676 /* MPNNRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */; };
 		F143E36E786A3B7B29A47F3E /* RFD3ResultWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B049A83EEE87CC41BA09889D /* RFD3ResultWriterTests.swift */; };
 		F1D17CB3886E8DED5B79A28B /* RayMolUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = F607D204A410CA38B84223BE /* RayMolUpdater.swift */; };
+		F3B52A9C7DBEB1F0D7D4BBDD /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */; };
 		F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
 		F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */; };
 		F58726A64F44A9435AD8517D /* MCPDesktopInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */; };
@@ -326,11 +346,14 @@
 		FA5250EB01CB7F86C4158D2C /* BinderDesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F340621635D0C4E9159141A /* BinderDesignController.swift */; };
 		FAB7D942A53C88BEA4D2FFE4 /* whatsnew-1100-predict-progress.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = C5D633C399E993EE52877C82 /* whatsnew-1100-predict-progress.mp4 */; };
 		FBBEFD0D559EF5CBFD898E40 /* whatsnew-1120-glass.jpg in Resources */ = {isa = PBXBuildFile; fileRef = CDB31EB1A97256BC7A5615E7 /* whatsnew-1120-glass.jpg */; };
+		FC4A54641D8CC5020B186234 /* MorphSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5BED19C590F00A894126D46 /* MorphSettings.swift */; };
 		FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */; };
 		FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */; };
 		FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */; };
 		FF325D5404E69D05274EEB81 /* SelectionInputField.swift in Sources */ = {isa = PBXBuildFile; fileRef = D55EF2F596852510DDACA576 /* SelectionInputField.swift */; };
+		FFF826842E1FE0AF110953EB /* TimelineLaneLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BBDEC9D3E4B71F8249F6263 /* TimelineLaneLayoutTests.swift */; };
+		FFF893B673C4A9414704C452 /* MorphSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -363,6 +386,9 @@
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
 		0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewportResponderTests.swift; sourceTree = "<group>"; };
 		0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeightsFetchStateTests.swift; sourceTree = "<group>"; };
+		0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphEngineTests.swift; sourceTree = "<group>"; };
+		0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-atmosphere.mp4"; sourceTree = "<group>"; };
+		0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Project.xcconfig; sourceTree = "<group>"; };
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
 		0F340621635D0C4E9159141A /* BinderDesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BinderDesignController.swift; sourceTree = "<group>"; };
 		104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraOverlayUITests.swift; sourceTree = "<group>"; };
@@ -393,8 +419,11 @@
 		29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */ = {isa = PBXFileReference; path = "whatsnew-152-camera-dock.mp4"; sourceTree = "<group>"; };
 		2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-design.png"; sourceTree = "<group>"; };
 		2BEE4A89F9323D032B1F5F3B /* LightsInspectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsInspectorTests.swift; sourceTree = "<group>"; };
+		2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlycanTopologyView.swift; sourceTree = "<group>"; };
+		2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSettingsTests.swift; sourceTree = "<group>"; };
 		2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictAvailability.swift; sourceTree = "<group>"; };
 		2E5C2F6163EFEA36009B55A5 /* MSAServerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MSAServerControls.swift; sourceTree = "<group>"; };
+		317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSheet.swift; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		35444C782524F25C4DDD4F9F /* LightsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsBar.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
@@ -413,6 +442,7 @@
 		4300265954DF2B8309EDAA6C /* DesignAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailability.swift; sourceTree = "<group>"; };
 		43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsControllerTests.swift; sourceTree = "<group>"; };
 		45BCB83A35EA5E97D5BBD172 /* ObjectActionMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectActionMenuUITests.swift; sourceTree = "<group>"; };
+		47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-glycans.jpg"; sourceTree = "<group>"; };
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictMSAMemorySweepTests.swift; sourceTree = "<group>"; };
 		48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignResiduesTests.swift; sourceTree = "<group>"; };
@@ -444,6 +474,7 @@
 		6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictSizeGuard.swift; sourceTree = "<group>"; };
 		6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */ = {isa = PBXFileReference; path = "whatsnew-161-hover.mp4"; sourceTree = "<group>"; };
 		6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignIOSPortTests.swift; sourceTree = "<group>"; };
+		6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-shadows.jpg"; sourceTree = "<group>"; };
 		71574A2074A14803B91ED695 /* InferenceRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceRouter.swift; sourceTree = "<group>"; };
 		727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-msa.png"; sourceTree = "<group>"; };
 		755441AFAB067D11B52B6066 /* LightsBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsBarTests.swift; sourceTree = "<group>"; };
@@ -452,6 +483,7 @@
 		786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDesktopInstaller.swift; sourceTree = "<group>"; };
 		79E014A631DA05BA1F8C7E8A /* LightsEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsEditing.swift; sourceTree = "<group>"; };
 		7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRuntimeTests.swift; sourceTree = "<group>"; };
+		7BBDEC9D3E4B71F8249F6263 /* TimelineLaneLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineLaneLayoutTests.swift; sourceTree = "<group>"; };
 		7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-raymolrc.png"; sourceTree = "<group>"; };
 		7D3E805AC2D63B01AB7EE29C /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		7DEAB18A89F026148528C71E /* PendingJobTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingJobTests.swift; sourceTree = "<group>"; };
@@ -479,10 +511,14 @@
 		9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSizeGuard.swift; sourceTree = "<group>"; };
 		9F13A40FB172D9CA709F83AC /* LightGizmoLiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoLiveTests.swift; sourceTree = "<group>"; };
 		A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoltzRuntime.swift; sourceTree = "<group>"; };
+		A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-presets.mp4"; sourceTree = "<group>"; };
 		A4857D1284B60EB0C750C02F /* ProgressTray.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressTray.swift; sourceTree = "<group>"; };
 		A4CC639810B19E8F5E637E93 /* CopyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopyRouting.swift; sourceTree = "<group>"; };
 		A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModal.swift; sourceTree = "<group>"; };
+		A5BED19C590F00A894126D46 /* MorphSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSettings.swift; sourceTree = "<group>"; };
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
+		A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-movie-export.jpg"; sourceTree = "<group>"; };
+		A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-docs.jpg"; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
 		A75B6DCB76EF7B2E69DA0BFE /* RFD3TrajectoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3TrajectoryTests.swift; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
@@ -494,6 +530,7 @@
 		B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignInferenceSmokeTests.swift; sourceTree = "<group>"; };
 		B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayout.swift; sourceTree = "<group>"; };
 		B50D264C420888CBF7FDE633 /* CommandPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPanel.swift; sourceTree = "<group>"; };
+		B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-lights.mp4"; sourceTree = "<group>"; };
 		B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightRigBridgeTests.swift; sourceTree = "<group>"; };
 		B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3SizeGuard.swift; sourceTree = "<group>"; };
 		B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayoutTests.swift; sourceTree = "<group>"; };
@@ -556,7 +593,6 @@
 		FEE394EC8EC4DF566360104C /* LightGizmoGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoGeometry.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
 		FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTargetSelectionTests.swift; sourceTree = "<group>"; };
-		"TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -601,9 +637,11 @@
 			isa = PBXGroup;
 			children = (
 				B50D264C420888CBF7FDE633 /* CommandPanel.swift */,
+				2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */,
 				CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */,
 				B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */,
 				FB1304C662D9011F7C4505FC /* MCPStatusView.swift */,
+				317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */,
 				221117550FAD97CF81924E05 /* MousePanel.swift */,
 				0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */,
 				8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */,
@@ -649,6 +687,13 @@
 				00A00E2879DD065A94A31D21 /* whatsnew-1120-looks.jpg */,
 				8342C6A3FDF28A858D7E1AA4 /* whatsnew-1120-materials.mp4 */,
 				1926971439F96C03DB81AA8E /* whatsnew-1120-sidechains.jpg */,
+				0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */,
+				A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */,
+				47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */,
+				B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */,
+				A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */,
+				A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */,
+				6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */,
 				689CDE512811C244D4BA931B /* WhatsNew.json */,
 			);
 			path = Resources;
@@ -669,9 +714,18 @@
 			path = PyMOLViewerUITests;
 			sourceTree = "<group>";
 		};
+		2B65A102B7D7E59747B39655 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
 		3EBD6226DB025AF86B7A30A2 = {
 			isa = PBXGroup;
 			children = (
+				2B65A102B7D7E59747B39655 /* Config */,
 				52FC8256B867D42D45933E18 /* PyMOLViewer */,
 				7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */,
 				22F2EFCF4CDD52CF747B834A /* PyMOLViewerUITests */,
@@ -739,6 +793,7 @@
 				14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */,
 				5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */,
 				86E93358875495F499780A00 /* MLXRuntime.swift */,
+				A5BED19C590F00A894126D46 /* MorphSettings.swift */,
 				56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */,
 				E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */,
 				2E5C2F6163EFEA36009B55A5 /* MSAServerControls.swift */,
@@ -826,6 +881,8 @@
 				6BCABF57679F5F6462F91B73 /* MaterialInspectorTests.swift */,
 				0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */,
 				7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */,
+				0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */,
+				2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */,
 				7E9067EC240F21BA7F691088 /* ObjectPanelCopyExtractTests.swift */,
 				4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */,
 				B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */,
@@ -846,6 +903,7 @@
 				55F4F52D951CF1F96606F41C /* SmokeTests.swift */,
 				82497826B2E619BC2235983B /* SurfacePickTests.swift */,
 				B945DAC97919F57996278E1F /* TempChannelTests.swift */,
+				7BBDEC9D3E4B71F8249F6263 /* TimelineLaneLayoutTests.swift */,
 				0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */,
 			);
 			path = PyMOLViewerTests;
@@ -872,14 +930,6 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_A4F98062-C024-4B18-AB49-72EB93B4BAB2" /* swiftui */ = {
-			isa = PBXGroup;
-			children = (
-				"TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */,
-			);
-			path = swiftui;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -887,11 +937,13 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 882466131FAA9C59212EA9BC /* Build configuration list for PBXNativeTarget "PyMOLViewer_macOS" */;
 			buildPhases = (
+				996A24FE4976ABEB368739C9 /* Core: check libpymol_core.a is fresh */,
 				CF1A74B0524F06E570BF6DF9 /* Sources */,
 				D61D47B2F441B27E03C9023B /* Resources */,
 				4E6246238783B0F1F0B91508 /* Frameworks */,
 				E9A5181B8D4750082E0C0F2C /* Brand: set CFBundleName = RayMol */,
 				7227265B2801BD14276EC727 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */,
+				1812BBAEA158A62BB3945D55 /* Core: set RayMolCoreSHA from core_sha.txt */,
 				B07CD62C5BBE02F19894A460 /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */,
 				7AD50FCE7EA1A86486FE1AA6 /* Brand: register molecular document types */,
 				D6E180B4CFF12A0215D1E81F /* iOS: Embed Python.framework */,
@@ -923,11 +975,13 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 706EC407223177C273587127 /* Build configuration list for PBXNativeTarget "PyMOLViewer_iOS" */;
 			buildPhases = (
+				133BC7BEE53F8E3630DE1796 /* Core: check libpymol_core.a is fresh */,
 				CA0704A170D844CE72B9AB3E /* Sources */,
 				61D7B61F4D5ACB99F6B7EA8D /* Resources */,
 				FB23646F44642041FD58D674 /* Frameworks */,
 				2A8B25C9FABB5F43C64A3B4F /* Brand: set CFBundleName = RayMol */,
 				2A47BF2FE69ED02355B5F8B5 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */,
+				1FFBFDC0E3184328381CD676 /* Core: set RayMolCoreSHA from core_sha.txt */,
 				2AC63EBF7745B988799768CA /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */,
 				20F6E2447B7743E74607108B /* Brand: register molecular document types */,
 				674165941FEA5412EAD0F21B /* iOS: Embed Python.framework */,
@@ -1029,10 +1083,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
-				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
 				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
 				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
+				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
+				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
 			);
 		};
 /* End PBXProject section */
@@ -1064,6 +1118,13 @@
 				A353F0375A1BC88B2AF38DEC /* whatsnew-1120-looks.jpg in Resources */,
 				4B84574727FB18090A30B32D /* whatsnew-1120-materials.mp4 in Resources */,
 				A874BBD4EC51E65F61ECD5D2 /* whatsnew-1120-sidechains.jpg in Resources */,
+				7DBBB20A7BB5117162D3EA93 /* whatsnew-1130-atmosphere.mp4 in Resources */,
+				4420254DE2A9825D077EED1A /* whatsnew-1130-docs.jpg in Resources */,
+				85F0DFA22E8C1AF2A35D575F /* whatsnew-1130-glycans.jpg in Resources */,
+				C0E5F9D9FA0CE3995618FC55 /* whatsnew-1130-lights.mp4 in Resources */,
+				76B529726C7FCD5839431DB0 /* whatsnew-1130-movie-export.jpg in Resources */,
+				1E9B1EAEFBEB7C293331B026 /* whatsnew-1130-presets.mp4 in Resources */,
+				DAC47DC47A669C86E8232361 /* whatsnew-1130-shadows.jpg in Resources */,
 				EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */,
 				36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */,
@@ -1102,6 +1163,13 @@
 				17D4129435A0B8E793A5B687 /* whatsnew-1120-looks.jpg in Resources */,
 				E260BED24CBA34D49088686D /* whatsnew-1120-materials.mp4 in Resources */,
 				4C175FC1BC1E83D7C66EC414 /* whatsnew-1120-sidechains.jpg in Resources */,
+				093D4A9965F9F632B853C815 /* whatsnew-1130-atmosphere.mp4 in Resources */,
+				F3B52A9C7DBEB1F0D7D4BBDD /* whatsnew-1130-docs.jpg in Resources */,
+				8DD3F322033248C1DAC4F31F /* whatsnew-1130-glycans.jpg in Resources */,
+				B6E84D5397FD9B6522888A78 /* whatsnew-1130-lights.mp4 in Resources */,
+				6F52C05E18364C406E853BB0 /* whatsnew-1130-movie-export.jpg in Resources */,
+				0E50F595AA133DD1548EBC39 /* whatsnew-1130-presets.mp4 in Resources */,
+				4D8DF048FC4285E17546DE34 /* whatsnew-1130-shadows.jpg in Resources */,
 				F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */,
 				B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */,
@@ -1117,6 +1185,45 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		133BC7BEE53F8E3630DE1796 /* Core: check libpymol_core.a is fresh */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Core: check libpymol_core.a is fresh";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "bash \"$SRCROOT/../scripts/check_core_fresh.sh\" check\n";
+		};
+		1812BBAEA158A62BB3945D55 /* Core: set RayMolCoreSHA from core_sha.txt */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Core: set RayMolCoreSHA from core_sha.txt";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nLABEL=\"$(bash \"$SRCROOT/../scripts/check_core_fresh.sh\" sha || true)\"\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n# This phase edits the BUILT plist in place and Xcode does not always\n# regenerate it between builds, so an unstamped core must also drop a\n# RayMolCoreSHA left behind by an earlier stamped build.\nif [ -z \"$LABEL\" ]; then\n  /usr/bin/plutil -remove RayMolCoreSHA \"$PLIST\" 2>/dev/null || true\n  echo \"RayMolCoreSHA removed/skipped (no core_sha.txt stamp)\"\n  exit 0\nfi\n/usr/bin/plutil -replace RayMolCoreSHA -string \"$LABEL\" \"$PLIST\"\necho \"RayMolCoreSHA -> $LABEL ($PLIST)\"\n";
+		};
 		1C6F80E717BFF4DB64E10103 /* iOS: Prepare Python binary modules */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -1135,6 +1242,26 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\nOSSL_PRIVACY=\"$SRCROOT/PyMOLViewer/Resources/openssl-PrivacyInfo.xcprivacy\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  # tr maps '_'→'-' (underscores are illegal in bundle IDs); the sed then\n  # strips any leading dashes a segment picked up (e.g. Python C-ext\n  # modules like `_pcg64` or `numpy._core` → `.-pcg64` / `.-core`), which\n  # Apple rejects as invalid bundle identifiers. Folder/executable names\n  # (FULL_MODULE_NAME) keep their underscores — only the ID is sanitized.\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\" | sed -E 's/\\.-+/./g')\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # Each embedded framework's declared MinimumOSVersion must be one its\n    # binary can actually run on. The template ships a low floor (12.0),\n    # but the module .so's are built for the app's deployment target (or\n    # 16.0 for numpy) — a lower declared value trips ITMS-90208 (\"does not\n    # support the minimum OS Version\"). Pin it to the app's deployment\n    # target; every embedded binary supports that.\n    plutil -replace MinimumOSVersion -string \"${IPHONEOS_DEPLOYMENT_TARGET:-16.0}\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n  fi\n  # _ssl and _hashlib statically link OpenSSL/BoringSSL, which Apple's\n  # \"commonly used third-party SDK\" list requires to carry a privacy\n  # manifest (ITMS-91061). Drop one into those two frameworks; it gets\n  # signed with the framework in the codesign pass below.\n  # Deliberately OUTSIDE the `! -d` guard above: that guard only fires\n  # when the framework folder is created, so on an incremental build\n  # over build products predating this fix the manifest would never be\n  # copied and the app would ship without it. Copying every time is\n  # idempotent and cheap.\n  case \"$FULL_MODULE_NAME\" in\n    _ssl|_hashlib) cp \"$OSSL_PRIVACY\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/PrivacyInfo.xcprivacy\" ;;\n  esac\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\n\n# Fail the build rather than ship a binary App Review will reject.\n# iOS 1.8.1 (build 24) was cut from the v1.8.0 tag, which predates the\n# privacy-manifest fix by 15 minutes — the manifests were silently\n# absent and Apple returned ITMS-91061, leaving the version stuck in\n# \"Invalid Binary\". A missing manifest must break the build loudly.\nfor OSSL_MOD in _ssl _hashlib; do\n  OSSL_FW=\"$CODESIGNING_FOLDER_PATH/Frameworks/$OSSL_MOD.framework\"\n  if [ -d \"$OSSL_FW\" ] && [ ! -f \"$OSSL_FW/PrivacyInfo.xcprivacy\" ]; then\n    echo \"error: $OSSL_MOD.framework is missing PrivacyInfo.xcprivacy — App Review rejects this with ITMS-91061 (OpenSSL/BoringSSL is a 'commonly used third-party SDK'). Expected source: $OSSL_PRIVACY\" >&2\n    exit 1\n  fi\ndone\n\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
+		};
+		1FFBFDC0E3184328381CD676 /* Core: set RayMolCoreSHA from core_sha.txt */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Core: set RayMolCoreSHA from core_sha.txt";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nLABEL=\"$(bash \"$SRCROOT/../scripts/check_core_fresh.sh\" sha || true)\"\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n# This phase edits the BUILT plist in place and Xcode does not always\n# regenerate it between builds, so an unstamped core must also drop a\n# RayMolCoreSHA left behind by an earlier stamped build.\nif [ -z \"$LABEL\" ]; then\n  /usr/bin/plutil -remove RayMolCoreSHA \"$PLIST\" 2>/dev/null || true\n  echo \"RayMolCoreSHA removed/skipped (no core_sha.txt stamp)\"\n  exit 0\nfi\n/usr/bin/plutil -replace RayMolCoreSHA -string \"$LABEL\" \"$PLIST\"\necho \"RayMolCoreSHA -> $LABEL ($PLIST)\"\n";
 		};
 		20F6E2447B7743E74607108B /* Brand: register molecular document types */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1369,6 +1496,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_mpnn/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
+		};
+		996A24FE4976ABEB368739C9 /* Core: check libpymol_core.a is fresh */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Core: check libpymol_core.a is fresh";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "bash \"$SRCROOT/../scripts/check_core_fresh.sh\" check\n";
 		};
 		A73548739A42EBACCE231E7E /* Bundle MPNN.mpnnpack */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1615,6 +1761,8 @@
 				A49F8811F64CD501FF007ECD /* MaterialDropdownTests.swift in Sources */,
 				925BACD42F7BFAB94F42F03C /* MaterialInspectorTests.swift in Sources */,
 				4AD1C0E0E53EC4B34CBE7400 /* MetalViewportResponderTests.swift in Sources */,
+				169623811F1570B6FD3F5681 /* MorphEngineTests.swift in Sources */,
+				E4312B988564A872D81EBBA0 /* MorphSettingsTests.swift in Sources */,
 				39D56E38A606EA05834D9D55 /* ObjectPanelCopyExtractTests.swift in Sources */,
 				C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */,
 				31E2886301F34D938627FF2D /* PanelLayoutTests.swift in Sources */,
@@ -1635,6 +1783,7 @@
 				5CAB662574D238626A8F4D68 /* SmokeTests.swift in Sources */,
 				3FD53A37F2DD94FC1C411A4C /* SurfacePickTests.swift in Sources */,
 				6C43C62D56480ABE7BA72AFD /* TempChannelTests.swift in Sources */,
+				FFF826842E1FE0AF110953EB /* TimelineLaneLayoutTests.swift in Sources */,
 				047FD10B437F95938AB4B3B0 /* WeightsFetchStateTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1660,6 +1809,7 @@
 				2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */,
 				65CE08E50C85C8ACDAC92D07 /* DesignSizeGuard.swift in Sources */,
 				8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */,
+				012182FD275AE30AF5663457 /* GlycanTopologyView.swift in Sources */,
 				32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */,
 				59414471A1C1412AF869074D /* InferenceJob.swift in Sources */,
 				AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */,
@@ -1691,6 +1841,8 @@
 				1BD51D786A5D6DFD98F3E6FA /* MPNNRuntime.swift in Sources */,
 				55ADA607AC3BB30CC3F6EE15 /* MSAServerControls.swift in Sources */,
 				104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */,
+				0FDC151AF9199F82402C844C /* MorphSettings.swift in Sources */,
+				BA974256A8C0FC7B47483AD4 /* MorphSheet.swift in Sources */,
 				5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */,
 				ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */,
 				FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */,
@@ -1752,6 +1904,7 @@
 				6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */,
 				1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */,
 				8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */,
+				31D695FD43081FF7BE38907C /* GlycanTopologyView.swift in Sources */,
 				12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */,
 				82DADD44C2ED6C0A534EBD26 /* InferenceJob.swift in Sources */,
 				966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */,
@@ -1783,6 +1936,8 @@
 				F03621597BA93F7EADDEF676 /* MPNNRuntime.swift in Sources */,
 				D00E3076FED2390242EFE8AA /* MSAServerControls.swift in Sources */,
 				979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */,
+				FC4A54641D8CC5020B186234 /* MorphSettings.swift in Sources */,
+				FFF893B673C4A9414704C452 /* MorphSheet.swift in Sources */,
 				F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */,
 				667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */,
 				7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */,
@@ -1845,7 +2000,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 370;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1859,7 +2014,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.13.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1879,7 +2034,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 370;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1893,7 +2048,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.13.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1915,7 +2070,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 370;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1931,7 +2086,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.13.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1973,7 +2128,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 370;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1989,7 +2144,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.13.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -2005,7 +2160,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = 0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -2112,7 +2267,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = 0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

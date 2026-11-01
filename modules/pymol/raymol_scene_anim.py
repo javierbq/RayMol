@@ -28,15 +28,24 @@ interior frame of a transition between two DISTINCT scenes where at least one
 has an entry carries one compact frame command, `_lights_blend <A>, <B>, <t>`
 (scene names as UTF-8 hex, t the camera's eased position, pre-rounded). It
 reads both stored rigs at play time, so re-storing a scene's rig needs no
-re-authoring. blend_rigs starts from a copy of A, so every field steps at the
-cut unless it is listed there: angles take the shortest path, colour
-interpolates in linear RGB, pinned lights arc around the blended centre, and a
-light in only one scene fades its intensity from or to 0. Rig on/off steps at
-the cut. The track is saved as structured data under 'lights' (only when there
-is one), stripped from the saved movie and regenerated on load like the rest.
-Known limit: the loop-wrap span of a looping movie (camera flying from the
-last scene back to the first) has no keyframe pair, so neither the settings
-nor the rig blend there; the rig pops to the first scene's at frame 1.
+re-authoring. The blend is computed by the core (pymol::LightRigBlend, #661);
+an interactive animated recall is blended by the core with the camera (#661).
+blend_rigs starts from a copy of A, so every field steps at the cut unless it
+is listed there: angles take the shortest path, colour interpolates in linear
+RGB, pinned lights arc around the blended centre, and a light in only one
+scene fades its intensity from or to 0. Rig on/off steps at the cut. The track
+is saved as structured data under 'lights' (only when there is one), stripped
+from the saved movie and regenerated on load like the rest. Loop-wrap
+transitions (#656): when the movie loops (movie_loop on or wrap=True), a
+pseudo-transition from the last keyframe back to the first shifted by the movie
+length blends settings, DOF and the light rig across the wrap span.
+Dust phase (#687): when dust_speed differs between scenes, enter_scene and
+_lights_blend write metal_light_air_phase so the dust time is the integrated
+speed across the movie and the dust does not jump. When the movie has a rig
+blend, every other frame carries a phase-only command (_a.dust_hold()), so a
+hold frame re-applies its scene's rig so a jump equals playback (#661) and
+renders the same dust time as playback; author() starts each movie from
+phase 0.
 """
 import base64
 import copy
@@ -183,21 +192,41 @@ def value_at(setting, a, b, e):
     return a + (b - a) * e
 
 
-def build_track(keyframes, power=None):
+def transitions(keyframes, wrap_length=0):
+    """[((f0, n0, p0), (f1, n1, p1))] for each consecutive keyframe pair
+    (frames as int, sorted by frame), plus -- when wrap_length > 0 -- the
+    loop-wrap pseudo-transition from the last keyframe to the first at
+    first_frame + wrap_length (the camera's own wrap, Movie.cpp
+    MViewAction::Interpolate). The wrap pair is added only with >= 2
+    keyframes and a last keyframe at or before wrap_length."""
+    kfs = [(int(f), n, p) for f, n, p in sorted(keyframes, key=lambda k: int(k[0]))]
+    pairs = list(zip(kfs, kfs[1:]))
+    if len(kfs) >= 2 and wrap_length > 0 and kfs[-1][0] <= wrap_length:
+        f0, n0, p0 = kfs[0]
+        pairs.append((kfs[-1], (f0 + wrap_length, n0, p0)))
+    return pairs
+
+
+def _slot(f, wrap_length):
+    """The real movie frame for transition frame f: f - wrap_length past
+    the end of a wrapping movie, else f."""
+    return f - wrap_length if wrap_length > 0 and f > wrap_length else f
+
+
+def build_track(keyframes, power=None, wrap_length=0):
     """Per-frame interpolated values for the INTERIOR frames of each transition.
 
     `keyframes` is an ordered iterable of (frame, scene_name, power) where power is
     the one stored WITH that keyframe (as passed to mview store). `power` is the
     movie-wide override the path passed to mview interpolate/reinterpolate, if any.
+    `wrap_length` > 0 adds the loop-wrap transition back to the first keyframe.
     Both endpoints of a transition contribute — see effective_power.
     Returns {frame: {setting: float}}. Scene keyframes themselves are applied by
     enter_scene (exact captured values), so they are deliberately absent here,
     as is everything in _DOF_OWNED (build_dof_transition's territory)."""
     from pymol import raymol_scenes as _rs
     track = {}
-    kfs = sorted(keyframes, key=lambda k: int(k[0]))
-    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
-        f0, f1 = int(f0), int(f1)
+    for (f0, n0, p0), (f1, n1, p1) in transitions(keyframes, wrap_length):
         span = f1 - f0
         if span < 2:
             continue                      # no interior frames
@@ -218,7 +247,7 @@ def build_track(keyframes, power=None):
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             e = ease((f - f0) / float(span), pw)
-            slot = track.setdefault(f, {})
+            slot = track.setdefault(_slot(f, wrap_length), {})
             for s, (fa, fb) in pairs.items():
                 slot[s] = value_at(s, fa, fb, e)
     return track
@@ -390,7 +419,7 @@ def resolve_focus(name, view, _self=cmd):
     return None
 
 
-def build_dof_transition(keyframes, _self=cmd, power=None):
+def build_dof_transition(keyframes, _self=cmd, power=None, wrap_length=0):
     """Per-frame depth-of-field animation across each transition: a focus pull
     while DOF stays on, and a blur FADE where it switches on or off.
 
@@ -411,15 +440,14 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
       (SceneRender.cpp:2050).
 
     Returns {frame: {setting: float}} for interior frames only; author() overlays
-    it on top of build_track, so these win. Must run AFTER cmd.mview
-    ('interpolate') so cmd.frame(f) yields the interpolated view. Note: this
-    function leaves the playhead at the last interior frame it visited; callers
-    should reset to a specific frame afterwards if they need a known frame active."""
+    it on top of build_track, so these win. `wrap_length` > 0 adds the loop-wrap
+    transition. Must run AFTER cmd.mview ('interpolate') so cmd.frame(f) yields
+    the interpolated view. Note: this function leaves the playhead at the last
+    interior frame it visited; callers should reset to a specific frame afterwards
+    if they need a known frame active."""
     from pymol import raymol_scenes as _rs
     out = {}
-    kfs = sorted(keyframes, key=lambda k: int(k[0]))
-    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
-        f0, f1 = int(f0), int(f1)
+    for (f0, n0, p0), (f1, n1, p1) in transitions(keyframes, wrap_length):
         span = f1 - f0
         if span < 2:
             continue
@@ -443,8 +471,9 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             e = ease((f - f0) / float(span), pw)
+            slot = _slot(f, wrap_length)
             try:
-                _self.frame(f)
+                _self.frame(slot)
                 view = _self.get_view()
             except Exception:
                 view = None               # focus cannot resolve; the fade still can
@@ -468,24 +497,15 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
                 # Equal distances: same plane. Emitting nothing leaves autofocus
                 # on, still tracking its target correctly by itself.
             if vals:
-                out[f] = vals
+                out[slot] = vals
     return out
 
 
 # --- Light rig blend (#617) --------------------------------------------------
-# Pure Python: no PyMOLGlobals, no cmd. The core clamps whatever set_lights
-# receives, and every value here stays between its two (valid) endpoints.
+# Computed by the core (pymol::LightRigBlend, #661).
 
-# The rig's light cap (LightRig.h): a blend of two rigs never exceeds it.
-_MAX_LIGHTS = 6
-
-# Two pinned directions further apart than this are "opposite": the arc then
-# turns about a fixed axis so the path is deterministic.
-_ANTIPODAL = math.radians(179.9)
-
-_RIG_AIR_LERP = ('haze', 'dust', 'dust_size', 'dust_speed', 'scatter')
-_LIGHT_LERP = ('beam', 'softness', 'highlight', 'falloff', 'warmth',
-               'intensity')
+_RIG_AIR_LERP = ('haze', 'dust', 'dust_size', 'dust_speed', 'scatter',
+                 'dust_glow', 'dust_opacity')
 
 
 def _is_num(v):
@@ -493,107 +513,8 @@ def _is_num(v):
             and math.isfinite(v))
 
 
-def _is_vec3(v):
-    return (isinstance(v, (list, tuple)) and len(v) == 3
-            and all(_is_num(x) for x in v))
-
-
 def _lerp(a, b, e):
     return a + (b - a) * e
-
-
-def _lerp3(a, b, e):
-    return [_lerp(float(x), float(y), e) for x, y in zip(a, b)]
-
-
-def _wrap180(x):
-    """x wrapped into (-180, 180], untouched when already there (so an
-    endpoint stays exact)."""
-    if -180.0 < x <= 180.0:
-        return x
-    r = math.fmod(x + 180.0, 360.0)
-    if r <= 0.0:
-        r += 360.0
-    return r - 180.0
-
-
-def _lerp_angle(a, b, e):
-    """Degrees, along the shortest path: the delta is wrapped into
-    (-180, 180] and so is the result (160 -> -160 passes through 180)."""
-    a = float(a)
-    return _wrap180(a + _wrap180(float(b) - a) * e)
-
-
-def _srgb_to_linear(c):
-    """IEC 61966-2-1 decode of one channel in [0, 1]."""
-    c = min(max(float(c), 0.0), 1.0)
-    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-
-
-def _linear_to_srgb(v):
-    """IEC 61966-2-1 encode of one channel in [0, 1]."""
-    v = min(max(float(v), 0.0), 1.0)
-    s = 12.92 * v if v <= 0.0031308 else 1.055 * v ** (1.0 / 2.4) - 0.055
-    return min(max(s, 0.0), 1.0)
-
-
-def _lerp_color(a, b, e):
-    """sRGB colours interpolated in linear RGB (decode, lerp, encode), exact
-    at both ends: red -> blue passes (0.735, 0, 0.735), not (0.5, 0, 0.5)."""
-    if e <= 0.0:
-        return [float(v) for v in a]
-    if e >= 1.0:
-        return [float(v) for v in b]
-    return [_linear_to_srgb(_lerp(_srgb_to_linear(x), _srgb_to_linear(y), e))
-            for x, y in zip(a, b)]
-
-
-def _norm(v):
-    return math.sqrt(sum(x * x for x in v))
-
-
-def _cross(a, b):
-    return [a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0]]
-
-
-def _slerp_offset(oa, ob, e):
-    """An offset from a rig centre moving from `oa` to `ob`: the direction
-    along the shortest great-circle arc, the distance lerped. Exact at both
-    ends. Nearly opposite directions (> 179.9 degrees) turn about
-    normalize(oa x y), or the x axis when oa is vertical, so the path is
-    deterministic; a zero-length offset falls back to a straight lerp."""
-    oa = [float(x) for x in oa]
-    ob = [float(x) for x in ob]
-    if e <= 0.0:
-        return oa
-    if e >= 1.0:
-        return ob
-    la, lb = _norm(oa), _norm(ob)
-    if la < 1e-9 or lb < 1e-9:
-        return _lerp3(oa, ob, e)
-    ua = [x / la for x in oa]
-    ub = [x / lb for x in ob]
-    dot = min(max(sum(x * y for x, y in zip(ua, ub)), -1.0), 1.0)
-    theta = math.acos(dot)
-    if theta < 1e-6:
-        d = ua
-    elif theta > _ANTIPODAL:
-        k = _cross(ua, [0.0, 1.0, 0.0])
-        nk = _norm(k)
-        k = [x / nk for x in k] if nk > 1e-6 else [1.0, 0.0, 0.0]
-        # Rodrigues for an axis perpendicular to ua
-        phi = theta * e
-        kxu = _cross(k, ua)
-        d = [u * math.cos(phi) + w * math.sin(phi) for u, w in zip(ua, kxu)]
-    else:
-        s = math.sin(theta)
-        wa = math.sin((1.0 - e) * theta) / s
-        wb = math.sin(e * theta) / s
-        d = [wa * x + wb * y for x, y in zip(ua, ub)]
-    dist = _lerp(la, lb, e)
-    return [dist * x for x in d]
 
 
 def rig_on(r):
@@ -603,56 +524,16 @@ def rig_on(r):
     return _rs.rig_on(r)
 
 
-def _light_key(light):
-    """Lights match by name ignoring case: the rig's own uniqueness rule."""
-    return str(light.get('name', '')).lower()
-
-
-def _blend_light(la, lb, e, ca, cb, c):
-    """A light present in both rigs, starting from A's (every field steps
-    unless it is listed here)."""
-    out = copy.deepcopy(la)
-    for k in _LIGHT_LERP:
-        if _is_num(la.get(k)) and _is_num(lb.get(k)):
-            out[k] = _lerp(float(la[k]), float(lb[k]), e)
-    if _is_vec3(la.get('color')) and _is_vec3(lb.get('color')):
-        out['color'] = _lerp_color(la['color'], lb['color'], e)
-    anchor_a = la.get('anchor', 'camera')
-    anchor_b = lb.get('anchor', 'camera')
-    if anchor_a == 'camera' and anchor_b == 'camera':
-        if _is_num(la.get('orbit')) and _is_num(lb.get('orbit')):
-            out['orbit'] = _lerp_angle(la['orbit'], lb['orbit'], e)
-        for k in ('pitch', 'radius'):
-            if _is_num(la.get(k)) and _is_num(lb.get(k)):
-                out[k] = _lerp(float(la[k]), float(lb[k]), e)
-    elif anchor_a == 'pinned' and anchor_b == 'pinned':
-        pa, pb = la.get('position'), lb.get('position')
-        if _is_vec3(pa) and _is_vec3(pb):
-            if e <= 0.0:
-                out['position'] = [float(x) for x in pa]
-            elif c is not None:
-                # Pins are fixed in world space (decision 17): arc around the
-                # blended centre so the light never cuts through the molecule.
-                off = _slerp_offset([p - q for p, q in zip(pa, ca)],
-                                    [p - q for p, q in zip(pb, cb)], e)
-                out['position'] = [q + o for q, o in zip(c, off)]
-            else:
-                out['position'] = _lerp3(pa, pb, e)
-    if la.get('aim') == 'point' and lb.get('aim') == 'point':
-        if _is_vec3(la.get('aim_point')) and _is_vec3(lb.get('aim_point')):
-            out['aim_point'] = _lerp3(la['aim_point'], lb['aim_point'], e)
-    return out
-
-
-def blend_rigs(a, b, e):
-    """Rig dicts `a` and `b` (both on) blended at eased position `e`.
+def blend_rigs(a, b, e, _self=cmd):
+    """Rig dicts `a` and `b` (both on) blended at eased position `e` (#617,
+    computed by the core, pymol::LightRigBlend, #661).
 
     Starts from a copy of A, so a field steps at the cut unless listed here
     (a field a later ticket adds steps by default). The rig is enabled;
     centre, size, ambient, classic and the air's haze, dust, dust_size,
-    dust_speed and scatter lerp (seed stays A's). Lights match by name
+    dust_speed, scatter, dust_glow and dust_opacity lerp (seed stays A's). Lights match by name
     ignoring case and keep A's spelling. A matched light lerps beam,
-    softness, highlight, falloff, warmth and intensity, colour in linear RGB,
+    softness, size, highlight, falloff, warmth and intensity, colour in linear RGB,
     and orbit (shortest path), pitch and radius when both are camera lights,
     its position (an arc about the blended centre) when both are pinned, and
     its aim point when both aim at points; anchor, aim, aim_selection, shadow
@@ -661,66 +542,28 @@ def blend_rigs(a, b, e):
     lights, then B's own, so shadow slots stay A's. Past six lights, the
     dimmest one-sided lights at this frame are left out (ties: the later
     one first)."""
-    e = float(e)
-    out = copy.deepcopy(a)
-    out['enabled'] = True
-    ca, cb = a.get('centre'), b.get('centre')
-    c = None
-    if (_is_vec3(ca) and _is_vec3(cb) and _is_num(a.get('size'))
-            and _is_num(b.get('size'))):
-        c = _lerp3(ca, cb, e)
-        out['centre'] = c
-        out['size'] = _lerp(float(a['size']), float(b['size']), e)
-    for k in ('ambient', 'classic'):
-        if _is_num(a.get(k)) and _is_num(b.get(k)):
-            out[k] = _lerp(float(a[k]), float(b[k]), e)
-    air_a, air_b = a.get('air'), b.get('air')
+    a = dict(a)
+    b = dict(b)
+    air_a = a.get('air')
+    air_b = b.get('air')
     if isinstance(air_a, dict) and isinstance(air_b, dict):
-        air = out['air']
+        air_b = dict(air_b)
         for k in _RIG_AIR_LERP:
-            if _is_num(air_a.get(k)) and _is_num(air_b.get(k)):
-                air[k] = _lerp(float(air_a[k]), float(air_b[k]), e)
-
-    lights_a = [l for l in (a.get('lights') or []) if isinstance(l, dict)]
-    lights_b = [l for l in (b.get('lights') or []) if isinstance(l, dict)]
-    by_key_b = {}
-    for l in lights_b:
-        by_key_b.setdefault(_light_key(l), l)
-    keys_a = set(_light_key(l) for l in lights_a)
-    entries = []        # [(light, one_sided)]
-    for l in lights_a:
-        m = by_key_b.get(_light_key(l))
-        if m is not None:
-            entries.append((_blend_light(l, m, e, ca, cb, c), False))
-        else:
-            d = copy.deepcopy(l)
-            if _is_num(d.get('intensity')):
-                d['intensity'] = float(d['intensity']) * (1.0 - e)
-            entries.append((d, True))
-    for l in lights_b:
-        if _light_key(l) in keys_a:
-            continue
-        d = copy.deepcopy(l)
-        if _is_num(d.get('intensity')):
-            d['intensity'] = float(d['intensity']) * e
-        d['shadow'] = False
-        d['outline'] = False
-        entries.append((d, True))
-    excess = len(entries) - _MAX_LIGHTS
-    if excess > 0:
-        one_sided = [i for i, (_d, one) in enumerate(entries) if one]
-
-        def dimmest(i):
-            v = entries[i][0].get('intensity')
-            return (float(v) if _is_num(v) else 0.0, -i)
-
-        drop = set(sorted(one_sided, key=dimmest)[:excess])
-        entries = [x for i, x in enumerate(entries) if i not in drop]
-    out['lights'] = [d for d, _one in entries]
-    return out
+            if not (_is_num(air_a.get(k)) and _is_num(air_b.get(k))):
+                if _is_num(air_a.get(k)):
+                    air_b[k] = air_a[k]
+                else:
+                    air_b.pop(k, None)
+        b['air'] = air_b
+    elif isinstance(air_a, dict):
+        b['air'] = dict(air_a)
+    else:
+        b.pop('air', None)
+    from pymol import lighting
+    return lighting._blend_lights(a, b, e, _self=_self)
 
 
-def blend_target(ra, rb, t):
+def blend_target(ra, rb, t, _self=cmd):
     """What the rig should be at position `t` of a transition from scene
     entry `ra` to `rb` (each a rig dict, 'off' or None for no entry):
     None (leave the rig alone) when A has no entry; B's entry from t >= 1
@@ -732,8 +575,222 @@ def blend_target(ra, rb, t):
     if t >= 1.0:
         return copy.deepcopy(rb)
     if t > 0.0 and rig_on(ra) and rig_on(rb):
-        return blend_rigs(ra, rb, t)
+        return blend_rigs(ra, rb, t, _self=_self)
     return copy.deepcopy(ra)
+
+
+_PHASE_SETTING = 'metal_light_air_phase'
+_DEFAULT_FPS = 30.0        # LightAir.h kLightAirDefaultFps
+_MAX_DUST_SPEED = 10.0     # LightRig.cpp's dust_speed range
+
+
+def _rig_speed(rig):
+    """The dust speed the core would hold for rig dict `rig` (on): air
+    dust_speed clamped to 0..10, 1.0 (the core default) when absent."""
+    if isinstance(rig, dict):
+        air = rig.get('air')
+        if isinstance(air, dict):
+            s = air.get('dust_speed')
+            if _is_num(s):
+                return min(max(float(s), 0.0), _MAX_DUST_SPEED)
+    return 1.0
+
+
+def _entry_speed(entry):
+    """A scene entry's speed: None for no entry (the rig is left alone);
+    _rig_speed for a rig that is on; 0.0 for 'off' or a rig that is not on
+    (no air is drawn, the dust holds)."""
+    if entry is None:
+        return None
+    if rig_on(entry):
+        return _rig_speed(entry)
+    return 0.0
+
+
+def _blend_speed(ra, rb, t):
+    """The speed blend_target(ra, rb, t) leaves the rig with, without
+    building the rig: None when ra is None; _entry_speed(rb) when t >= 1;
+    when 0 < t < 1 and both rig_on: _lerp of the two RAW air dust_speed
+    values (then clamped like _rig_speed) when both air dicts hold numbers,
+    else _rig_speed(ra) (blend_rigs keeps A's air); otherwise
+    _entry_speed(ra)."""
+    if ra is None:
+        return None
+    t = float(t)
+    if t >= 1.0:
+        return _entry_speed(rb)
+    if t > 0.0 and rig_on(ra) and rig_on(rb):
+        air_a = ra.get('air') if isinstance(ra, dict) else None
+        air_b = rb.get('air') if isinstance(rb, dict) else None
+        if (isinstance(air_a, dict) and isinstance(air_b, dict)
+                and _is_num(air_a.get('dust_speed'))
+                and _is_num(air_b.get('dust_speed'))):
+            sa = min(max(float(air_a['dust_speed']), 0.0), _MAX_DUST_SPEED)
+            sb = min(max(float(air_b['dust_speed']), 0.0), _MAX_DUST_SPEED)
+            lerped = _lerp(sa, sb, t)
+            return min(max(float(lerped), 0.0), _MAX_DUST_SPEED)
+        return _rig_speed(ra)
+    return _entry_speed(ra)
+
+
+def dust_speeds(marks=None, lights_track=None, entries=None):
+    """[s(1), ..., s(L)]: the rig's dust speed at each 1-based movie frame
+    of the authored movie, L the last frame either list names (0 frames -> []).
+    `marks` / `lights_track` default to the module's _scene_marks and
+    _lights_track; `entries` maps a scene name to its rig entry and defaults
+    to raymol_scenes.scene_lights (read ONCE per name, cached in a local
+    dict). A transition frame takes _blend_speed; else a keyframe takes
+    _entry_speed of its scene (the last mark wins if a frame has several);
+    a frame with neither, or whose value is None, keeps the previous frame's
+    speed. Frames before the first known speed take the FIRST known speed of
+    the movie (the live rig before it is unknown). With no known speed at
+    all (no scene stores a rig) it is [], and the phase stays 0: the dust
+    keeps clock x speed, as before #687."""
+    if marks is None:
+        marks = _scene_marks
+    if lights_track is None:
+        lights_track = _lights_track
+
+    cache = {}
+
+    def get_entry(name):
+        if name not in cache:
+            if entries is None:
+                from pymol import raymol_scenes as _rs
+                cache[name] = _rs.scene_lights(name)
+            elif callable(entries):
+                cache[name] = entries(name)
+            elif isinstance(entries, dict):
+                cache[name] = entries.get(name)
+            else:
+                cache[name] = None
+        return cache[name]
+
+    mark_frames = []
+    keyframe_scenes = {}
+    for f, name in marks:
+        fi = int(f)
+        keyframe_scenes[fi] = name
+        mark_frames.append(fi)
+
+    track_frames = []
+    trans_map = {}
+    if isinstance(lights_track, dict):
+        for f, val in lights_track.items():
+            fi = int(f)
+            trans_map[fi] = (val[0], val[1], val[2])
+            track_frames.append(fi)
+    elif lights_track:
+        for it in lights_track:
+            fi = int(it[0])
+            trans_map[fi] = (it[1], it[2], it[3])
+            track_frames.append(fi)
+
+    all_frames = mark_frames + track_frames
+    if not all_frames:
+        return []
+    L = max(all_frames)
+    if L < 1:
+        return []
+
+    raw = [None] * L
+    for f in range(1, L + 1):
+        s = None
+        if f in trans_map:
+            a, b, t = trans_map[f]
+            s = _blend_speed(get_entry(a), get_entry(b), t)
+        if s is None and f in keyframe_scenes:
+            s = _entry_speed(get_entry(keyframe_scenes[f]))
+        raw[f - 1] = s
+
+    first_known = None
+    for s in raw:
+        if s is not None:
+            first_known = s
+            break
+
+    if first_known is None:
+        return []
+
+    out = []
+    cur = first_known
+    for s in raw:
+        if s is not None:
+            cur = s
+        out.append(float(cur))
+    return out
+
+
+def dust_phase(frame, fps, speeds, speed=None):
+    """metal_light_air_phase for 1-based movie `frame`: (sum of speeds of
+    the frames before it - (frame - 1) x its own speed) / fps, so that
+    (frame - 1) / fps x speed + phase is the integral of the speed over the
+    movie so far. fps <= 0 or not finite reads as 30. A frame past the end
+    keeps the last speed; frame < 1 or an empty list gives 0.0. `speed`,
+    when given, is the speed the rig actually holds now and replaces the
+    frame's own: the phase then makes the dust time the integral whatever
+    speed a jump left on the rig."""
+    if not speeds or frame < 1:
+        return 0.0
+    try:
+        fps = float(fps)
+        if not (fps > 0.0 and math.isfinite(fps)):
+            fps = _DEFAULT_FPS
+    except (TypeError, ValueError):
+        fps = _DEFAULT_FPS
+
+    frame = int(frame)
+    i = frame - 1
+    L = len(speeds)
+    if i < L:
+        s_i = speeds[i]
+        sum_before = sum(speeds[:i])
+    else:
+        s_i = speeds[-1]
+        sum_before = sum(speeds) + (i - L) * s_i
+    if speed is not None:
+        s_i = float(speed)
+
+    return float((sum_before - i * s_i) / fps)
+
+
+def _live_speed(_self):
+    """The dust speed of the rig as it is now (after this frame's commands),
+    or None when the rig is off or cannot be read (a stand-in cmd). A hold
+    frame reached by a jump keeps the rig of the frame shown before it; the
+    phase is computed against that speed so the dust time is still right."""
+    try:
+        from pymol import lighting
+        live = lighting.get_lights(_self=_self)
+    except Exception:
+        return None
+    return _rig_speed(live) if rig_on(live) else None
+
+
+def _write_phase(_self):
+    """Write metal_light_air_phase for the current movie frame
+    (_self.get_frame()) and movie_fps (float(_self.get('movie_fps'))). Writes
+    only when it differs from the current value (read with
+    _self.get_setting_float; if that is unavailable, write). Never raises:
+    a core without the setting, or a stand-in cmd without get_frame, writes
+    nothing."""
+    try:
+        get_frame = getattr(_self, 'get_frame', None)
+        if get_frame is None:
+            return
+        frame = int(get_frame())
+        try:
+            fps_val = _self.get('movie_fps')
+            fps = float(fps_val) if fps_val is not None else _DEFAULT_FPS
+        except Exception:
+            fps = _DEFAULT_FPS
+
+        speeds = dust_speeds()
+        phase = dust_phase(frame, fps, speeds, _live_speed(_self))
+
+        _set_phase(phase, _self)
+    except Exception:
+        pass
 
 
 def _name_hex(name):
@@ -753,6 +810,79 @@ def _name_from_hex(s):
         return None
 
 
+def _movie_length(_self):
+    try:
+        return max(0, int(_self.get_movie_length()))
+    except Exception:
+        return 0
+
+
+def _set_phase(phase, _self):
+    """Write metal_light_air_phase when it differs from the setting (a
+    float32, so compared at its precision). Never raises: a core without
+    the setting writes nothing."""
+    try:
+        getter = getattr(_self, 'get_setting_float', None)
+        if getter is not None:
+            cur = float(getter(_PHASE_SETTING))
+            if abs(cur - phase) <= 1e-6 * max(1.0, abs(phase)):
+                return
+        _self.set(_PHASE_SETTING, phase, quiet=1)
+    except Exception:
+        pass
+
+
+def phase_command():
+    """The frame command of a hold frame (#687): it only writes the dust
+    phase. No arguments: the phase is computed from the authored movie."""
+    return "from pymol import raymol_scene_anim as _a; _a.dust_hold()"
+
+
+def build_phase_frames(marks, lights_track, length):
+    """The frames 1..`length` that carry neither a scene mark nor a rig
+    blend, when there is a rig blend at all (else []): a jump to one of them
+    (frame N then png, an export starting mid-movie) runs only that frame's
+    command, so each needs its own phase write or it renders with whatever
+    phase the last frame shown left behind."""
+    if not lights_track or length < 1:
+        return []
+    busy = set(int(f) for f, _n in marks) | set(int(f) for f in lights_track)
+    return [f for f in range(1, int(length) + 1) if f not in busy]
+
+
+def emit_phase_frames(frames, _self=cmd):
+    """One mappend of phase_command per hold frame. Returns the frames
+    touched."""
+    done = []
+    text = phase_command()
+    for f in frames:
+        try:
+            _self.mappend(int(f), text)
+            done.append(int(f))
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+    return done
+
+
+def dust_hold(_self=cmd):
+    """The hold frames' command: re-apply the held scene's light rig (#661) so
+    a jump equals playback, and write the dust phase for this frame (#687)."""
+    try:
+        get_frame = getattr(_self, 'get_frame', None)
+        if get_frame is not None and _scene_marks:
+            frame = int(get_frame())
+            held = None
+            for f, name in sorted(_scene_marks):
+                if int(f) <= frame:
+                    held = name
+            if held is not None:
+                from pymol import raymol_scenes as _rs
+                _rs.apply_lights(held, _self)
+    except Exception:
+        pass
+    _write_phase(_self)
+
+
 def lights_command(a, b, t):
     """The frame command for position `t` from scene `a` to `b`. Names are
     UTF-8 hex: [0-9a-f] only, so no quote, ',', ';' or '=' reaches the
@@ -760,17 +890,15 @@ def lights_command(a, b, t):
     return '_lights_blend %s, %s, %s' % (_name_hex(a), _name_hex(b), _fmt(t))
 
 
-def build_lights_track(keyframes, power=None):
+def build_lights_track(keyframes, power=None, wrap_length=0):
     """{frame: (scene_a, scene_b, t)} for the interior frames of every
     transition between two DISTINCT scenes, at least one of which holds a rig
-    entry now ('off' or a dict). `t` is the camera's eased position (the
-    easing build_track uses), stored pre-rounded so a restore regenerates the
-    same command text."""
+    entry now ('off' or a dict). `wrap_length` > 0 adds the loop-wrap
+    transition. `t` is the camera's eased position (the easing build_track
+    uses), stored pre-rounded so a restore regenerates the same command text."""
     from pymol import raymol_scenes as _rs
     track = {}
-    kfs = sorted(keyframes, key=lambda k: int(k[0]))
-    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
-        f0, f1 = int(f0), int(f1)
+    for (f0, n0, p0), (f1, n1, p1) in transitions(keyframes, wrap_length):
         span = f1 - f0
         if span < 2 or n0 == n1:
             continue
@@ -779,7 +907,7 @@ def build_lights_track(keyframes, power=None):
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             t = float(_fmt(ease((f - f0) / float(span), pw)))
-            track[f] = (n0, n1, t)
+            track[_slot(f, wrap_length)] = (n0, n1, t)
     return track
 
 
@@ -812,12 +940,16 @@ def lights_blend(a_hex, b_hex, t, _self=cmd):
             return
         t = min(max(t, 0.0), 1.0)
         from pymol import raymol_scenes as _rs
-        target = blend_target(_rs.scene_lights(a), _rs.scene_lights(b), t)
-        if target is None:
-            return
-        _rs._apply_lights_target(target, _self, report=a)
+        target = None
+        try:
+            target = blend_target(_rs.scene_lights(a), _rs.scene_lights(b), t, _self=_self)
+        except Exception as exc:
+            _rs._warn_lights(a, 'light rig of scene "%s" could not be blended: %s' % (a, exc))
+        if target is not None:
+            _rs._apply_lights_target(target, _self, report=a)
     except Exception:
         pass
+    _write_phase(_self)
 
 
 # The animation authored into the CURRENT movie, regenerated on every rebuild.
@@ -827,6 +959,21 @@ _track = {}
 _scene_marks = []
 # ...and {frame: (scene_a, scene_b, t)} for the rig blend's _lights_blend.
 _lights_track = {}
+# ...and [frame] for the hold frames carrying the dust phase write (#687).
+_phase_frames = []
+
+
+def reset():
+    """Forget the whole authored animation WITHOUT touching the movie (#657).
+
+    For `reinitialize everything`, which has already dropped the movie: author([])
+    or clear_authored() would mdo frames of a movie that no longer exists (one
+    Movie-Error per frame), and a .pse saved or loaded afterwards would carry the
+    stale marks and tracks into the fresh session."""
+    _track.clear()
+    _scene_marks[:] = []
+    _lights_track.clear()
+    _phase_frames[:] = []
 
 
 def clear_authored(_self=cmd):
@@ -843,11 +990,29 @@ def clear_authored(_self=cmd):
     frames = set(int(f) for f in _track)
     frames.update(int(f) for f, _n in _scene_marks)
     frames.update(int(f) for f in _lights_track)
+    # A hold frame (#687) carries only the phase write, and can be any frame
+    # of the movie, so its slot is edited, not blanked: a user's own command
+    # there survives a re-author (blanking is the fallback without a reader).
+    hold = sorted(set(int(f) for f in _phase_frames) - frames)
     try:
         length = int(_self.get_movie_length())
     except Exception:
         length = 0
     done = []
+    text = phase_command()
+    for f in hold:
+        if length > 0 and f > length:
+            continue
+        try:
+            slot = _frame_command(f, _self)
+        except Exception:
+            frames.add(f)
+            continue
+        try:
+            _self.mdo(f, slot.replace(';' + text, '').replace(text, ''))
+            done.append(f)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
     for f in sorted(frames):
         # Past the end of the current movie there is no Cmd[] slot to blank (a
         # shorter mset already dropped it); mdo would only print a Movie-Error.
@@ -858,18 +1023,37 @@ def clear_authored(_self=cmd):
             done.append(f)
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
-    return done
+    return sorted(done)
 
 
-def author(keyframes, _self=cmd, power=None):
+def _wrap_length(wrap, _self):
+    """Movie length for a wrapping movie, 0 if wrap is off or length <= 0."""
+    if wrap is None:
+        try:
+            wrap = _truthy(_self.get('movie_loop'))
+        except Exception:
+            wrap = False
+    if not wrap:
+        return 0
+    try:
+        return max(0, int(_self.get_movie_length()))
+    except Exception:
+        return 0
+
+
+def author(keyframes, _self=cmd, power=None, wrap=None):
     """Author the whole per-scene setting animation for a movie.
 
     `keyframes` is [(frame, scene_name, power)] for every scene keyframe in the
     movie, in any order (sorted internally by frame), each power being the one
     stored with that keyframe. `power` is the movie-wide easing override the path
     passed to cmd.mview('interpolate'/'reinterpolate') — 0/None means it passed
-    none and the endpoints decide. Call AFTER the path's cmd.mset and
-    cmd.mview('interpolate'). Returns the number of frames touched.
+    none and the endpoints decide. `wrap` governs loop-wrap pseudo-transitions:
+    None follows the `movie_loop` setting (like `mview interpolate`'s wrap=-1);
+    True/False forces wrapping on or off (pass what the camera's interpolate used).
+    Call AFTER the path's cmd.mset and cmd.mview('interpolate') so the movie
+    length is final and the camera track is interpolated. Returns the number of
+    frames touched.
 
     author([]) is the reset: it un-emits the previous pass and clears the track,
     so call it unconditionally — including on a rebuild that has no scenes at all,
@@ -879,22 +1063,98 @@ def author(keyframes, _self=cmd, power=None):
     _track.clear()
     _scene_marks[:] = []
     _lights_track.clear()
+    _phase_frames[:] = []
+    # #687: no phase from a previous movie survives into this one; the
+    # frames below write their own.
+    _set_phase(0.0, _self)
+    wrap_length = _wrap_length(wrap, _self) if keyframes else 0
     marks = [(int(f), n) for f, n, _p in keyframes]
-    track = build_track(keyframes, power)
+    track = build_track(keyframes, power, wrap_length=wrap_length)
     # DOF owns focus/aperture/enable wherever it applies, so it goes on LAST and
     # overrides the plain ramp (build_track's aperture ramp across a fade would
     # otherwise start from the disabled side's meaningless captured value).
-    for f, vals in build_dof_transition(keyframes, _self, power).items():
+    for f, vals in build_dof_transition(keyframes, _self, power, wrap_length=wrap_length).items():
         track.setdefault(f, {}).update(vals)
     _track.update(track)
     _scene_marks[:] = sorted(set(marks))
     # The rig blend (#617): read at play time, so it only records which
     # transitions to blend and where along each one the camera is.
-    _lights_track.update(build_lights_track(keyframes, power))
+    _lights_track.update(build_lights_track(keyframes, power, wrap_length=wrap_length))
     touched = set(emit_scene_marks(_scene_marks, _self))
     touched.update(emit_track(_track, _self))
     touched.update(emit_lights_track(_lights_track, _self))
+    _phase_frames[:] = build_phase_frames(_scene_marks, _lights_track,
+                                          _movie_length(_self))
+    touched.update(emit_phase_frames(_phase_frames, _self))
     return len(touched)
+
+
+def _frame_command(frame, _self=cmd):
+    """The movie command text of `frame` as the core holds it (#655)."""
+    getter = getattr(_self, 'get_frame_command', None)   # test doubles
+    if getter is not None:
+        return getter(int(frame))
+    from pymol import _cmd
+    return _cmd.get_frame_command(_self._COb, int(frame))
+
+
+def rename_scene(old, new, _self=cmd):
+    """Re-key the authored movie when scene `old` is renamed to `new` (#655).
+
+    `_scene_marks` and `_lights_track` name scenes, and so does the frame
+    command text emitted from them, so after a rename the movie would neither
+    apply the scene at its keyframe nor blend into it. Re-key both, then edit
+    each affected frame slot in place: only our own command pieces naming
+    `old` are replaced, so a user's mdo/mappend text sharing the slot
+    survives (a rename is not a re-author; clear_authored would blank whole
+    slots). Without a slot reader (an older core: AttributeError) it falls
+    back to clear_authored + re-emit; any other read error restores the
+    state, writes nothing and propagates. Returns the number of frames
+    touched (0 when nothing referenced `old`)."""
+    if not old or not new or old == new:
+        return 0
+    in_marks = any(n == old for _f, n in _scene_marks)
+    in_lights = any(old in (a, b) for a, b, _t in _lights_track.values())
+    if not (in_marks or in_lights):
+        return 0
+    before = _our_commands()
+    saved = (list(_scene_marks), dict(_lights_track))
+    _scene_marks[:] = [(int(f), new if n == old else n) for f, n in _scene_marks]
+    for f, (a, b, t) in list(_lights_track.items()):
+        _lights_track[f] = (new if a == old else a, new if b == old else b, t)
+    after = _our_commands()
+    changed = [f for f in sorted(set(before) | set(after))
+               if before.get(f) != after.get(f)]
+    try:
+        slots = {f: _frame_command(f, _self) for f in changed}
+    except AttributeError:
+        # An older core with no slot reader: the old trade-off (see
+        # clear_authored), re-emitted whole. clear_authored only needs the
+        # frame lists, which a rename does not change.
+        clear_authored(_self)
+        touched = set(emit_scene_marks(_scene_marks, _self))
+        touched.update(emit_track(_track, _self))
+        touched.update(emit_lights_track(_lights_track, _self))
+        touched.update(emit_phase_frames(_phase_frames, _self))
+        return len(touched)
+    except Exception:
+        # Any other read failure: nothing was written yet, so put the state
+        # back and leave the movie as it was (the caller reports the error).
+        _scene_marks[:] = saved[0]
+        _lights_track.clear()
+        _lights_track.update(saved[1])
+        raise
+    done = []
+    for f in changed:
+        slot = slots[f]
+        for o, n in zip(before.get(f, []), after.get(f, [])):
+            slot = slot.replace(o, n, 1) if o in slot else slot + ';' + n
+        try:
+            _self.mdo(f, slot)
+            done.append(f)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+    return len(done)
 
 
 def _our_commands():
@@ -908,6 +1168,8 @@ def _our_commands():
             out.setdefault(int(f), []).append(s)
     for f, (a, b, t) in _lights_track.items():
         out.setdefault(int(f), []).append(lights_command(a, b, t))
+    for f in _phase_frames:
+        out.setdefault(int(f), []).append(phase_command())
     return out
 
 
@@ -968,6 +1230,7 @@ def session_restore(session, *, _self=cmd):
     _track.clear()
     _scene_marks[:] = []
     _lights_track.clear()
+    _phase_frames[:] = []
     d = session.get('raymol_movie_anim')
     if not isinstance(d, dict):
         return 1
@@ -1016,6 +1279,11 @@ def session_restore(session, *, _self=cmd):
     emit_scene_marks(_scene_marks, _self)
     emit_track(_track, _self)
     emit_lights_track(_lights_track, _self)
+    # The hold frames' phase writes (#687) are not saved: they follow from
+    # the marks, the rig blends and the movie length.
+    _phase_frames[:] = build_phase_frames(_scene_marks, _lights_track,
+                                          _movie_length(_self))
+    emit_phase_frames(_phase_frames, _self)
     return 1
 
 
@@ -1089,5 +1357,9 @@ def enter_scene(name_b64, _self=cmd):
     # with no entry leaves the rig alone; a matching rig writes nothing.
     try:
         _rs.apply_lights(name, _self)
+    except Exception:
+        pass
+    try:
+        _write_phase(_self)
     except Exception:
         pass

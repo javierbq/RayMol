@@ -15,13 +15,13 @@ import XCTest
 final class LightParameterTests: XCTestCase {
     func testFieldsAreTheCoreNames() {
         XCTAssertEqual(LightParameter.allCases.map(\.field),
-                       ["orbit", "pitch", "radius", "intensity", "warmth", "beam", "softness"])
+                       ["orbit", "pitch", "radius", "intensity", "warmth", "beam", "softness", "size"])
     }
 
     func testRangesAreTheCores() {
         let expected: [LightParameter: ClosedRange<Double>] = [
             .orbit: -180...180, .pitch: -90...90, .radius: 0.5...8, .intensity: 0...4,
-            .warmth: 1500...15000, .beam: 1...170, .softness: 0...1,
+            .warmth: 1500...15000, .beam: 1...170, .softness: 0...1, .size: 0...1,
         ]
         for parameter in LightParameter.allCases {
             XCTAssertEqual(parameter.range, expected[parameter], parameter.field)
@@ -38,13 +38,13 @@ final class LightParameterTests: XCTestCase {
 
     func testLabelsFollowDecision11() {
         XCTAssertEqual(LightParameter.allCases.map(\.label),
-                       ["Orbit", "Pitch", "Radius", "Intensity", "Warmth", "Beam", "Softness"])
+                       ["Orbit", "Pitch", "Radius", "Intensity", "Warmth", "Beam", "Softness", "Size"])
     }
 
     func testQuantaAndRounding() {
         let quanta: [LightParameter: Double] = [
             .orbit: 1, .pitch: 1, .radius: 0.01, .intensity: 0.01, .warmth: 10,
-            .beam: 0.5, .softness: 0.01,
+            .beam: 0.5, .softness: 0.01, .size: 0.01,
         ]
         for parameter in LightParameter.allCases {
             XCTAssertEqual(parameter.quantum, quanta[parameter], parameter.field)
@@ -53,6 +53,7 @@ final class LightParameterTests: XCTestCase {
         XCTAssertEqual(LightParameter.radius.rounded(3.004), 3.0, accuracy: 1e-12)
         XCTAssertEqual(LightParameter.warmth.rounded(3804), 3800)
         XCTAssertEqual(LightParameter.beam.rounded(40.3), 40.5)
+        XCTAssertEqual(LightParameter.size.rounded(0.254), 0.25, accuracy: 1e-12)
     }
 }
 
@@ -211,6 +212,96 @@ final class WarmthScaleTests: XCTestCase {
     }
 }
 
+// MARK: - Marker colour (#798)
+
+final class LightMarkerColourTests: XCTestCase {
+    private func assertClose(_ a: SIMD3<Double>, _ b: SIMD3<Double>, accuracy: Double = 1e-6,
+                             _ message: String = "", file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(a.x, b.x, accuracy: accuracy, message, file: file, line: line)
+        XCTAssertEqual(a.y, b.y, accuracy: accuracy, message, file: file, line: line)
+        XCTAssertEqual(a.z, b.z, accuracy: accuracy, message, file: file, line: line)
+    }
+
+    /// The core's `LightWarmthRGB` (layer1/LightShading.cpp) at these kelvin,
+    /// read through `_cmd.light_warmth_rgb`: the Swift port matches it.
+    func testWarmthMatchesTheCoreMultiplier() {
+        let expected: [(Double, SIMD3<Double>)] = [
+            (1500, SIMD3(1.0, 0.1409107271911322, 0.0)),
+            (3200, SIMD3(1.0, 0.5478253071294921, 0.19497042289172284)),
+            (4000, SIMD3(1.0, 0.6933918041687563, 0.3806952436981582)),
+            (6500, SIMD3(1, 1, 1)),
+            (9000, SIMD3(0.6684866233620943, 0.7811022362987741, 1.0)),
+            (15000, SIMD3(0.45554114435783977, 0.6119333497326922, 1.0)),
+        ]
+        for (kelvin, rgb) in expected {
+            assertClose(LightColour.warmthRGB(kelvin: kelvin), rgb, "\(kelvin) K")
+        }
+    }
+
+    func testWarmthClampsAndTreatsNaNAsNeutral() {
+        assertClose(LightColour.warmthRGB(kelvin: 100), LightColour.warmthRGB(kelvin: 1500))
+        assertClose(LightColour.warmthRGB(kelvin: 1e9), LightColour.warmthRGB(kelvin: 15000))
+        assertClose(LightColour.warmthRGB(kelvin: .nan), SIMD3(1, 1, 1))
+    }
+
+    func testNeutralWhiteIsWhite() {
+        let m = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 6500)
+        assertClose(m.fill, SIMD3(1, 1, 1))
+        XCTAssertEqual(m, .neutral)
+    }
+
+    func testColourIsShownAsTheRigSendsIt() {
+        // Red stays red at any warmth (the warm multiplier leads with red).
+        assertClose(LightMarkerColour(color: SIMD3(1, 0, 0), warmth: 6500).fill, SIMD3(1, 0, 0))
+        assertClose(LightMarkerColour(color: SIMD3(1, 0, 0), warmth: 2000).fill, SIMD3(1, 0, 0))
+        // A mid colour is the channel-wise product with the warmth multiplier.
+        let tint = LightColour.warmthRGB(kelvin: 3200)
+        assertClose(LightMarkerColour(color: SIMD3(0.5, 0.8, 0.4), warmth: 3200).fill,
+                    SIMD3(0.5 * tint.x, 0.8 * tint.y, 0.4 * tint.z))
+        // A white light at 3200 K is the warm tint itself: orange.
+        assertClose(LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 3200).fill, tint)
+        XCTAssertGreaterThan(tint.x, tint.y)
+        XCTAssertGreaterThan(tint.y, tint.z)
+        // Cool light leans blue.
+        let cool = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 12000).fill
+        XCTAssertEqual(cool.z, 1, accuracy: 1e-9)
+        XCTAssertLessThan(cool.x, cool.z)
+    }
+
+    func testOutOfRangeColoursAreClamped() {
+        let m = LightMarkerColour(color: SIMD3(2, -1, .nan), warmth: 6500)
+        assertClose(m.fill, SIMD3(1, 0, 0))
+        for c in [m.fill.x, m.fill.y, m.fill.z] { XCTAssertTrue((0...1).contains(c)) }
+    }
+
+    func testOutlineContrastsWithTheFill() {
+        let white = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 6500)
+        XCTAssertEqual(white.outline, SIMD3(0, 0, 0), "a white light gets a dark outline")
+        let black = LightMarkerColour(color: SIMD3(0, 0, 0), warmth: 6500)
+        XCTAssertEqual(black.outline, SIMD3(1, 1, 1), "a black one a light outline")
+        XCTAssertEqual(LightMarkerColour(color: SIMD3(1, 1, 0), warmth: 6500).outline, SIMD3(0, 0, 0))
+        XCTAssertEqual(LightMarkerColour(color: SIMD3(0, 0, 1), warmth: 6500).outline, SIMD3(1, 1, 1))
+        // Every swatch and a spread of warmths reaches a usable contrast
+        // (WCAG 3:1, the threshold for graphics) against its own outline.
+        for swatch in LightColour.swatches {
+            for kelvin in [1500.0, 3200, 6500, 9000, 15000] {
+                let m = LightMarkerColour(color: swatch.rgb, warmth: kelvin)
+                let ratio = LightMarkerColour.contrastRatio(LightMarkerColour.luminance(m.fill),
+                                                            LightMarkerColour.luminance(m.outline))
+                XCTAssertGreaterThanOrEqual(ratio, 3, "\(swatch.name) at \(kelvin) K")
+            }
+        }
+    }
+
+    func testLuminanceAndContrastRatio() {
+        XCTAssertEqual(LightMarkerColour.luminance(SIMD3(0, 0, 0)), 0, accuracy: 1e-12)
+        XCTAssertEqual(LightMarkerColour.luminance(SIMD3(1, 1, 1)), 1, accuracy: 1e-9)
+        XCTAssertEqual(LightMarkerColour.contrastRatio(1, 0), 21, accuracy: 1e-9)
+        XCTAssertEqual(LightMarkerColour.contrastRatio(0, 1), 21, accuracy: 1e-9)
+        XCTAssertEqual(LightMarkerColour.contrastRatio(0.3, 0.3), 1, accuracy: 1e-12)
+    }
+}
+
 // MARK: - The typed edits
 
 @MainActor
@@ -241,7 +332,7 @@ final class LightsEditTests: XCTestCase {
         controller.select(name: "fill")
         let values: [LightParameter: Double] = [
             .orbit: -45, .pitch: 35, .radius: 3, .intensity: 1.8, .warmth: 3800,
-            .beam: 40, .softness: 0.5,
+            .beam: 40, .softness: 0.5, .size: 0.25,
         ]
         for parameter in LightParameter.allCases {
             let before = store.numberWrites.count
@@ -292,6 +383,62 @@ final class LightsEditTests: XCTestCase {
         XCTAssertEqual(controller.value(.orbit), -177)
         XCTAssertEqual(controller.step(.orbit, by: -5), .ok)
         XCTAssertEqual(controller.value(.orbit), 178)
+    }
+
+    func testNudgeWritesThroughTheStepper() throws {
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .orbit, delta: 1)), .ok)
+        var write = try XCTUnwrap(store.numberWrites.last)
+        XCTAssertEqual(write.index, 0)
+        XCTAssertEqual(write.field, "orbit")
+        XCTAssertEqual(write.value, 1)
+        XCTAssertEqual(controller.value(.orbit), 1)
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .pitch, delta: 10)), .ok)
+        write = try XCTUnwrap(store.numberWrites.last)
+        XCTAssertEqual(write.index, 0)
+        XCTAssertEqual(write.field, "pitch")
+        XCTAssertEqual(write.value, 40, "key starts at pitch 30")
+        XCTAssertEqual(controller.value(.pitch), 40)
+        XCTAssertTrue(store.performed.isEmpty, "no Python")
+    }
+
+    func testNudgeWrapsOrbitAndClampsPitch() {
+        XCTAssertEqual(controller.set(.orbit, 179.5), .ok)
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .orbit, delta: 1)), .ok)
+        XCTAssertEqual(controller.value(.orbit), -179.5)
+        XCTAssertEqual(controller.set(.pitch, 85), .ok)
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .pitch, delta: 10)), .ok)
+        XCTAssertEqual(controller.value(.pitch), 90)
+    }
+
+    func testNudgeCountsAsAnEdit() {
+        let orbit = LightNudge(parameter: .orbit, delta: 1)
+        let pitch = LightNudge(parameter: .pitch, delta: 1)
+        let start = controller.editCount
+        controller.nudge(orbit)
+        XCTAssertEqual(controller.editCount, start + 1)
+        controller.nudge(orbit)
+        XCTAssertEqual(controller.editCount, start + 1, "a quick repeat on one field is one edit")
+        store.clock += 1
+        controller.nudge(orbit)
+        XCTAssertEqual(controller.editCount, start + 2, "after the run gap it counts again")
+        controller.nudge(pitch)
+        XCTAssertEqual(controller.editCount, start + 3, "the other field counts")
+    }
+
+    func testNudgeAddsToAFreshValue() {
+        XCTAssertEqual(controller.set(.orbit, 10), .ok)
+        store.lights[0].orbit = 50
+        store.clock += 1
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .orbit, delta: 1)), .ok)
+        XCTAssertEqual(store.lights[0].orbit, 51)
+        XCTAssertEqual(controller.value(.orbit), 51)
+    }
+
+    func testNudgeWithNoSelectionWritesNothing() {
+        controller.end()
+        let writes = store.numberWrites.count
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .orbit, delta: 1)), .badIndex)
+        XCTAssertEqual(store.numberWrites.count, writes)
     }
 
     func testStepOnAPinnedLightReadsTheEyeNow() {

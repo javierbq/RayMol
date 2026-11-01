@@ -8,6 +8,7 @@
 #endif
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -65,6 +66,17 @@ constexpr NSUInteger kRTLightRigBufferIndex = 13;
 // kRTSrc's own kLightHdr (#624): set on every RT specialisation, as
 // kRTLightRig is.
 constexpr NSUInteger kRTLightHdrConstantIndex = 2;
+// Studio shadow maps on traced reflection hits (#664): kRTSrc's kRTLightShadow
+// and the composite's lightShadowMaps texture(5).
+constexpr NSUInteger kRTLightShadowConstantIndex = 3;
+constexpr NSUInteger kRTLightShadowTextureIndex = 5;
+// Traced soft shadows (#741): kRTSrc's kRTLightSoft, soft texture(6),
+// RTSoftU buffer(15), and ray budgets.
+constexpr NSUInteger kRTLightSoftConstantIndex = 4;
+constexpr NSUInteger kRTSoftBufferIndex = 15;
+constexpr NSUInteger kRTSoftTextureIndex = 6;
+constexpr int kRTSoftRaysLive = 8, kRTSoftRaysExport = 16;
+constexpr int kRTSoftHitRaysLive = 1, kRTSoftHitRaysExport = 4;
 
 // The air pass (#618; kAirSrc): its own library and its own index space. The
 // air block (pymol::LightAirBlock, MSL LightAirU) and a copy of the rig block
@@ -74,6 +86,7 @@ constexpr NSUInteger kRTLightHdrConstantIndex = 2;
 // or the maps' index in the lit libraries.
 constexpr NSUInteger kAirParamsBufferIndex = 0;
 constexpr NSUInteger kAirRigBufferIndex = 1;
+constexpr NSUInteger kAirCellBufferIndex = 2;
 constexpr NSUInteger kAirColorTextureIndex = 0;
 constexpr NSUInteger kAirDepthTextureIndex = 1;
 constexpr NSUInteger kAirMapsTextureIndex = 2;
@@ -110,12 +123,18 @@ struct MaterialU {
   float lightTint;
   float lightWrap;
   float lightClassic;
+  float lightHighlight2;
+  float lightSharpness2;
+  float lightTint2;
+  float lightTintGain;
   float _pad3;
   float _pad4;
 };
-static_assert(sizeof(MaterialU) == 160, "MaterialU must match the MSL struct");
+static_assert(sizeof(MaterialU) == 176, "MaterialU must match the MSL struct");
 static_assert(offsetof(MaterialU, lightDiffuse) == 128,
     "the studio response is appended after the 128 bytes before #615");
+static_assert(offsetof(MaterialU, lightHighlight2) == 152,
+    "the second lobe and tint gain are appended after lightClassic (#712)");
 static_assert(sizeof(MaterialU) % 16 == 0, "MaterialU must stay 16-byte aligned");
 
 // Fill and bind MaterialU for the draw about to be issued. Called from EVERY
@@ -150,6 +169,10 @@ void bindMaterialU(id<MTLRenderCommandEncoder> enc, const MaterialParams& mp,
   u.lightTint = r.tint;
   u.lightWrap = r.wrap;
   u.lightClassic = classicScale;
+  u.lightHighlight2 = r.highlight2;
+  u.lightSharpness2 = MaterialLightSharpness(r.exponent2, shininess);
+  u.lightTint2 = r.tint2;
+  u.lightTintGain = r.tintGain;
   [enc setFragmentBytes:&u length:sizeof(u) atIndex:kMaterialBufferIndex];
 }
 
@@ -308,7 +331,6 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _encoder(nil)
     , _passDesc(nil)
     , _drawable(nil)
-    , _currentPipeline(nil)
     , _batchPipeline(nil)
     , _vboVertexFunc(nil)
     , _vboVertexUnlitFunc(nil)
@@ -480,10 +502,13 @@ void RendererMetal::rebuildDrawPipelines()
   // The tube's light-rig pipelines (#613; both hdr variants, #624): lazy,
   // rebuilt at the new sample count the next time a rig-on frame draws a tube.
   for (int h = 0; h < 2; ++h) {
-    [_bezierTubeRigPipeline[h] release];  _bezierTubeRigPipeline[h] = nil;
+    [_bezierTubeRigPipeline[h] release];        _bezierTubeRigPipeline[h] = nil;
+    [_bezierTubeRigShadowPipeline[h] release];
+    _bezierTubeRigShadowPipeline[h] = nil;
   }
   _bezierTubeRigTried = false;
   [_labelPipeline release];            _labelPipeline = nil;
+  [_labelOitPipeline release];         _labelOitPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
   _connectorStride = 0;
   [_vboLinePipeline release];          _vboLinePipeline = nil;  // lazy; rebuilt on next line draw
@@ -549,7 +574,7 @@ RendererMetal::~RendererMetal()
   // resource set leaks each time the renderer is torn down (device/context loss,
   // view reinit). NOT released here: _device/_queue (plain ctor assignment, no
   // retain — owned by the Metal layer), the per-frame _cmdBuffer/_encoder/
-  // _drawable (autoreleased), and _passDesc/_screenPassDesc/_currentPipeline
+  // _drawable (autoreleased), and _passDesc/_screenPassDesc
   // (non-owning aliases of owned objects).
 
   // Pooled Metal objects held by value in STL maps: clear()/erase() does NOT
@@ -558,6 +583,13 @@ RendererMetal::~RendererMetal()
   _vboCache.clear();
   for (auto& kv : _vboPipelineCache) [kv.second release];
   _vboPipelineCache.clear();
+  clearScreenOverlayDraws();
+  for (auto& kv : _screenOverlayPipelines) [kv.second release];
+  _screenOverlayPipelines.clear();
+  [_overlayLib release];              _overlayLib = nil;
+  [_overlayVtxFunc release];          _overlayVtxFunc = nil;
+  [_overlayVtxNoNormalFunc release];  _overlayVtxNoNormalFunc = nil;
+  [_overlayFragFunc release];         _overlayFragFunc = nil;
   for (auto& kv : _buffers) [kv.second release];
   _buffers.clear();
   for (auto& kv : _textures) [kv.second release];
@@ -576,7 +608,7 @@ RendererMetal::~RendererMetal()
   [_peelDepth release];      _peelDepth = nil;
   [_rtAO release];           [_rtAOHistory release];    [_rtAOAccum release];
   [_dofTex release];
-  [_shadowDepth release];    [_labelAtlas release];
+  [_shadowDepth release];    [_shadowNone release];    [_labelAtlas release];
   [_lightShadowArray release]; // the studio shadow maps (#616)
 
   // Render-pass descriptors ([[MTLRenderPassDescriptor alloc] init], +1).
@@ -604,12 +636,19 @@ RendererMetal::~RendererMetal()
   [_aoExemptMaskTex release];         [_aoMaskPipeline release];
   [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
+  [_bezierTubeShadowPipeline release];
   // the tube's light-rig pipelines (#613; both hdr variants, #624)
   [_bezierTubeRigPipeline[0] release]; [_bezierTubeRigPipeline[1] release];
+  [_bezierTubeRigShadowPipeline[0] release];
+  [_bezierTubeRigShadowPipeline[1] release];
   [_airNoMaps release];  // the air (#618); both hdr composites (#624)
   [_airFullPipeline[0] release];      [_airFullPipeline[1] release];
   [_airUpsamplePipeline[0] release];  [_airUpsamplePipeline[1] release];
   [_airMarchPipeline release];
+  [_airAlphaPipeline release];
+  [_airAlphaMergePipeline release];
+  [_airAlphaTex release];
+  [_airCacheColor release];
   [_airTerm release];
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
@@ -618,13 +657,17 @@ RendererMetal::~RendererMetal()
   [_exportAlphaPipeline release];
   [_rtAOPipeline release];            [_rtResolvePipeline release];
   [_rtAOPipelineT release];           [_rtResolvePipelineT release];
-  // the rig composites (#613), [transparent][hdr] (#624)
+  [_rtSoft release];                  [_rtSoftPipeline release];
+  // the rig composites (#613), [transparent][hdr][shadow][soft] (#624, #664, #741)
   for (int t = 0; t < 2; ++t)
     for (int h = 0; h < 2; ++h)
-      [_rtResolvePipelineRig[t][h] release];
+      for (int s = 0; s < 2; ++s)
+        for (int so = 0; so < 2; ++so)
+          [_rtResolvePipelineRig[t][h][s][so] release];
   [_rtLib release];
   releaseRayTracingTransAS();
   [_rtAOAccumPipeline release];       [_labelPipeline release];
+  [_labelOitPipeline release];
   [_connectorPipeline release];
 
   // Shader functions (newFunctionWithName, +1).
@@ -654,6 +697,7 @@ RendererMetal::~RendererMetal()
   [_depthStencilState release];  [_shadowDepthState release];
   [_capMarkDSS release];         [_capFillDSS release];
   [_oitDepthState release];      [_bezierDepthState release];
+  [_labelOitNoDepthState release];
   [_peelWriteState release];     [_peelTestState release];
 
   // Real-time ray-tracing buffers + acceleration structures (+1).
@@ -856,6 +900,37 @@ void RendererMetal::setRepClip(float front, float back, float fracFront,
   _repClipFracBack = fracBack;
 }
 
+void RendererMetal::setBackgroundGradient(
+    bool on, const float* top, const float* bottom)
+{
+  _bgGradOn = on && top && bottom;
+  for (int i = 0; i < 3; ++i) {
+    _bgGradTop[i] = _bgGradOn ? top[i] : 0.0f;
+    _bgGradBottom[i] = _bgGradOn ? bottom[i] : 0.0f;
+  }
+  // The rows the gradient spans, in post-pass uv (v = 0 at the top): the
+  // current viewport, which is the scene rect the gradient quad covers. The
+  // fog maps a pixel to the gradient through it, so fogged geometry matches
+  // the background next to it in a letterboxed live view too.
+  const double th = _rtH > 0 ? (double)_rtH : 1.0;
+  _bgGradSpan[0] = (float)(_viewport.originY / th);
+  _bgGradSpan[1] = (float)(_viewport.height / th);
+}
+
+void RendererMetal::setScreenOverlay(bool on)
+{
+  _screenOverlay = on;
+  for (float& o : _screenOverlayOffset)
+    o = 0.0f;
+}
+
+void RendererMetal::setScreenOverlayOffset(float x, float y, float z)
+{
+  _screenOverlayOffset[0] = x;
+  _screenOverlayOffset[1] = y;
+  _screenOverlayOffset[2] = z;
+}
+
 // How much a draw refracts: its material's Distortion knob (#590) -- p[1] for
 // clear and frosted glass, p[3] for jelly -- and 0 for every other material.
 static float glassDistortion(const MaterialParams& mp)
@@ -888,6 +963,29 @@ void RendererMetal::setRepMaterial(const MaterialParams& params)
   _repMat[0] = _repMatParams.reflect;
   _repMat[1] = _repMatParams.tint;
   _repMat[2] = _repMatParams.rough;
+}
+
+// Issue #709, #712: snapshot the occurrence's traced-reflection material terms.
+// Carries the 3 reflection terms {reflect, tint, rough} plus the studio-light
+// response terms {wrap, diffuse, highlight, sharpness, tint, highlight2,
+// sharpness2, tint2, tintGain} matching what bindMaterialU / bindRepMaterial
+// give the raster draw, and rows 2-3 carrying the procedural/glass parameters
+// {family, mode, p[0..5]} (#709, #855, #712). Evaluated at record time so
+// what a reflection ray hits is shaded with its own material.
+RendererMetal::RTMatRow RendererMetal::rtOccurrenceMaterial() const
+{
+  const MaterialLightResponse r = MaterialLightResponseFor(_repMatParams);
+  return {_repMat[0], _repMat[1], _repMat[2], r.wrap,
+          r.diffuse, r.highlight,
+          MaterialLightSharpness(r.exponent, _lightRigOn ? _lightRigBlock.head[1] : 0.0f),
+          r.tint,
+          float(_repMatParams.family), float(_repMatParams.mode),
+          _repMatParams.p[0], _repMatParams.p[1],
+          _repMatParams.p[2], _repMatParams.p[3], _repMatParams.p[4], _repMatParams.p[5],
+          r.highlight2,
+          MaterialLightSharpness(r.exponent2, _lightRigOn ? _lightRigBlock.head[1] : 0.0f),
+          r.tint2,
+          r.tintGain};
 }
 
 void RendererMetal::enableOitRefraction()
@@ -993,6 +1091,16 @@ void RendererMetal::bindLightRig(id<MTLRenderCommandEncoder> enc, int ortho)
     }
     [enc setFragmentTexture:_lightShadowArray atIndex:kLightShadowTextureIndex];
     [enc setFragmentSamplerState:_shadowSampler atIndex:kLightShadowSamplerIndex];
+  }
+  // Traced soft shadows (#741): opaque raster draws leave a traced light
+  // unshadowed and the RT composite darkens it by the traced visibility;
+  // transparent (OIT) draws and the haze keep the map.
+  if (_lightSoftFrame && !_oitActive) {
+    for (int i = 0; i < 6; ++i) {
+      if (_lightSoftRadius[i] > 0.0f) {
+        block.light[i].pos[3] = -1.0f;
+      }
+    }
   }
   [enc setFragmentBytes:&block length:sizeof(block) atIndex:kLightRigBufferIndex];
 }
@@ -1122,6 +1230,7 @@ bool RendererMetal::renderAOExemptMask()
 
 void RendererMetal::beginFrame()
 {
+  noteSceneFrame();
   // Ray tracing: (re)build the atom-sphere acceleration structure from the
   // PREVIOUS frame's accumulated geometry, BEFORE this frame's command buffer
   // exists — building (with its own cmd buffer + wait) must not happen while a
@@ -1143,20 +1252,29 @@ void RendererMetal::beginFrame()
   // few frames. Which is exactly what it did.
   _oitCleared = false;
   _oitRefractCleared = false;
+  // Labels deferred out of a peeled object's pass belong to their frame.
+  _peelDeferredLabels.clear();
   // The light rig (#613) is per frame: SceneRenderMetal sets it again before
   // any draw, so a frame that never reaches it draws without the rig.
   _lightRigOn = false;
   // So is its HDR colour (#624), derived from it by setLightRig.
   _lightHdrOn = false;
-  // So are its studio shadow maps (#616): no frame reads another's.
+  _lightAcesOn = false;
+  // So is whether its studio shadow maps (#616) are this frame's: the map
+  // pass or reuseLightShadowMaps (#666, the last pass's maps, kept across
+  // frames) sets it again.
   _lightShadowMapsReady = false;
   _lightStudioShadows = false;
   _lightShadowSlotOpen = -1;
+  _classicShadowViewOpen = false;
   _lightShadowPassActive = false;
   _lightShadowSlicesOpened = 0;
   _lightShadowFailed = false;
   // And the air (#618): SceneRenderMetal sets it again (setLightAir).
   _lightAirOn = false;
+  // Background gradient (#689)
+  _bgGradOn = false;
+  clearScreenOverlayDraws();
   _currentGridSlot = 0;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
@@ -1170,6 +1288,7 @@ void RendererMetal::beginFrame()
   _rtTFrameKeys.clear();   // metal_rt_transparent (#532): its own record
   _rtTFrameXform.clear();
   _rtTFrameClip.clear();
+  _rtTFrameMat.clear();
   _rtTFrameSig = 1469598103934665603ULL;
 
   _cmdBuffer = [_queue commandBuffer];
@@ -1218,6 +1337,7 @@ void RendererMetal::endFrame()
   // any pending PNG capture stays pending (runPostChain owns _capturePath), so
   // the caller re-renders — see the forced redraw in MetalViewport's RenderGate.
   if (_drawable && _cmdBuffer && _screenPassDesc && _sceneColor) {
+    ++_statPostChains;
     runPostChain();
     [_cmdBuffer presentDrawable:_drawable];
   } else if (_drawable && _cmdBuffer) {
@@ -1286,6 +1406,9 @@ void RendererMetal::endFrame()
   _drawable = nil;
   _passDesc = nil;
   _screenPassDesc = nil;
+  _airOnlyFrame = false;
+  _airOnlyArmed = false;
+  _airTickFrame = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1787,6 +1910,106 @@ fragment float4 post_fxaa(PostVOut in [[stage_in]],
   return float4(rgbB, 1.0);
 }
 
+// HDR AO (#732) needs T and its inverse: kMaterialSrc's tone helpers and the
+// finite tests they call, verbatim (as in kRTSrc). lighting_hdr_msl.py fails
+// if a copy drifts.
+constant float kLightToneKnee = 0.55;
+constant float kLightToneWhite = 10.0;
+constant float kLightAcesA = 2.51;
+constant float kLightAcesB = 0.03;
+constant float kLightAcesC = 2.43;
+constant float kLightAcesD = 0.59;
+constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
+
+// Finite tests that fast math cannot fold (#739).
+__attribute__((unused)) static bool light_finite(float x) {
+  return (as_type<uint>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+__attribute__((unused)) static bool light_finite3(float3 c) {
+  return all((as_type<uint3>(c) & 0x7f800000u) != 0x7f800000u);
+}
+
+__attribute__((unused)) static float light_tone_scalar(float m) {
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m <= kLightToneKnee) return m;
+  if (m >= kLightToneWhite) return 1.0;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float t = (m - kLightToneKnee) / s;
+  return kLightToneKnee + s * t * (1.0 + t / (w * w)) / (1.0 + t);
+}
+
+__attribute__((unused)) static float light_tone_scalar_inverse(float y) {
+  y = (light_finite(y) && y > 0.0) ? y : 0.0;
+  if (y <= kLightToneKnee) return y;
+  if (y >= 1.0) return kLightToneWhite;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float u = (y - kLightToneKnee) / s;
+  const float t = 2.0 * u / ((1.0 - u) + sqrt((1.0 - u) * (1.0 - u) + 4.0 * u / (w * w)));
+  return kLightToneKnee + s * t;
+}
+
+__attribute__((unused)) static float3 light_tone(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar(m) / m;
+}
+
+__attribute__((unused)) static float3 light_tone_inverse(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar_inverse(m) / m;
+}
+
+// The ACES tone curve (Narkowicz 2015 fit, #735), hue-preserving: the largest
+// channel goes through light_aces_scalar and the other channels follow it
+// (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
+__attribute__((unused)) static float light_aces_scalar(float m) {
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
+  return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
+}
+__attribute__((unused)) static float light_aces_scalar_inverse(float y) {
+  y = (light_finite(y) && y > 0.0) ? min(y, 1.0) : 0.0;
+  const float a = kLightAcesA - kLightAcesC * y;
+  const float b = kLightAcesB - kLightAcesD * y;
+  return 2.0 * kLightAcesE * y / (b + sqrt(b * b + 4.0 * kLightAcesE * a * y));
+}
+__attribute__((unused)) static float3 light_aces(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar(m) / m;
+}
+__attribute__((unused)) static float3 light_aces_inverse(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar_inverse(m) / m;
+}
+// The rig's curve (#735): ACES when `aces` (tone.z) is set, else T.
+__attribute__((unused)) static float light_curve_scalar(float m, float aces) {
+  if (aces > 0.5) return light_aces_scalar(m);
+  return light_tone_scalar(m);
+}
+__attribute__((unused)) static float3 light_curve(float3 c, float aces) {
+  if (aces > 0.5) return light_aces(c);
+  return light_tone(c);
+}
+__attribute__((unused)) static float3 light_curve_inverse(float3 c, float aces) {
+  if (aces > 0.5) return light_aces_inverse(c);
+  return light_tone_inverse(c);
+}
+
 // SSAO (depth-difference / crease shading) + depth-cue fog, in one pass.
 // Reads the scene color + scene depth, darkens creases where neighbors are
 // modestly closer to the camera, then fades toward the background color with
@@ -1812,7 +2035,10 @@ struct PostU {
   float shadowBias;      // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;       // >0.5: orthographic projection (linear eye-z / no foreshortening)
   float klx, kly, klz;   // key-light dir (toward light, eye space) = -normalize(cSetting_light)
-  float pad0, pad1;      // 16-byte multiple: the C++ mirror must be >= this size
+  float aoHdr, aoAces;   // aoHdr > 0.5: an HDR rig frame, AO and cast shadow in scene units (#732, #852); aoAces > 0.5: ACES is the curve (#735)
+  float gtR, gtG, gtB, gradOn;  // #689 bg_gradient top colour, on flag
+  float gbR, gbG, gbB, gradY0;  // #689 bottom colour, first row (uv)
+  float gradH, gradP0, gradP1, gradP2; // #689 rows spanned (uv); padding
 };
 
 // post_linear_depth / post_eye_pos / post_eye_normal / post_eye_normal_smooth and
@@ -1861,7 +2087,8 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
                                     u.projA, u.projB, u.projOrtho);
     ao = clamp(1.0 - occ * u.aoIntensity, 0.0, 1.0);
   }
-  color *= ao;
+
+  float shade = 1.0;  // cast-shadow factor (1 = lit), applied with ao below (#852)
 
   // Real shadow map: reconstruct the eye-space surface point, project it into
   // the light's clip space, and PCF-compare against the stored light-POV depth.
@@ -1890,7 +2117,8 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     // others"); the removed sep=0.12 was a frustum FRACTION (~19A dead-zone at
     // radius 40) that erased genuine inter-element cast shadows.
     float S = max(u.shadowRadius * 4.0 - 0.05, 1.0);
-    float worldTexel = 2.0 * u.shadowRadius / 4096.0;    // one shadow-map texel
+    float shadowDim = float(shadowTex.get_width());       // 4096 (2048 on iOS)
+    float worldTexel = 2.0 * u.shadowRadius / shadowDim;  // one shadow-map texel
     float c = clamp(dot(nrm, Ldir), 0.0, 1.0);
     // Normal-offset shadow mapping: push the receiver OUT along its smooth normal
     // (more at grazing angles) so the light-space compare leaves the receiver's
@@ -1910,7 +2138,7 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
         // facets where the normal-offset alone leaves residual self-crossing.
         float slopeTan = sqrt(max(0.0, 1.0 - c * c)) / max(c, 0.15);
         float sepA = min(0.35 + 1.2 * slopeTan, 12.0) * u.shadowBias;
-        float sep = sepA / S + 1.0 / 4096.0;
+        float sep = sepA / S + 1.0 / shadowDim;
         float2 texel =
             1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         // 4x4 taps of hardware-bilinear depth comparison (sample_compare with a
@@ -1924,16 +2152,34 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
             lit += shadowTex.sample_compare(shadowSamp, suv + off, fragDepth - sep);
           }
         float shadow = (1.0 - lit / 16.0) * faceGate;    // 0 lit .. 1 occluded
-        color *= (1.0 - shadow * u.shadowIntensity);
+        shade = 1.0 - shadow * u.shadowIntensity;
       }
     }
+  }
+
+  // AO and the cast shadow darken together. Under an HDR rig (#732, #852) the
+  // colour is T(e * L): occlude the light, not the display value, in one round
+  // trip. Below T's knee this is color * ao * shade exactly. With ACES as the
+  // rig's curve (#735, aoAces) the round trip is through ACES and its inverse,
+  // the curve the rig fragments went through.
+  if (u.aoHdr > 0.5 && ao * shade < 1.0)
+    color = light_curve(light_curve_inverse(color, u.aoAces) * (ao * shade), u.aoAces);
+  else {
+    color *= ao;
+    color *= shade;
   }
 
   if (u.fogEnabled > 0.5 && d < 0.99999) {
     float dist = post_linear_depth(d, u.projA, u.projB, u.projOrtho);
     float fog = clamp((u.fogEnd - dist) / max(u.fogEnd - u.fogStart, 1e-4),
                       0.0, 1.0);
-    color = mix(float3(u.bgR, u.bgG, u.bgB), color, fog);
+    // bg_gradient (#689): fade toward the background at this pixel.
+    float3 fogCol = float3(u.bgR, u.bgG, u.bgB);
+    if (u.gradOn > 0.5) {
+      float t = saturate((in.uv.y - u.gradY0) / max(u.gradH, 1e-6));
+      fogCol = mix(float3(u.gtR, u.gtG, u.gtB), float3(u.gbR, u.gbG, u.gbB), t);
+    }
+    color = mix(fogCol, color, fog);
   }
   return float4(color, 1.0);
 }
@@ -2161,8 +2407,10 @@ struct LightAirU {
                   // centre), w dust cell (A)
   float4 motion;  // x dust time (s), y mote radius (A), z defocus gain
                   // (per A), w haze shadow filter (1 one tap, 2 the lookup)
-  float4 view;    // x resolution scale (1 | 0.5), y orthographic 0|1
+  float4 view;    // x resolution scale (1 | 0.5), y orthographic 0|1, z air
+                  // alpha for a transparent export 0|1 (read by the host)
   float4 proj;    // the projection terms A, B, X, Y
+  float4 mote;    // x dust glow (0..4), y dust opacity (0..1)
 };
 
 // The model's constants, named as in layer1/LightAir.h (a source test pins
@@ -2293,26 +2541,52 @@ static float3 post_air_light(float3 pEye, float3 toCam, float g, float phMax,
 // The view ray through uv in eye space: from the eye for a perspective
 // projection, parallel to -z from the near plane's point for an orthographic
 // one.
-static void post_air_ray(float2 uv, constant LightAirU& air, thread float3& ro,
-                         thread float3& rd) {
+static void post_air_ray(float2 uv, float4 cell, constant LightAirU& air,
+                         thread float3& ro, thread float3& rd) {
   if (air.view.y > 0.5) {
     const float3 p = post_eye_pos(uv, 0.5, air.proj.x, air.proj.y, air.proj.z,
-                                  air.proj.w, 1.0);
+                                  air.proj.w, 1.0, cell);
     ro = float3(p.xy, 0.0);
     rd = float3(0.0, 0.0, -1.0);
   } else {
     const float3 p = post_eye_pos(uv, 0.5, air.proj.x, air.proj.y, air.proj.z,
-                                  air.proj.w, 0.0);
+                                  air.proj.w, 0.0, cell);
     const float pl = length(p);
     ro = float3(0.0);
     rd = pl > 1e-3 ? p / pl : float3(0.0, 0.0, -1.0);
   }
 }
 
+// #683: the haze's transmittance at this pixel (Beer-Lambert): exp(-sigma d),
+// sigma the haze density per A (medium.x) and d the path through the air
+// along the view ray, from where the air starts to where the march stops
+// (post_air_term's span). The empty background (window depth d >= 0.99999)
+// is never attenuated, so a bg_rgb behind the haze keeps its colour. Exactly
+// 1 with no haze, on an empty span, and when the optical depth is not finite
+// (the NaN rule: a poisoned density leaves the frame as with no air).
+static float post_air_transmittance(float d, float2 uv, float4 cell,
+                                    constant LightAirU& air) {
+  if (!(air.medium.x > 0.0) || !(d < 0.99999)) return 1.0;
+  const float A = air.proj.x, B = air.proj.y, ortho = air.view.y;
+  const float camNear = post_linear_depth(0.0, A, B, ortho);
+  const float camFar = post_linear_depth(1.0, A, B, ortho);
+  const float zSurf = post_linear_depth(d, A, B, ortho);
+  const float zLo = max(air.range.x, camNear);
+  const float zHi = min(min(air.range.y, camFar), zSurf);
+  if (!(zHi > zLo)) return 1.0;
+  float3 ro, rd;
+  post_air_ray(uv, cell, air, ro, rd);
+  const float tPerZ = 1.0 / max(-rd.z, 1e-4);
+  const float tau = air.medium.x * ((zHi - zLo) * tPerZ);
+  if (!(tau > 0.0) || !light_finite(tau)) return 1.0;
+  return exp(-tau);
+}
+
 // The haze between eye depths zLo and zHi: kAirHazeSteps jittered steps (the
-// jitter is fixed per pixel), each the beams' light times a patchy density,
-// times the density per A and the step's length. The density has no time
-// term, so haze alone never moves (and never asks for a redraw).
+// jitter is fixed per pixel), each the beams' light attenuated by the haze in
+// front of it (Beer-Lambert extinction) times a patchy density, times the
+// density per A and the step's length. The density has no time term, so haze
+// alone never moves (and never asks for a redraw).
 static float3 post_air_haze(float3 ro, float3 rd, float zLo, float zHi,
     float2 frag, constant LightAirU& air, constant LightRigU& rig,
     depth2d_array<float> maps, sampler smp) {
@@ -2326,10 +2600,55 @@ static float3 post_air_haze(float3 ro, float3 rd, float zLo, float zHi,
     const float z = zLo + (float(k) + jitter) * dz;
     const float3 x = ro + rd * (z * tPerZ);
     const float dens = 0.55 + 0.9 * mat_noise(x * scale);
-    acc += dens * post_air_light(x, -rd, g, kAirHazePhaseCap, false, air, rig,
-                                 maps, smp);
+    // #683: what this step scatters reaches the eye through the haze in
+    // front of it (Beer-Lambert).
+    const float tr = exp(-air.medium.x * ((z - zLo) * tPerZ));
+    acc += (dens * tr) * post_air_light(x, -rd, g, kAirHazePhaseCap, false, air, rig,
+                                        maps, smp);
   }
   return acc * (air.medium.x * dz * tPerZ);
+}
+
+// Layer k's mote at the view ray's point x (eye depth z), for the cover
+// (#810): false when the layer's cell holds none or the ray misses it, else
+// its coverage a, its size and capped radius r, its twinkle tw and its
+// centre xp. Its statements are post_air_dust's own mote statements (a
+// source test pins them equal); post_air_dust keeps them inline because as a
+// call the compiler's fast math moved single dust pixels by one level.
+static bool post_air_mote(float3 x, float z, int k, constant LightAirU& air,
+    thread float& a, thread float& size, thread float& r, thread float& tw,
+    thread float3& xp) {
+  const float cell = max(air.range.w, 1e-3);
+  const float T = air.motion.x;
+  const float kk = float(k) * 13.37 + air.medium.w;
+  // Each layer drifts its own way, mostly sideways and settling slowly, so
+  // the layers slide past one another (cells per second).
+  const float ang = 6.2831853 * mat_hash(float3(kk, 3.1, 7.7));
+  const float spd = 0.12 + 0.18 * mat_hash(float3(kk, 9.2, 1.3));
+  const float2 drift = float2(cos(ang), 0.6 * sin(ang) - 0.35) * spd;
+  const float2 q = x.xy / cell + float2(kk * 0.731, kk * 0.293) - drift * T;
+  const float2 ci = floor(q);
+  const float2 f = q - ci;
+  if (mat_hash(float3(ci, kk)) > air.medium.y) return false;   // occupancy
+  // Every mote wanders on its own slow orbit: a centre 0.3..0.7 plus a 0.1
+  // wobble stays inside 0.2..0.8 of the cell.
+  const float ph = 6.2831853 * mat_hash(float3(ci, kk + 41.3));
+  const float fr = 0.4 + 0.9 * mat_hash(float3(ci, kk + 57.9));
+  float2 c = 0.3 + 0.4 * float2(mat_hash(float3(ci, kk + 17.1)),
+                                mat_hash(float3(ci, kk + 31.7)));
+  c += 0.1 * float2(sin(T * fr + ph), cos(T * fr * 1.37 + ph * 1.7));
+  // twinkle: flakes turn and catch the light
+  const float tb = 0.5 + 0.5 * sin(T * (1.3 + 2.1 * fr) + 3.0 * ph);
+  tw = 0.55 + 0.45 * tb * tb;
+  size = air.motion.y * (0.35 + 1.3 * mat_hash(float3(ci, kk + 5.3)));
+  const float blur = abs(z - air.range.z) * air.motion.z * size;
+  r = max(min(size + blur, 0.2 * cell), 1e-3);
+  size = min(size, r);
+  const float dist = length(f - c) * cell;
+  a = 1.0 - smoothstep(0.35 * r, r, dist);
+  if (a <= 0.0) return false;
+  xp = x + float3((c - f) * cell, 0.0);
+  return true;
 }
 
 // Dust motes on kAirDustLayers depth layers across the air's range, cut off
@@ -2340,7 +2659,8 @@ static float3 post_air_haze(float3 ro, float3 rd, float zLo, float zHi,
 // twinkles; all of it follows the dust time (motion.x), so a pinned or movie
 // clock gives the same motes. Off the focus depth a mote grows and fades (a
 // cheap defocus), capped at 0.2 cell so the cell edge never slices it. Lit as
-// the haze is, with a sharper forward lobe.
+// the haze is, with a sharper forward lobe, and attenuated by the haze in front
+// of it.
 static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
     constant LightAirU& air, constant LightRigU& rig,
     depth2d_array<float> maps, sampler smp) {
@@ -2350,6 +2670,8 @@ static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
   const float g = min(clamp(air.medium.z, -kAirMaxScatter, kAirMaxScatter) + 0.25,
                       0.92);
   const float T = air.motion.x;
+  const float op = air.mote.y > 0.0 ? min(air.mote.y, 1.0) : 0.0;
+  float cover = 1.0;   // what the motes in front let through (#810)
   float3 add = float3(0.0);
   for (int k = 0; k < kAirDustLayers; ++k) {
     const float z = air.range.x + (float(k) + 0.5) * span;
@@ -2386,7 +2708,16 @@ static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
     const float3 xp = x + float3((c - f) * cell, 0.0);
     const float3 lit = post_air_light(xp, -rd, g, kAirDustPhaseCap, true, air,
                                       rig, maps, smp);
-    add += lit * (a * (size * size) / (r * r) * 0.9 * tw);
+    // #683: the haze in front of the mote dims it (Beer-Lambert); exactly 1
+    // with no haze.
+    const float tr = air.medium.x > 0.0
+        ? exp(-air.medium.x * ((z - zLo) * tPerZ)) : 1.0;
+    // #810: dust_glow (mote.x) and what the motes in front let through,
+    // inside the scalar so the add stays master's and is bit-identical at
+    // glow 1, opacity 0 (both factors exactly 1.0). A mote adds its light,
+    // then hides what is behind it by a x dust_opacity.
+    add += lit * (a * (size * size) / (r * r) * 0.9 * tw * tr * air.mote.x * cover);
+    cover *= 1.0 - a * op;
   }
   return add;
 }
@@ -2396,7 +2727,7 @@ static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
 // the march stopped. The air spans the rig frame's range, clamped to the
 // camera's near and far and stopped at the first surface; an empty or
 // non-finite span adds nothing, and so does a non-finite result.
-static float4 post_air_term(float2 uv, float2 frag, float d,
+static float4 post_air_term(float2 uv, float2 frag, float d, float4 cell,
     constant LightAirU& air, constant LightRigU& rig,
     depth2d_array<float> maps, sampler smp) {
   const float A = air.proj.x, B = air.proj.y, ortho = air.view.y;
@@ -2405,39 +2736,74 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
   const float zSurf = d < 0.99999 ? post_linear_depth(d, A, B, ortho) : camFar;
   const float zLo = max(air.range.x, camNear);
   const float zHi = min(min(air.range.y, camFar), zSurf);
-  if (!(zHi > zLo) || !isfinite(zHi - zLo)) return float4(0.0, 0.0, 0.0, zSurf);
+  if (!(zHi > zLo) || !light_finite(zHi - zLo))
+    return float4(0.0, 0.0, 0.0, zSurf);
   float3 ro, rd;
-  post_air_ray(uv, air, ro, rd);
+  post_air_ray(uv, cell, air, ro, rd);
   float3 add = float3(0.0);
   if (air.medium.x > 0.0)
     add += post_air_haze(ro, rd, zLo, zHi, frag, air, rig, maps, smp);
   if (air.medium.y > 0.0)
     add += post_air_dust(ro, rd, zLo, zHi, air, rig, maps, smp);
-  if (!all(isfinite(add))) add = float3(0.0);
+  if (!light_finite3(add)) add = float3(0.0);
   return float4(max(add, float3(0.0)), zHi);
 }
 
-// The composite: the air only ADDS light. Under kLightHdr (#624) it adds in
-// scene units: the colour back through T's inverse, plus the air at the
-// frame's exposure `e` (tone.x), through T again, and never under the colour
-// in any channel. T scales a colour by its largest channel, so coloured air
-// over a bright pixel would otherwise LOWER the others (white under red haze
-// lost green and blue: #618's guard that the air never dims a pixel); with
-// the max, white stays white, a pixel the air misses round-trips within one
-// 8-bit level (exactly at or below the knee), and the air rolls off with the
-// light instead of saturating. A non-finite air term adds nothing (the NaN
-// rule). Otherwise the rig's 8-bit knee as before #624:
-// the colour through mat_soft_knee with the air, minus the colour through it
-// without, never negative, added to the colour as it was. With no air (a = 0)
-// that is c exactly, so a pixel the air does not reach round-trips the 8-bit
-// target unchanged, white included; a bright pixel takes little extra and
-// nothing is dimmed.
-static float3 post_air_finish(float3 c, float3 a, float e) {
+// The composite (#683): the colour behind the air is first dimmed by the
+// haze's transmittance tr (post_air_transmittance; 1 on the empty background
+// and with no haze), then the air's light is added. Under kLightHdr (#624)
+// in scene units: the colour back through T's inverse, times tr, plus the air
+// at the frame's exposure `e` (tone.x), through T again, and never under the
+// dimmed colour in any channel. T scales a colour by its largest channel, so
+// coloured air over a bright pixel would otherwise LOWER the others (white
+// under red haze lost green and blue); with the max the air never takes
+// light away. A non-finite air term adds nothing (the NaN rule). Otherwise
+// the rig's 8-bit knee as before #624, on the dimmed colour ct: ct through
+// mat_soft_knee with the air, minus ct through it without, never negative,
+// added to ct. With tr == 1 both arms are exactly what they were before #683
+// (x * 1.0 == x), so haze 0 renders as it did, and a pixel the air does not
+// reach round-trips unchanged.
+static float3 post_air_finish(float3 c, float3 a, float tr, float4 tone) {
   if (kLightHdr) {
-    const float3 add = all(isfinite(a)) ? max(a, float3(0.0)) * e : float3(0.0);
-    return max(saturate(c), light_tone(light_tone_inverse(saturate(c)) + add));
+    const float e = tone.x;
+    const float3 add = light_finite3(a) ? max(a, float3(0.0)) * e : float3(0.0);
+    const float3 s = light_curve_inverse(saturate(c), tone.z) * tr;
+    const float3 base = tr < 1.0 ? light_curve(s, tone.z) : saturate(c);
+    return max(base, light_curve(s + add, tone.z));
   }
-  return c + max(mat_soft_knee(c + a) - mat_soft_knee(c), float3(0.0));
+  const float3 ct = c * tr;
+  return ct + max(mat_soft_knee(ct + a) - mat_soft_knee(ct), float3(0.0));
+}
+
+// The fraction of the scene colour the motes let through at this pixel
+// (#810): computed at full resolution in the composite, like
+// post_air_transmittance. Motes cover the background too (unlike the haze).
+static float post_air_dust_cover(float d, float2 uv, float4 cell,
+                                 constant LightAirU& air) {
+  if (!(air.mote.y > 0.0) || !(air.medium.y > 0.0)) return 1.0;
+  const float A = air.proj.x, B = air.proj.y, ortho = air.view.y;
+  const float camNear = post_linear_depth(0.0, A, B, ortho);
+  const float camFar = post_linear_depth(1.0, A, B, ortho);
+  const float zSurf = d < 0.99999 ? post_linear_depth(d, A, B, ortho) : camFar;
+  const float zLo = max(air.range.x, camNear);
+  const float zHi = min(min(air.range.y, camFar), zSurf);
+  if (!(zHi > zLo) || !light_finite(zHi - zLo)) return 1.0;
+  float3 ro, rd;
+  post_air_ray(uv, cell, air, ro, rd);
+  const float tPerZ = 1.0 / max(-rd.z, 1e-4);
+  const float span = (air.range.y - air.range.x) / float(kAirDustLayers);
+  const float op = min(air.mote.y, 1.0);
+  float cover = 1.0;
+  for (int k = 0; k < kAirDustLayers; ++k) {
+    const float z = air.range.x + (float(k) + 0.5) * span;
+    if (z >= zHi) break;
+    if (z < zLo) continue;
+    const float3 x = ro + rd * (z * tPerZ);
+    float a, size, r, tw; float3 xp;
+    if (!post_air_mote(x, z, k, air, a, size, r, tw, xp)) continue;
+    cover *= 1.0 - a * op;
+  }
+  return light_finite(cover) ? saturate(cover) : 1.0;
 }
 
 // The air at full resolution: colour and depth read at this pixel (never
@@ -2448,12 +2814,14 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
     depth2d_array<float> maps [[texture(2)]],
     sampler smp [[sampler(1)]],
     constant LightAirU& air [[buffer(0)]],
-    constant LightRigU& rig [[buffer(1)]]) {
+    constant LightRigU& rig [[buffer(1)]],
+    constant float4& cell [[buffer(2)]]) {
   const uint2 px = uint2(in.position.xy);
   const float4 c = colorTex.read(px);
   const float d = depthTex.read(px);
-  const float4 t = post_air_term(in.uv, in.position.xy, d, air, rig, maps, smp);
-  return float4(post_air_finish(c.rgb, t.rgb, rig.tone.x), c.a);
+  const float4 t = post_air_term(in.uv, in.position.xy, d, cell, air, rig, maps, smp);
+  const float tr = post_air_transmittance(d, in.uv, cell, air) * post_air_dust_cover(d, in.uv, cell, air);
+  return float4(post_air_finish(c.rgb, t.rgb, tr, rig.tone), c.a);
 }
 
 // Half resolution (metal_light_air_resolution 2, the default on both) is two
@@ -2472,7 +2840,7 @@ static float post_air_stop(float d, constant LightAirU& air) {
   const float zSurf = d < 0.99999 ? post_linear_depth(d, A, B, ortho) : camFar;
   const float zLo = max(air.range.x, camNear);
   const float zHi = min(min(air.range.y, camFar), zSurf);
-  if (!(zHi > zLo) || !isfinite(zHi - zLo)) return zSurf;
+  if (!(zHi > zLo) || !light_finite(zHi - zLo)) return zSurf;
   return zHi;
 }
 
@@ -2487,14 +2855,17 @@ fragment float4 post_air_march(AirVOut in [[stage_in]],
     depth2d_array<float> maps [[texture(2)]],
     sampler smp [[sampler(1)]],
     constant LightAirU& air [[buffer(0)]],
-    constant LightRigU& rig [[buffer(1)]]) {
+    constant LightRigU& rig [[buffer(1)]],
+    constant float4& cell [[buffer(2)]]) {
   const uint2 tx = uint2(in.position.xy);
-  const uint2 lim = uint2(depthTex.get_width(), depthTex.get_height()) - 1;
+  const uint2 size = uint2(depthTex.get_width(), depthTex.get_height());
+  const uint2 lo = uint2(cell.xy * float2(size) + 0.5);
+  const uint2 hi = max(uint2(cell.zw * float2(size) + 0.5), lo + 1u) - 1u;
   const bool nearest = ((tx.x + tx.y) & 1u) == 0u;
-  uint2 px = min(tx * 2u, lim);
+  uint2 px = clamp(tx * 2u, lo, hi);
   float d = depthTex.read(px);
   for (uint k = 1u; k < 4u; ++k) {
-    const uint2 q = min(tx * 2u + uint2(k & 1u, k >> 1u), lim);
+    const uint2 q = clamp(tx * 2u + uint2(k & 1u, k >> 1u), lo, hi);
     const float dq = depthTex.read(q);
     if (nearest ? dq < d : dq > d) {
       d = dq;
@@ -2502,7 +2873,7 @@ fragment float4 post_air_march(AirVOut in [[stage_in]],
     }
   }
   const float2 frag = float2(px) + 0.5;
-  return post_air_term(frag / float2(lim + 1u), frag, d, air, rig, maps, smp);
+  return post_air_term(frag / float2(size), frag, d, cell, air, rig, maps, smp);
 }
 
 // The upsample at full resolution: a joint-bilateral filter over the four
@@ -2515,16 +2886,26 @@ fragment float4 post_air_march(AirVOut in [[stage_in]],
 fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
     depth2d<float> depthTex [[texture(1)]],
+    constant float4& cell [[buffer(2)]],
     texture2d<float> termTex [[texture(3)]],
     constant LightAirU& air [[buffer(0)]],
     constant LightRigU& rig [[buffer(1)]]) {
   const uint2 px = uint2(in.position.xy);
   const float4 c = colorTex.read(px);
-  const float z = post_air_stop(depthTex.read(px), air);
+  const float d = depthTex.read(px);
+  const float z = post_air_stop(d, air);
   const float2 h = in.position.xy * 0.5 - 0.5;
   const float2 b = floor(h);
   const float2 f = h - b;
+  const uint2 size = uint2(depthTex.get_width(), depthTex.get_height());
+  const uint2 lo = uint2(cell.xy * float2(size) + 0.5);
+  const uint2 hi = max(uint2(cell.zw * float2(size) + 0.5), lo + 1u) - 1u;
   const int2 lim = int2(termTex.get_width(), termTex.get_height()) - 1;
+  // #686: a half-res texel belongs to the cell holding its first pixel
+  // (2t), as encodeAirPass's march scissor does, so a cell never reads
+  // the texel its neighbour marched at an odd boundary.
+  const int2 tlo = int2((lo + 1u) / 2u);
+  const int2 thi = max(min(int2(hi / 2u), lim), tlo);
   const float sigma = max(kAirDepthSigma * (air.range.y - air.range.x), 1e-3);
   float3 sum = float3(0.0);
   float wsum = 0.0;
@@ -2532,7 +2913,7 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
   float best = 3.0e38;
   for (int k = 0; k < 4; ++k) {
     const int2 o = int2(k & 1, k >> 1);
-    const float4 t = termTex.read(uint2(clamp(int2(b) + o, int2(0), lim)));
+    const float4 t = termTex.read(uint2(clamp(int2(b) + o, tlo, thi)));
     const float dz = abs(t.a - z);
     const float wb = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
     const float r = dz / sigma;
@@ -2545,7 +2926,40 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     }
   }
   const float3 a = wsum > 1e-4 ? sum / wsum : nearest;
-  return float4(post_air_finish(c.rgb, a, rig.tone.x), c.a);
+  const float tr = post_air_transmittance(d, in.uv, cell, air) * post_air_dust_cover(d, in.uv, cell, air);
+  return float4(post_air_finish(c.rgb, a, tr, rig.tone), c.a);
+}
+
+// What the air added to a pixel, as an alpha (#684, metal_light_air_alpha): the
+// luminance of the composite minus the colour it was composited over, never
+// negative, clamped to 1. Run after the composite (full or upsample, whichever
+// drew), so it sees exactly the light the air put on screen under this frame's
+// tone arm, and needs neither the term nor the march. Read by the transparent
+// export's matte; the live view and an opaque export never run it.
+fragment float4 post_air_alpha(AirVOut in [[stage_in]],
+    texture2d<float> beforeTex [[texture(0)]],
+    texture2d<float> afterTex [[texture(1)]],
+    depth2d<float> depthTex [[texture(2)]],
+    constant LightAirU& air [[buffer(0)]],
+    constant float4& cell [[buffer(2)]]) {
+  const uint2 px = uint2(in.position.xy);
+  const float3 add = max(afterTex.read(px).rgb - beforeTex.read(px).rgb,
+                         float3(0.0));
+  const float lum = saturate(dot(add, float3(0.2126, 0.7152, 0.0722)));
+  return float4(max(lum, 1.0 - post_air_dust_cover(depthTex.read(px), in.uv, cell, air)),
+                0.0, 0.0, 1.0);
+}
+
+// The transparent export's matte with the air in it (#684): the export's
+// colour, and alpha the larger of its matte and the air's alpha. Where the
+// matte is already 1 (geometry) nothing changes. Run only for a transparent
+// export of a frame whose air drew post_air_alpha.
+fragment float4 post_air_alpha_merge(AirVOut in [[stage_in]],
+    texture2d<float> matteTex [[texture(0)]],
+    texture2d<float> airTex [[texture(1)]]) {
+  const uint2 px = uint2(in.position.xy);
+  const float4 m = matteTex.read(px);
+  return float4(m.rgb, max(m.a, airTex.read(px).r));
 }
 )";
 
@@ -2568,6 +2982,7 @@ void RendererMetal::ensureRTAOTargets(NSUInteger w, NSUInteger h)
     return;
   // MRC: release the previous set before reallocating (see ensurePostTargets).
   [_rtAO release];        [_rtAOHistory release];   [_rtAOAccum release];
+  [_rtSoft release];      _rtSoft = nil;
   MTLTextureDescriptor* aod = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
                                    width:tw height:th mipmapped:NO];
@@ -2600,8 +3015,13 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_peelDepth release];
   [_rtAO release];          [_dofTex release];
   [_rtAOHistory release];   [_rtAOAccum release];
+  [_rtSoft release];
   [_surfaceCoverageTex release];
   [_aoExemptMaskTex release];
+  // The air's alpha (#684) is a full-size target too: made again, at the new
+  // size, by the next transparent export that asks for it.
+  [_airAlphaTex release];   _airAlphaTex = nil;   _airAlphaW = _airAlphaH = 0;
+  [_airCacheColor release]; _airCacheColor = nil; _airCacheValid = false;
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
   _oitAccum = _oitReveal = _oitRefract = nil;
@@ -2609,6 +3029,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _surfaceCoverageTex = nil;
   _aoExemptMaskTex = nil;
   _rtAO = nil;              _dofTex = nil;
+  _rtSoft = nil;
   _rtAOHistory = _rtAOAccum = nil;
   _rtAOHistoryValid = false;  // resized AO targets: history is stale, hard-reset
 
@@ -2784,9 +3205,21 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _oitPeelPassDesc.depthAttachment.storeAction = MTLStoreActionDontCare;
   _oitPeelPassDesc.stencilAttachment.texture = nil;
 
-  // Shadow map: fixed-resolution single-sample depth target rendered from the
-  // light POV. Independent of the viewport (kShadowDim^2), so it survives
-  // resize without recreation. A depth-only pass (no color attachment) is valid.
+  // The classic shadow map is NOT made here: ensureShadowMap makes it on the
+  // first pre-pass that needs it (#667).
+}
+
+// The classic shadow map: a fixed-resolution single-sample depth target
+// rendered from the light POV. Independent of the viewport (kShadowDim^2), so
+// it survives resize without recreation. A depth-only pass (no color
+// attachment) is valid. Made by the first classic pre-pass and kept (#667);
+// false when the allocation failed (once: it is not retried).
+bool RendererMetal::ensureShadowMap()
+{
+  if (_shadowDepth && _shadowPassDesc)
+    return true;
+  if (_shadowMapFailed)
+    return false;
   if (!_shadowDepth) {
     MTLTextureDescriptor* sd = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
@@ -2795,6 +3228,13 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
     sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     sd.storageMode = MTLStorageModePrivate;
     _shadowDepth = [_device newTextureWithDescriptor:sd];
+    if (!_shadowDepth) {
+      _shadowMapFailed = true;
+      NSLog(@"RendererMetal: shadow map (%lux%lu) allocation failed; drawing "
+            @"without shadows", (unsigned long)kShadowDim,
+            (unsigned long)kShadowDim);
+      return false;
+    }
   }
   if (!_shadowPassDesc) {
     _shadowPassDesc = [[MTLRenderPassDescriptor alloc] init];
@@ -2803,6 +3243,43 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
     _shadowPassDesc.depthAttachment.clearDepth = 1.0;
     _shadowPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
   }
+  return true;
+}
+
+// Test-only (#667): the map and its pass descriptor go, and a failed
+// allocation may be tried again; the next classic pre-pass makes them anew.
+// A command buffer already committed keeps its own reference to the texture.
+void RendererMetal::releaseClassicShadowMap()
+{
+  [_shadowDepth release];     _shadowDepth = nil;
+  [_shadowPassDesc release];  _shadowPassDesc = nil;
+  _shadowMapFailed = false;
+  _shadowMapValid = false;
+}
+
+// Test-only (#666): forgets the kept studio maps, so the next shadowed frame
+// renders them again (an uncached reference frame).
+void RendererMetal::forgetLightShadowMaps()
+{
+  _lightShadowMapsKept = false;
+}
+
+// What the post passes bind at the shadow-map slot: the map once it exists,
+// else a 1x1 stand-in (a declared texture must be bound; it is never sampled
+// while shadowEnabled is 0).
+id<MTLTexture> RendererMetal::shadowTextureForBind()
+{
+  if (_shadowDepth)
+    return _shadowDepth;
+  if (!_shadowNone) {
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                     width:1 height:1 mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModePrivate;
+    _shadowNone = [_device newTextureWithDescriptor:d];
+  }
+  return _shadowNone;
 }
 
 void RendererMetal::buildPostPipelines()
@@ -2948,6 +3425,7 @@ void RendererMetal::setLightRig(const LightRigBlock* rig)
   // metal_light_hdr) is 1 for an HDR frame and 0 at the 8-bit knee. Read
   // only with the rig on.
   _lightHdrOn = _lightRigOn && rig->tone[1] > 0.5f;
+  _lightAcesOn = _lightHdrOn && rig->tone[2] > 0.5f;
 }
 
 void RendererMetal::setLightClassicScale(float scale)
@@ -2962,6 +3440,29 @@ void RendererMetal::setLightShadowFrame(bool studioShadows, int mapSize)
   // allocated by the first beginLightShadowMap that needs it).
   _lightStudioShadows = studioShadows;
   _lightShadowSize = studioShadows && mapSize > 0 ? mapSize : 0;
+}
+
+void RendererMetal::setLightSoftShadows(const float* r)
+{
+  std::fill(std::begin(_lightSoftRadius), std::end(_lightSoftRadius), 0.0f);
+  _lightSoftFrame = false;
+  if (!_lightRigOn || !r)
+    return;
+  bool anyTraced = false;
+  const int n = std::min(int(_lightRigBlock.head[0]), 6);
+  for (int i = 0; i < n; ++i) {
+    if (std::isfinite(r[i]) && r[i] > 0.0f && _lightRigBlock.light[i].pos[3] >= 0.0f) {
+      _lightSoftRadius[i] = r[i];
+      anyTraced = true;
+    }
+  }
+  // Decided before any draw, from state the previous frame left, so raster and
+  // post chain agree. If the post chain then cannot run the soft pass the
+  // traced lights are unshadowed for that one frame (#741). Once the soft pass
+  // or a soft composite has failed to build (_rtSoftBroken, each is tried
+  // once), the lights keep their maps for the rest of the session.
+  _lightSoftFrame = anyTraced && !_rtSoftBroken && _rtEnabled && _rtReady &&
+                    _rtLib && _rtResolvePipeline;
 }
 
 void RendererMetal::setGpuTiming(int mode)
@@ -3080,14 +3581,18 @@ struct RTU {
   float aoCrease;          // metal_ssao under RT: crease-term intensity (0 = off), #436
   float aoCreaseRadiusPx;  // crease ring radius in pixels (== PostU.aoRadiusPx)
   float aoExemptEnabled;   // >0.5: aoMaskTex marks cartoon/ribbon pixels that skip it (#79)
-  float pad3;              // -> 12 floats after lightViewProj (still a 16-byte multiple)
+  float aoHdr;             // > 0.5: an HDR rig frame, AO and cast shadow in scene units (#732, #852)
+                           // -> 12 floats after lightViewProj (still a 16-byte multiple)
   // Traced self-reflections (reflective materials): env 0 = bg colour / 1 = studio
   // gradient on miss; samples = rays/pixel for glossy materials (offscreen);
   // sphereCount = number of sphere instances (ids below it are spheres);
-  // matCount = rows in the material table; then the two-light model.
+  // matCount = rows in the material table (each row is five float4, #855, #712); then the two-light model.
   float reflEnv, reflSamples, sphereCount, matCount;
   float lAmbient, lDirect, lReflect, lSpec;
-  float lShin, pad4, pad5, pad6;   // -> 24 floats after lightViewProj
+  float lShin, tMatCount, aoAces, pad6;   // tMatCount: rows in the transparent material table, #855; 0 without kRTTrans; aoAces > 0.5: ACES is the curve (#735)
+  float4 gradTop;     // #689 bg_gradient top colour, w = on flag
+  float4 gradBottom;  // #689 bottom colour, w = 0
+  float4 gradSpan;    // #689 x = first row, y = rows spanned (uv); zw = 0
 };
 
 // grid_mode cells (#478). rect = x0,y0,x1,y1 of the cell in scene uv; tri =
@@ -3127,9 +3632,23 @@ static bool rt_find_cell(float2 uv, constant RTU& u, constant RTGridU& g,
 // single facet's normal then flips between neighbours and stripes the shadow.
 // The 3-facet average cancels the alternation (for a caster in a different
 // strip the average is still a sane local normal).
+// #668: only connected neighbours on the same smooth surface are averaged (see
+// rt_tri_normal_smooth), so unrelated or folded buffer neighbours do not tilt
+// flat quads.
 static float3 rt_facet_normal(device const packed_float3* tris, uint q) {
   float3 a = float3(tris[3 * q]), b = float3(tris[3 * q + 1]), c = float3(tris[3 * q + 2]);
   return normalize(cross(b - a, c - a));
+}
+// #668: true when world-tris a and b share a vertex (the triangle buffer
+// concatenates every object's triangles, so buffer neighbours are not
+// necessarily mesh neighbours).
+static bool rt_tris_touch(device const packed_float3* tris, uint a, uint b) {
+  for (uint i = 0; i < 3; ++i)
+    for (uint j = 0; j < 3; ++j) {
+      float3 d = float3(tris[3 * a + i]) - float3(tris[3 * b + j]);
+      if (dot(d, d) < 1e-8) return true;
+    }
+  return false;
 }
 static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uint n) {
   float3 fp = rt_facet_normal(tris, p);
@@ -3138,10 +3657,34 @@ static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uin
   // alternating tilt of a twisted quad's two triangles cancels even when the
   // twist per ring is large). Winding is not guaranteed consistent between
   // neighbours: align each to fp.
-  for (uint k = 1; k <= 2; ++k) {
-    if (p >= k)     { float3 f = rt_facet_normal(tris, p - k); acc += (dot(f, fp) < 0.0) ? -f : f; }
-    if (p + k < n)  { float3 f = rt_facet_normal(tris, p + k); acc += (dot(f, fp) < 0.0) ? -f : f; }
+  // Which neighbours count (#668). The triangle buffer concatenates every
+  // object, so a buffer neighbour counts only while it shares a vertex with
+  // the last one taken on that side (rt_tris_touch). And it must be part of
+  // the same smooth surface: within 60 degrees of fp, or the steep middle
+  // facet of a twisted quad, recognised by the facet beyond it lying back
+  // within 60 degrees of fp (the alternation this average exists to cancel).
+  // A face folded off the plane (an L-shaped backdrop, a box) is neither, so
+  // a flat quad keeps its own normal and its two triangles agree.
+  bool t1[2], t2[2];
+  float3 f1[2], f2[2];
+  for (uint side = 0; side < 2; ++side) {
+    const bool lo = side == 0;
+    const bool has1 = lo ? p >= 1 : p + 1 < n;
+    const bool has2 = lo ? p >= 2 : p + 2 < n;
+    const uint q1 = lo ? p - 1 : p + 1, q2 = lo ? p - 2 : p + 2;
+    const bool touch1 = has1 && rt_tris_touch(tris, q1, p);
+    const bool touch2 = touch1 && has2 && rt_tris_touch(tris, q2, q1);
+    f1[side] = touch1 ? rt_facet_normal(tris, q1) : fp;
+    f2[side] = touch2 ? rt_facet_normal(tris, q2) : fp;
+    const bool near2 = touch2 && abs(dot(f2[side], fp)) >= 0.5;
+    t1[side] = touch1 && (abs(dot(f1[side], fp)) >= 0.5 || near2);
+    t2[side] = t1[side] && near2;
   }
+  // Same order and arithmetic as before #668 when every neighbour counts.
+  if (t1[0]) acc += (dot(f1[0], fp) < 0.0) ? -f1[0] : f1[0];
+  if (t1[1]) acc += (dot(f1[1], fp) < 0.0) ? -f1[1] : f1[1];
+  if (t2[0]) acc += (dot(f2[0], fp) < 0.0) ? -f2[0] : f2[0];
+  if (t2[1]) acc += (dot(f2[1], fp) < 0.0) ? -f2[1] : f2[1];
   return normalize(acc);
 }
 
@@ -3192,8 +3735,10 @@ constant bool kRTTrans [[function_constant(0)]];
 // structs and of the helpers the hit shading needs. Each copy is kMaterialSrc's
 // code verbatim, comments aside; lighting_msl.py fails if one drifts. No
 // light_outline: the beam outlines are an overlay, and overlays never enter ray
-// tracing. The response is light_response_neutral(), as on the bezier tube:
-// #615's light_response needs MaterialU, which this library has no copy of.
+// tracing. Hits take the studio shadow maps (#664) under kRTLightShadow. Hits
+// take their occurrence's studio response via rt_hit_response (#709), the
+// transparent layer reads its own table (#855), hits light the procedural
+// albedo, and glass hits take the glass glints.
 constant bool kRTLightRig [[function_constant(1)]];
 
 // HDR colour (#624): kMaterialSrc's kLightHdr, under the same name so the
@@ -3203,6 +3748,24 @@ constant bool kRTLightRig [[function_constant(1)]];
 // composite of a frame without HDR, so a reflection hit then takes the knee
 // as before #624.
 constant bool kLightHdr [[function_constant(2)]];
+
+// Studio shadow maps (#616) on traced reflection hits (#664); true only for
+// the rig composite of a frame whose maps are ready and which has no grid.
+// Everywhere else it is false, so those frames compile to what they did before.
+constant bool kRTLightShadow [[function_constant(3)]];
+
+// Traced soft shadows (#741): true only for the rig composite of a frame with
+// a traced light (size > 0); every other pipeline compiles as before.
+constant bool kRTLightSoft [[function_constant(4)]];
+
+// The traced lights (#741), bound at buffer 15 for rt_light_soft and the
+// kRTLightSoft composite. radius[i / 4][i % 4] is light i's source radius
+// (eye = model Å): > 0 a traced area light, 0 a hard traced point (a
+// shadowed light that keeps its map), < 0 no shadow.
+struct RTSoftU {
+  float4 head;       // x rays per traced light per pixel, y per reflection hit, z w 0
+  float4 radius[2];
+};
 
 struct LightRigLight {
   float4 pos;       // xyz eye-space position (A); w shadow slot (#616)
@@ -3217,7 +3780,7 @@ struct LightRigShadow {
 struct LightRigU {
   float4 head;      // x light count, y shininess, z orthographic, w shadow maps
   LightRigLight L[6];
-  LightRigShadow S[3];  // read by no RT function (#616: hits stay unshadowed)
+  LightRigShadow S[3];  // shadow maps 0..head.w-1 (#616, #664)
   float4 shadowGrid;
   float4 shadowTile;
   float4 tone;          // exposure, 1 = HDR, 0, 0 (#624)
@@ -3228,6 +3791,10 @@ struct LightResponse {
   float sharpness;
   float tint;
   float wrap;
+  float highlight2;
+  float sharpness2;
+  float tint2;
+  float tintGain;
 };
 struct LightTerms {
   float3 diffuse;
@@ -3241,6 +3808,10 @@ __attribute__((unused)) static LightResponse light_response_neutral() {
   r.sharpness = 1.0;
   r.tint = 0.0;
   r.wrap = 0.0;
+  r.highlight2 = 0.0;
+  r.sharpness2 = 1.0;
+  r.tint2 = 0.0;
+  r.tintGain = 1.0;
   return r;
 }
 
@@ -3255,11 +3826,13 @@ __attribute__((unused)) static LightTerms light_terms_view(
   LightTerms t;
   t.diffuse = float3(0.0);
   t.specular = float3(0.0);
+  float3 spec2 = float3(0.0);
   const int n = int(rig.head.x);
   const float nl = length(nEye);
   float3 N = nl > 1e-8 ? nEye / nl : V;
   if (dot(N, V) < 0.0) N = -N;
   const float shin = max(rig.head.y * r.sharpness, 1.0);
+  const float shin2 = max(rig.head.y * r.sharpness2, 1.0);
   for (int i = 0; i < 6; ++i) {
     if (i >= n) break;
     const float3 Lv = rig.L[i].pos.xyz - pEye;
@@ -3278,11 +3851,103 @@ __attribute__((unused)) static LightTerms light_terms_view(
     t.diffuse += rad * (wd * r.diffuse);
     const float3 H = Ld + V;
     if (ndl > 0.0 && dot(H, H) > 1e-8) {
-      t.specular += rad * (rig.L[i].misc.x * r.highlight *
-                           pow(saturate(dot(N, normalize(H))), shin));
+      const float ndh = saturate(dot(N, normalize(H)));
+      t.specular += rad * (rig.L[i].misc.x * r.highlight * pow(ndh, shin));
+      if (r.highlight2 > 0.0)
+        spec2 += rad * (rig.L[i].misc.x * r.highlight2 * pow(ndh, shin2));
     }
   }
-  t.specular *= mix(float3(1.0), base, r.tint);
+  const float3 tc = r.tintGain != 1.0 ? saturate(base * r.tintGain) : base;
+  t.specular = t.specular * mix(float3(1.0), tc, r.tint) +
+               spec2 * mix(float3(1.0), tc, r.tint2);
+  return t;
+}
+
+// kMaterialSrc's studio shadow block (#616), copied for the traced hits
+// (#664): light_shadow_lookup, light_visibility_shadowed and
+// light_terms_view_shadowed, verbatim. They read no function constant; only
+// the kRTLightShadow composite calls them, with the whole slice as the tile.
+__attribute__((unused)) static float light_shadow_lookup(constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp, int slot, float3 p, float3 n,
+    float3 ld, float d) {
+  const float4 tile = rig.shadowTile;
+  if (!(tile.z > 0.0 && tile.w > 0.0)) return 1.0;
+  const float4 info = rig.S[slot].info;
+  const float size = max(info.y, 1.0);
+  const float tilePx = max(info.y * tile.z, 1.0);
+  // One texel of this tile, in eye units, at the point's distance.
+  const float texel = 2.0 * d * info.x / tilePx;
+  const float3 q = p + n * (info.z * texel / max(dot(n, ld), 0.25)) + ld * texel;
+  const float4 lc = rig.S[slot].viewProj * float4(q, 1.0);
+  if (!(lc.w > 1e-6)) return 1.0;
+  const float3 ndc = lc.xyz / lc.w;
+  if (!(abs(ndc.x) <= 1.0 && abs(ndc.y) <= 1.0 && abs(ndc.z) <= 1.0)) return 1.0;
+  const float2 uv = tile.xy + float2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * tile.zw;
+  const float fd = 0.5 + 0.5 * ndc.z - info.w;
+  const float2 halfTexel = float2(0.5 / size);
+  const float2 lo = tile.xy + halfTexel;
+  const float2 hi = max(tile.xy + tile.zw - halfTexel, lo);
+  const float tap = 1.2 / size;
+  float lit = 0.0;
+  for (int y = -1; y <= 1; ++y) {
+    for (int x = -1; x <= 1; ++x) {
+      lit += maps.sample_compare(smp, clamp(uv + float2(x, y) * tap, lo, hi),
+                                 uint(slot), fd);
+    }
+  }
+  return lit / 9.0;
+}
+
+// light_visibility with the maps: light i's own map (its slot is pos.w, -1 =
+// none), 1 for a light without one or a slot past this frame's maps (head.w).
+__attribute__((unused)) static float light_visibility_shadowed(
+    constant LightRigU& rig, depth2d_array<float> maps, sampler smp, int i,
+    float3 p, float3 n, float3 ld, float d) {
+  const int slot = int(rig.L[i].pos.w);
+  if (slot < 0 || slot >= 3 || slot >= int(rig.head.w)) return 1.0;
+  return light_shadow_lookup(rig, maps, smp, slot, p, n, ld, d);
+}
+
+__attribute__((unused)) static LightTerms light_terms_view_shadowed(
+    constant LightRigU& rig, depth2d_array<float> maps, sampler smp,
+    float3 base, float3 nEye, float3 pEye, float3 V, LightResponse r) {
+  LightTerms t;
+  t.diffuse = float3(0.0);
+  t.specular = float3(0.0);
+  float3 spec2 = float3(0.0);
+  const int n = int(rig.head.x);
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  const float shin = max(rig.head.y * r.sharpness, 1.0);
+  const float shin2 = max(rig.head.y * r.sharpness2, 1.0);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float ndl = dot(N, Ld);
+    const float wd = saturate((ndl + r.wrap) / (1.0 + r.wrap));
+    if (spot <= 0.0 || wd <= 0.0) continue;
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    const float3 rad = rig.L[i].radiance.rgb *
+        (spot * fall * light_visibility_shadowed(rig, maps, smp, i, pEye, N, Ld, d));
+    t.diffuse += rad * (wd * r.diffuse);
+    const float3 H = Ld + V;
+    if (ndl > 0.0 && dot(H, H) > 1e-8) {
+      const float ndh = saturate(dot(N, normalize(H)));
+      t.specular += rad * (rig.L[i].misc.x * r.highlight * pow(ndh, shin));
+      if (r.highlight2 > 0.0)
+        spec2 += rad * (rig.L[i].misc.x * r.highlight2 * pow(ndh, shin2));
+    }
+  }
+  const float3 tc = r.tintGain != 1.0 ? saturate(base * r.tintGain) : base;
+  t.specular = t.specular * mix(float3(1.0), tc, r.tint) +
+               spec2 * mix(float3(1.0), tc, r.tint2);
   return t;
 }
 
@@ -3294,9 +3959,25 @@ __attribute__((unused)) static float3 mat_soft_knee(float3 c) {
 
 constant float kLightToneKnee = 0.55;
 constant float kLightToneWhite = 10.0;
+constant float kLightAcesA = 2.51;
+constant float kLightAcesB = 0.03;
+constant float kLightAcesC = 2.43;
+constant float kLightAcesD = 0.59;
+constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
+
+// Finite tests that fast math cannot fold, a verbatim copy of kMaterialSrc's
+// (#739).
+__attribute__((unused)) static bool light_finite(float x) {
+  return (as_type<uint>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+__attribute__((unused)) static bool light_finite3(float3 c) {
+  return all((as_type<uint3>(c) & 0x7f800000u) != 0x7f800000u);
+}
 
 __attribute__((unused)) static float light_tone_scalar(float m) {
-  m = (isfinite(m) && m > 0.0) ? m : 0.0;
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
   if (m <= kLightToneKnee) return m;
   if (m >= kLightToneWhite) return 1.0;
   const float s = 1.0 - kLightToneKnee;
@@ -3306,7 +3987,7 @@ __attribute__((unused)) static float light_tone_scalar(float m) {
 }
 
 __attribute__((unused)) static float light_tone_scalar_inverse(float y) {
-  y = (isfinite(y) && y > 0.0) ? y : 0.0;
+  y = (light_finite(y) && y > 0.0) ? y : 0.0;
   if (y <= kLightToneKnee) return y;
   if (y >= 1.0) return kLightToneWhite;
   const float s = 1.0 - kLightToneKnee;
@@ -3317,7 +3998,7 @@ __attribute__((unused)) static float light_tone_scalar_inverse(float y) {
 }
 
 __attribute__((unused)) static float3 light_tone(float3 c) {
-  if (!all(isfinite(c))) return float3(0.0);
+  if (!light_finite3(c)) return float3(0.0);
   c = max(c, float3(0.0));
   const float m = max(c.r, max(c.g, c.b));
   if (m <= kLightToneKnee) return c;
@@ -3325,16 +4006,257 @@ __attribute__((unused)) static float3 light_tone(float3 c) {
 }
 
 __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
-  if (!all(isfinite(c))) return float3(0.0);
+  if (!light_finite3(c)) return float3(0.0);
   c = clamp(c, float3(0.0), float3(1.0));
   const float m = max(c.r, max(c.g, c.b));
   if (m <= kLightToneKnee) return c;
   return c * light_tone_scalar_inverse(m) / m;
 }
 
-__attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
-  if (kLightHdr) return light_tone(c * exposure);
+// The ACES tone curve (Narkowicz 2015 fit, #735), hue-preserving: the largest
+// channel goes through light_aces_scalar and the other channels follow it
+// (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
+__attribute__((unused)) static float light_aces_scalar(float m) {
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
+  return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
+}
+__attribute__((unused)) static float light_aces_scalar_inverse(float y) {
+  y = (light_finite(y) && y > 0.0) ? min(y, 1.0) : 0.0;
+  const float a = kLightAcesA - kLightAcesC * y;
+  const float b = kLightAcesB - kLightAcesD * y;
+  return 2.0 * kLightAcesE * y / (b + sqrt(b * b + 4.0 * kLightAcesE * a * y));
+}
+__attribute__((unused)) static float3 light_aces(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar(m) / m;
+}
+__attribute__((unused)) static float3 light_aces_inverse(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar_inverse(m) / m;
+}
+// The rig's curve (#735): ACES when `aces` (tone.z) is set, else T.
+__attribute__((unused)) static float light_curve_scalar(float m, float aces) {
+  if (aces > 0.5) return light_aces_scalar(m);
+  return light_tone_scalar(m);
+}
+__attribute__((unused)) static float3 light_curve(float3 c, float aces) {
+  if (aces > 0.5) return light_aces(c);
+  return light_tone(c);
+}
+__attribute__((unused)) static float3 light_curve_inverse(float3 c, float aces) {
+  if (aces > 0.5) return light_aces_inverse(c);
+  return light_tone_inverse(c);
+}
+
+__attribute__((unused)) static float3 light_finish(float3 c, float4 tone) {
+  if (kLightHdr) return light_curve(c * tone.x, tone.z);
   return mat_soft_knee(c);
+}
+
+constant int kRTMatRow = 5;   // float4s per material table row (#712)
+
+// The studio response of material table row mi (#709, #712): row0 carries
+// {reflect, tint, rough, wrap}, row1 carries the studio response terms
+// {diffuse, highlight, sharpness, tint}, row4 carries {highlight2, sharpness2,
+// tint2, tintGain}. Returns light_response_neutral() when mi is out of range.
+static LightResponse rt_hit_response(device const float4* mats, int mi, float matCount) {
+  if (mi < 0 || float(mi) >= matCount) return light_response_neutral();
+  const float4 a = mats[kRTMatRow * mi];
+  const float4 b = mats[kRTMatRow * mi + 1];
+  const float4 e = mats[kRTMatRow * mi + 4];
+  LightResponse r;
+  r.diffuse = b.x;
+  r.highlight = b.y;
+  r.sharpness = b.z;
+  r.tint = b.w;
+  r.wrap = a.w;
+  r.highlight2 = e.x;
+  r.sharpness2 = e.y;
+  r.tint2 = e.z;
+  r.tintGain = e.w;
+  return r;
+}
+
+// Verbatim copies of kMaterialSrc constants (#855, lighting_msl.py pins them):
+constant int kMatMode_jelly = 6;
+constant float kMatGlassBaseAttenuation = 0.82;
+constant float kMatGlassReflection = 0.5;
+constant int kMatMode_matte  = 1;
+constant int kMatMode_marble = 7;
+constant int kMatMode_clay   = 8;
+constant int kMatMode_rubber = 9;
+constant float kMatClayGrainHarmonic = 2.7;
+constant float kMatClayGrainOffset = 5.0;
+constant float kMatRubberGrainHarmonic = 3.1;
+constant float kMatRubberGrainOffset = 7.0;
+
+// Verbatim copies of kMaterialSrc functions (#855, lighting_msl.py pins them):
+__attribute__((unused)) static float4 mat_glass_cover(float3 body, float3 hi, float a) {
+  float h = saturate(max(hi.r, max(hi.g, hi.b)));
+  float cover = saturate(a + (1.0 - a) * h);
+  float3 rgb = (mat_soft_knee(body) * a + hi) / max(cover, 1e-4);
+  return float4(saturate(rgb), cover);
+}
+
+__attribute__((unused)) static float mat_hash(float3 p) {
+  p = fract(p * 0.3183099 + float3(0.1, 0.2, 0.3));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+__attribute__((unused)) static float mat_noise(float3 x) {
+  float3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(mat_hash(i + float3(0, 0, 0)), mat_hash(i + float3(1, 0, 0)), f.x),
+                 mix(mat_hash(i + float3(0, 1, 0)), mat_hash(i + float3(1, 1, 0)), f.x), f.y),
+             mix(mix(mat_hash(i + float3(0, 0, 1)), mat_hash(i + float3(1, 0, 1)), f.x),
+                 mix(mat_hash(i + float3(0, 1, 1)), mat_hash(i + float3(1, 1, 1)), f.x), f.y), f.z);
+}
+__attribute__((unused)) static float mat_fbm(float3 p) {   // 5 octaves, 0..~1
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 5; ++i) { s += a * mat_noise(p); p = p * 2.03 + float3(1.7, 9.2, 3.1); a *= 0.5; }
+  return s;
+}
+__attribute__((unused)) static float mat_turb(float3 p) {  // turbulence: sum of |noise - 0.5|
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 5; ++i) { s += a * abs(mat_noise(p) * 2.0 - 1.0); p = p * 2.03 + float3(3.1, 1.7, 9.2); a *= 0.5; }
+  return s;
+}
+
+__attribute__((unused)) static float mat_octave_fade(float cells) {
+  return 1.0 - smoothstep(0.7, 1.4, cells);
+}
+
+// The material families the hit shading tells apart (#855): layer1/Material.h's
+// cMaterialFamily_procedural and cMaterialFamily_glass.
+constant int kRTFamilyProcedural = 1;
+constant int kRTFamilyGlass = 3;
+
+// A hit's material as the hit shading reads it (#855): row2/row3 of its table row.
+struct RTHitMaterial {
+  int family;
+  int mode;
+  float p[6];
+};
+
+// Row mi of a material table as an RTHitMaterial; family -1 (no material) when mi is out of range.
+static RTHitMaterial rt_hit_material(device const float4* mats, int mi, float matCount) {
+  RTHitMaterial m;
+  m.family = -1;
+  m.mode = 0;
+  for (int i = 0; i < 6; ++i) m.p[i] = 0.0;
+  if (mi < 0 || float(mi) >= matCount) return m;
+  const float4 c = mats[kRTMatRow * mi + 2];
+  const float4 d = mats[kRTMatRow * mi + 3];
+  m.family = int(c.x + 0.5);
+  m.mode = int(c.y + 0.5);
+  m.p[0] = c.z; m.p[1] = c.w;
+  m.p[2] = d.x; m.p[3] = d.y; m.p[4] = d.z; m.p[5] = d.w;
+  return m;
+}
+
+static float3 mat_marble_albedo(float3 base, float3 pModel, thread const RTHitMaterial& m) {
+  float3 p = pModel * max(m.p[1], 1e-3);
+  float turb = mat_turb(p * 0.9);
+  // Primary veins: one dominant direction with a second, weaker crossing set.
+  float v1 = sin((p.x + 0.55 * p.y + 0.35 * p.z) * 1.0 + turb * 6.5);
+  float v2 = sin((0.4 * p.x - p.y + 0.6 * p.z) * 0.7 + turb * 4.0 + 2.1);
+  float sharp = max(m.p[5], 1.0);
+  float vein = saturate(pow(1.0 - abs(v1), sharp) + 0.45 * pow(1.0 - abs(v2), sharp * 1.4));
+  // Mottling: slow fbm moves the stone between slightly lighter and darker.
+  float mottle = mat_fbm(p * 0.35 + 11.0);
+  float3 stone = base * mix(0.88, 1.06, mottle);
+  // Vein colour is DERIVED from the base, never replaces it: a rainbow cartoon
+  // in marble stays a rainbow.
+  float3 veinCol = base * 0.42 + float3(0.06, 0.055, 0.05);
+  // A soft halo around each vein reads as the translucent diffusion of stone.
+  float halo = pow(1.0 - abs(v1), max(sharp * 0.25, 1.0)) * 0.25;
+  stone = mix(stone, base * 0.8 + float3(0.02), halo * m.p[4]);
+  return mix(stone, veinCol, vein * m.p[4]);
+}
+
+static float mat_clay_edge(float nz, thread const RTHitMaterial& m) {
+  return 1.0 - m.p[2] * pow(1.0 - saturate(nz), 2.0);
+}
+
+static float rt_grain(float3 pModel, float amount, float freq, float harmonic, float offset, float px) {
+  if (amount <= 0.0) return 1.0;
+  float3 q1 = pModel * freq;
+  float cells1 = px * freq;
+  return 1.0 + amount * mat_octave_fade(cells1) * (mat_noise(q1) * 2.0 - 1.0)
+             + 0.5 * amount * mat_octave_fade(cells1 * harmonic)
+                   * (mat_noise(q1 * harmonic + offset) * 2.0 - 1.0);
+}
+
+static float3 rt_hit_albedo(float3 base, float3 nModel, float3 R, float3 pModel,
+    thread const RTHitMaterial& m, float px) {
+  if (m.family != kRTFamilyProcedural) return base;
+  float3 a;
+  if (m.mode == kMatMode_marble) a = mat_marble_albedo(base, pModel, m);
+  else if (m.mode == kMatMode_rubber)
+    a = base * rt_grain(pModel, m.p[0], m.p[1], kMatRubberGrainHarmonic,
+                        kMatRubberGrainOffset, px);
+  else if (m.mode == kMatMode_clay) {
+    const float nl = length(nModel);
+    const float nz = nl > 1e-8 ? abs(dot(nModel, R)) / nl : 1.0;
+    a = base * rt_grain(pModel, m.p[0], m.p[1], kMatClayGrainHarmonic,
+                        kMatClayGrainOffset, px) * mat_clay_edge(nz, m);
+  } else
+    a = base * rt_grain(pModel, m.p[0], m.p[1], 1.0, 0.0, px);
+  return light_finite3(a) ? a : base;
+}
+
+__attribute__((unused)) static float3 light_glass_glints(float3 s) {
+  if (kLightHdr) return 2.0 * s;
+  return float3(1.0) - exp(-2.0 * s);
+}
+
+__attribute__((unused)) static float4 light_glass_cover(float3 body, float3 hi,
+    float a, float4 tone) {
+  const float e = tone.x;
+  const float h = light_curve_scalar(e * max(hi.r, max(hi.g, hi.b)), tone.z);
+  const float cover = saturate(a + (1.0 - a) * h);
+  const float3 S = (body * a + hi) / max(cover, 1e-4);
+  return float4(light_curve(e * S, tone.z), cover);
+}
+
+static float4 rt_rig_glass_hit(constant LightRigU& rig, constant RTU& u,
+    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r, float a, float knob) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = light_terms_view(rig, base, nEye, pEye, V, r);
+  const float3 body = shaded + base * kMatGlassBaseAttenuation * t.diffuse;
+  const float3 hi = light_glass_glints(t.specular) * (kMatGlassReflection * saturate(knob));
+  if (kLightHdr) return light_glass_cover(body, hi, a, rig.tone);
+  return mat_glass_cover(body, hi, a);
+}
+
+static float4 rt_rig_glass_hit_shadowed(constant LightRigU& rig, constant RTU& u,
+    depth2d_array<float> maps, sampler smp,
+    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r, float a, float knob) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = light_terms_view_shadowed(rig, maps, smp, base, nEye, pEye, V, r);
+  const float3 body = shaded + base * kMatGlassBaseAttenuation * t.diffuse;
+  const float3 hi = light_glass_glints(t.specular) * (kMatGlassReflection * saturate(knob));
+  if (kLightHdr) return light_glass_cover(body, hi, a, rig.tone);
+  return mat_glass_cover(body, hi, a);
 }
 
 // A reflection hit's colour with the rig's light added. `shaded` is the hit's
@@ -3345,17 +4267,48 @@ __attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
 // The view vector is the way the ray came, -R, as for the classic highlight
 // of a hit. Called only under `if (kRTLightRig)`. Through light_finish at the
 // frame's exposure, as every raster rig path is (#624: T under kLightHdr).
+// Takes the hit surface's studio response r (#709).
 static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
-    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R) {
+    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r) {
   const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
                                             u.invModelview[1].xyz,
                                             u.invModelview[2].xyz));
   const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
   const float3 nEye = toEye * nModel;
   const float3 V = -normalize(toEye * R);
-  const LightTerms t = light_terms_view(rig, base, nEye, pEye, V,
-                                        light_response_neutral());
-  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
+  const LightTerms t = light_terms_view(rig, base, nEye, pEye, V, r);
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone);
+}
+
+// The shadowed variant of rt_rig_hit (#664): takes the studio shadow maps
+// and calls light_terms_view_shadowed with the hit's response r (#709).
+static float3 rt_rig_hit_shadowed(constant LightRigU& rig, constant RTU& u,
+    depth2d_array<float> maps, sampler smp,
+    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = light_terms_view_shadowed(rig, maps, smp, base, nEye, pEye, V, r);
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone);
+}
+
+// The metallic tint of a traced reflection (#729): the surface's raster
+// colour at 1.6x, the classic strength. The classic composite clamps each
+// channel, so a bright surface tints toward white. Under an HDR rig
+// (kRTLightRig && kLightHdr) it is instead scaled down by its largest
+// channel to at most 1: the same tint wherever no channel passes 1, and the
+// surface's own hue near a highlight, so the reflection keeps its chroma as
+// the rig's light does under T. colRaw is an 8-bit colour, never negative.
+static float3 rt_reflect_tint(float3 colRaw) {
+  const float3 t = colRaw * 1.6;
+  if (kRTLightRig && kLightHdr)
+    return t / max(max(t.r, max(t.g, t.b)), 1.0);
+  return saturate(t);
 }
 
 // Transmittance along a ray through the transparent structure: the product of
@@ -3389,6 +4342,54 @@ static float rt_trans_T(ray r, primitive_acceleration_structure tas,
     r.min_distance = h.distance + 0.01;
   }
   return T;
+}
+
+// Light i's source radius from RTSoftU (#741).
+static float rt_soft_radius(constant RTSoftU& soft, int i) {
+  return soft.radius[i / 4][i % 4];
+}
+
+// The fraction of light i's disc that point p (model space, normal n) sees
+// (#741): K rays from p to points spread over a disc of the light's source
+// radius around it, facing p (radius 0: one ray to the light). Opaque casters
+// only. `rot` rotates the sample pattern (per pixel, frame-stable).
+static float rt_soft_vis(constant LightRigU& rig, constant RTU& u,
+    constant RTSoftU& soft, instance_acceleration_structure accel, uint mask,
+    int i, float3 p, float3 n, int K, float rot) {
+  const float R = max(rt_soft_radius(soft, i), 0.0);
+  const float3 Lm = (u.invModelview * float4(rig.L[i].pos.xyz, 1.0)).xyz;
+  const float3 toL = Lm - p;
+  const float dl = length(toL);
+  if (!(light_finite(dl) && dl > 1e-3) || !light_finite(R)) return 1.0;
+  const float3 c = toL / dl;
+  const float3 upv = abs(c.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0);
+  const float3 tx = normalize(cross(upv, c));
+  const float3 ty = cross(c, tx);
+  const int N = R > 0.0 ? max(K, 1) : 1;
+  const float3 o = p + n * 0.02;
+  const float skip = max(0.3 * u.shadowBias, 0.05);
+  intersector<instancing> it;
+  it.assume_geometry_type(geometry_type::triangle);
+  it.accept_any_intersection(true);
+  float lit = 0.0;
+  for (int k = 0; k < N; ++k) {
+    const float2 h = rt_hammersley(uint(k), uint(N));
+    const float r = R * sqrt(h.x);
+    const float phi = 6.2831853 * fract(h.y + rot);
+    const float3 target = Lm + tx * (r * cos(phi)) + ty * (r * sin(phi));
+    float3 dir = target - o;
+    const float len = length(dir);
+    if (!(len > 1e-3)) { lit += 1.0; continue; }
+    dir /= len;
+    ray sr;
+    sr.origin = o;
+    sr.direction = dir;
+    sr.min_distance = skip / max(abs(dot(n, dir)), 0.15);
+    sr.max_distance = len;
+    auto res = it.intersect(sr, accel, mask);
+    if (res.type == intersection_type::none) lit += 1.0;
+  }
+  return lit / float(N);
 }
 
 // Pass A: trace ambient-occlusion rays, write the raw AO term to an R16Float
@@ -3621,6 +4622,211 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
   return float4(ao, vis, selfSphere, 1.0);
 }
 
+// Pass A.6 (#741): traced soft shadows. For each pixel, the per-channel
+// ratio by which the traced lights' occlusion darkens the opaque colour:
+//   (A + sum_i w_i v_i) / (A + sum_i w_i)
+// with w_i light i's unshadowed diffuse radiance here (colour, cone, falloff,
+// N.L, as light_terms_view; neutral response), v_i the traced visibility of a
+// traced light (radius > 0) and 1 for every other light, and A the classic
+// terms (ambient, plus the classic headlight and key while the rig's classic
+// is above 0). The raster leaves the traced lights unshadowed on opaque
+// surfaces (bindLightRig), so the composite multiplies this in, after a
+// depth-aware blur. Never above 1. rgb = ratio, a = 1.
+fragment float4 rt_light_soft(PostVOut in [[stage_in]],
+    depth2d<float> depthTex [[texture(1)]],
+    sampler s [[sampler(0)]],
+    instance_acceleration_structure accel [[buffer(0)]],
+    constant RTU& u [[buffer(1)]],
+    device const packed_float3* tris [[buffer(2)]],
+    constant RTGridU& g [[buffer(3)]],
+    constant LightRigU& rig [[buffer(13)]],
+    constant RTSoftU& soft [[buffer(15)]]) {
+  float d = depthTex.sample(s, in.uv);
+  if (d >= 0.99999 || d <= 0.0015) return float4(1.0, 1.0, 1.0, 1.0);  // no occlusion
+
+  // grid_mode (#478): find the cell this pixel is drawn in. Every ray below is
+  // traced with that cell's instance mask, so objects that live in other cells
+  // (same world space, different viewport) can neither occlude nor shadow it,
+  // and the eye-space reconstruction measures ndc against the cell's own rect,
+  // so the ray origins sit on the surface actually drawn there.
+  uint ci, mask; float4 cell;
+  if (!rt_find_cell(in.uv, u, g, ci, mask, cell)) return float4(1.0, 1.0, 1.0, 1.0);
+  // This cell's world-triangle mesh: where it starts in `tris`, how many, and
+  // its top-level instance id (-1 = the cell has no triangles).
+  const uint triCount = g.cell[ci].tri.y;
+  const int triInst = int(g.cell[ci].tri.z);
+  device const packed_float3* ctris = tris + 3u * g.cell[ci].tri.x;
+
+  // Eye-space position + robust normal (matches post_ssao_fog reconstruction).
+  // post_eye_normal avoids the cross-silhouette derivative blow-up that plain
+  // cross(dfdx,dfdy) produces, which otherwise mis-orients the AO hemisphere /
+  // ray-origin bias in a 1-2px band along every silhouette.
+  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
+  float2 invres = 1.0 / float2(depthTex.get_width(), depthTex.get_height());
+  // SMOOTH normal (bilateral over the facets, silhouette-preserving), like the
+  // shadow-map path: the plain per-triangle reconstruction made the ray-origin
+  // offset and the light-facing test flip per triangle on coarse cartoon
+  // strands -> "triangles under shadows" in the traced-shadow path too.
+  float3 nEye = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, pEye,
+                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
+
+  float3 pModel = (u.invModelview * float4(pEye, 1.0)).xyz;
+  float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
+
+  // The pixel's OWN surface normal for everything that orients rays from it
+  // (AO hemisphere + origin offset, shadow self-hit tests). The depth-
+  // reconstructed nModel still steps per triangle on a twisted ribbon (the two
+  // triangles of a quad tilt in alternate directions), which striped both the
+  // AO and the shadow term ring by ring on strongly twisted strands
+  // (cartoon_flat_sheets off). So find the triangle this pixel actually lies
+  // on with a primary ray (eye -> pixel) and use its strip-smoothed facet
+  // normal; pixels on sphere impostors (analytic depth) keep nModel.
+  float3 nSelf = nModel;
+  {
+    float3 camM, dirM;
+    if (u.projOrtho > 0.5) {
+      dirM = normalize((u.invModelview * float4(0.0, 0.0, -1.0, 0.0)).xyz);
+      camM = pModel - dirM * 1000.0;
+    } else {
+      camM = (u.invModelview * float4(0.0, 0.0, 0.0, 1.0)).xyz;
+      dirM = normalize(pModel - camM);
+    }
+    float const dEye = length(pModel - camM);
+    intersector<instancing> pit;
+    pit.assume_geometry_type(geometry_type::triangle);
+    pit.accept_any_intersection(false);
+    ray pr;
+    pr.origin = camM;
+    pr.direction = dirM;
+    pr.min_distance = 0.0;
+    pr.max_distance = dEye + 0.5;
+    auto pres = pit.intersect(pr, accel, mask);
+    if (pres.type != intersection_type::none && triInst >= 0
+        && int(pres.instance_id) == triInst
+        && abs(pres.distance - dEye) < 0.5) {
+      nSelf = rt_tri_normal_smooth(ctris, pres.primitive_id, triCount);
+      if (dot(nSelf, nModel) < 0.0) nSelf = -nSelf;   // face the camera side
+    }
+  }
+
+  const float pl = length(pEye);
+  const float3 V = (u.projOrtho > 0.5 || pl <= 1e-6) ? float3(0.0, 0.0, 1.0) : -pEye / pl;
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  const float3 kl = float3(u.klx, u.kly, u.klz);
+  const float kll = length(kl);
+  const float A = max(u.lAmbient, 0.0)
+      + max(u.lDirect, 0.0) * saturate(N.z)
+      + (kll > 1e-6 ? max(u.lReflect, 0.0) * saturate(dot(N, kl / kll)) : 0.0);
+  float3 total = float3(A);
+  float3 lit = total;
+  const int K = max(int(soft.head.x), 1);
+  const float rot = rt_hash(in.uv * 1024.0 + 31.0);
+  const int n = int(rig.head.x);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float ndl = dot(N, Ld);
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    if (spot <= 0.0 || ndl <= 0.0) continue;
+    const float3 w = rig.L[i].radiance.rgb * (spot * fall * ndl);
+    if (!light_finite3(w)) continue;
+    total += w;
+    lit += rt_soft_radius(soft, i) > 0.0
+        ? w * rt_soft_vis(rig, u, soft, accel, mask, i, pModel, nSelf, K,
+                          fract(rot + 0.618034 * float(i)))
+        : w;
+  }
+  // A channel nothing lights here (no classic term, every light off or
+  // facing away) keeps the raster colour: 1, not 0/0 (#741).
+  const float3 ratio = select(float3(1.0), lit / max(total, float3(1e-6)),
+                              total > float3(1e-6));
+  return float4(light_finite3(ratio) ? saturate(ratio) : float3(1.0), 1.0);
+}
+
+// Traced soft shadows on reflection hits (#741, #846 extended):
+// light_terms_view_shadowed's loop calling rt_soft_vis for shadowed lights.
+static LightTerms rt_light_terms_soft(
+    constant LightRigU& rig, constant RTU& u, constant RTSoftU& soft,
+    instance_acceleration_structure accel, uint mask,
+    float3 pModel, float3 nModel, float rot,
+    float3 base, float3 nEye, float3 pEye, float3 V, LightResponse r) {
+  LightTerms t;
+  t.diffuse = float3(0.0);
+  t.specular = float3(0.0);
+  const int n = int(rig.head.x);
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  const float shin = max(rig.head.y * r.sharpness, 1.0);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float ndl = dot(N, Ld);
+    const float wd = saturate((ndl + r.wrap) / (1.0 + r.wrap));
+    if (spot <= 0.0 || wd <= 0.0) continue;
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    const float vis = rt_soft_radius(soft, i) >= 0.0
+        ? rt_soft_vis(rig, u, soft, accel, mask, i, pModel, nModel, int(soft.head.y), rot)
+        : 1.0;
+    const float3 rad = rig.L[i].radiance.rgb * (spot * fall * vis);
+    t.diffuse += rad * (wd * r.diffuse);
+    const float3 H = Ld + V;
+    if (ndl > 0.0 && dot(H, H) > 1e-8) {
+      t.specular += rad * (rig.L[i].misc.x * r.highlight *
+                           pow(saturate(dot(N, normalize(H))), shin));
+    }
+  }
+  t.specular *= mix(float3(1.0), base, r.tint);
+  return t;
+}
+
+static float4 rt_rig_glass_hit_soft(constant LightRigU& rig, constant RTU& u,
+    constant RTSoftU& soft, instance_acceleration_structure accel, uint mask,
+    float rot, float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r, float a, float knob) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = rt_light_terms_soft(
+      rig, u, soft, accel, mask, pModel, nModel, rot, base, nEye, pEye, V, r);
+  const float3 body = shaded + base * kMatGlassBaseAttenuation * t.diffuse;
+  const float3 hi = light_glass_glints(t.specular) * (kMatGlassReflection * saturate(knob));
+  if (kLightHdr) return light_glass_cover(body, hi, a, rig.tone);
+  return mat_glass_cover(body, hi, a);
+}
+
+static float3 rt_rig_hit_soft(constant LightRigU& rig, constant RTU& u,
+    constant RTSoftU& soft, instance_acceleration_structure accel, uint mask,
+    float rot, float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = rt_light_terms_soft(
+      rig, u, soft, accel, mask, pModel, nModel, rot, base, nEye, pEye, V, r);
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone);
+}
+
 // Pass B: composite. Read scene color, DEPTH-AWARE-BLUR the raw AO term (5x5,
 // silhouette-preserving) to remove the Monte-Carlo speckle, apply it, then the
 // shadow-map PCF and depth-cue fog (identical to the old single-pass resolve).
@@ -3644,7 +4850,12 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     primitive_acceleration_structure tas [[buffer(9), function_constant(kRTTrans)]],
     device const float4* tcols [[buffer(10), function_constant(kRTTrans)]],
     device const packed_float3* tnrms [[buffer(11), function_constant(kRTTrans)]],
-    constant LightRigU& rig [[buffer(13), function_constant(kRTLightRig)]]) {
+    device const uint* tocc [[buffer(12), function_constant(kRTTrans)]],
+    device const float4* tmats [[buffer(14), function_constant(kRTTrans)]],
+    constant LightRigU& rig [[buffer(13), function_constant(kRTLightRig)]],
+    depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]],
+    texture2d<float> softTex [[texture(6), function_constant(kRTLightSoft)]],
+    constant RTSoftU& soft [[buffer(15), function_constant(kRTLightSoft)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
   float3 colRaw = col;   // lit colour before AO/shadow: tints the reflection
   float d = depthTex.sample(s, in.uv);
@@ -3669,6 +4880,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   float2 texel = 1.0 / float2(aoTex.get_width(), aoTex.get_height());
   float ztol = max(0.5 * u.aoRadius, 0.5);
   float aoSum = 0.0, visSum = 0.0, wSum = 0.0;
+  float3 softSum = float3(0.0);
   for (int j = -2; j <= 2; ++j)
     for (int i = -2; i <= 2; ++i) {
       float2 uv = in.uv + float2(i, j) * texel;
@@ -3690,10 +4902,12 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       float2 rg = aoTex.sample(s, uv).rg;
       aoSum += rg.r * w;
       visSum += rg.g * w;
+      if (kRTLightSoft) softSum += softTex.sample(s, uv).rgb * w;
       wSum += w;
     }
   float ao = wSum > 0.0 ? (aoSum / wSum) : aoTex.sample(s, in.uv).r;
   float vis = wSum > 0.0 ? (visSum / wSum) : aoTex.sample(s, in.uv).g;
+  const float3 softR = kRTLightSoft ? (wSum > 0.0 ? softSum / wSum : softTex.sample(s, in.uv).rgb) : float3(1.0);
 
   // Screen-space crease term (metal_ssao), kept ON under ray tracing (#436).
   // The traced hemisphere AO is physically right but SMOOTH: on packed spheres
@@ -3715,7 +4929,8 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       ao = min(ao, clamp(1.0 - occ * u.aoCrease, 0.0, 1.0));
     }
   }
-  col *= ao;
+
+  float shade = 1.0;  // cast-shadow factor (1 = lit), applied with ao below (#852)
 
   // Cast shadows. Two paths share the shadowIntensity gate:
   //  - metal_rt_shadows (u.rtShadow): use the hard shadow ray traced in rt_ao
@@ -3737,7 +4952,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     float selfSphere = aoTex.sample(s, in.uv).b;
     float faceGate = selfSphere > 0.5 ? smoothstep(0.0, 0.35, dot(nModel, Lm)) : 1.0;
     float shadow = (1.0 - vis) * faceGate;
-    col *= (1.0 - shadow * u.shadowIntensity);
+    shade = 1.0 - shadow * u.shadowIntensity;
   } else if (u.shadowIntensity > 0.0) {
     // Default RT path shadow-map fallback: same scale-aware, normal-offset,
     // Angstrom-bias treatment as post_ssao_fog, so cartoons get proper
@@ -3745,7 +4960,8 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     float3 Ldir = normalize(float3(u.klx, u.kly, u.klz)); // key light (cSetting_light)
     float faceGate = smoothstep(0.0, 0.35, dot(nEye, Ldir));
     float S = max(u.shadowRadius * 4.0 - 0.05, 1.0);
-    float worldTexel = 2.0 * u.shadowRadius / 4096.0;
+    float shadowDim = float(shadowTex.get_width());       // 4096 (2048 on iOS)
+    float worldTexel = 2.0 * u.shadowRadius / shadowDim;
     float c = clamp(dot(nEye, Ldir), 0.0, 1.0);
     float3 pOff = pEye + nEye * (1.5 * worldTexel / max(c, 0.25));
     float4 lc = u.lightViewProj * float4(pOff, 1.0);     // eye -> light clip
@@ -3757,7 +4973,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           fragDepth > 0.0 && fragDepth < 1.0) {
         float slopeTan = sqrt(max(0.0, 1.0 - c * c)) / max(c, 0.15);
         float sepA = min(0.35 + 1.2 * slopeTan, 12.0) * u.shadowBias;
-        float sep = sepA / S + 1.0 / 4096.0;
+        float sep = sepA / S + 1.0 / shadowDim;
         float2 stex = 1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         float lit = 0.0;
         for (int j = -2; j <= 1; j++)
@@ -3766,9 +4982,29 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
             lit += shadowTex.sample_compare(shadowSamp, suv + off, fragDepth - sep);
           }
         float shadow = (1.0 - lit / 16.0) * faceGate;
-        col *= (1.0 - shadow * u.shadowIntensity);
+        shade = 1.0 - shadow * u.shadowIntensity;
       }
     }
+  }
+
+  // Traced soft shadows (#741): the blurred ratio, in scene units under an
+  // HDR rig through the rig's curve (#735), as the AO is.
+  if (kRTLightSoft && light_finite3(softR)) {
+    const float3 sr = saturate(softR);
+    if (u.aoHdr > 0.5) col = light_curve(light_curve_inverse(col, u.aoAces) * sr, u.aoAces);
+    else col *= sr;
+  }
+
+  // AO and the cast shadow darken together. Under an HDR rig (#732, #852) the
+  // colour is T(e * L): occlude the light, not the display value, in one round
+  // trip. Below T's knee this is col * ao * shade exactly. With ACES as the
+  // rig's curve (#735, aoAces) the round trip is through ACES and its inverse,
+  // the curve the rig fragments went through.
+  if (u.aoHdr > 0.5 && ao * shade < 1.0)
+    col = light_curve(light_curve_inverse(col, u.aoAces) * (ao * shade), u.aoAces);
+  else {
+    col *= ao;
+    col *= shade;
   }
 
   // Traced self-reflections (each draw's material reflect / tint / rough).
@@ -3793,6 +5029,13 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       camM = (u.invModelview * float4(0.0, 0.0, 0.0, 1.0)).xyz;
       viewM = normalize(pModel - camM);
     }
+    // The model-space size of one pixel (#855): what the grain's octave fade
+    // needs at a hit, where screen derivatives are not available. Its angle
+    // in perspective (scaled by the distance the ray travelled), its size in
+    // orthographic.
+    const float pxRows = float(colorTex.get_height()) * max(cell.w - cell.y, 1e-4);
+    const float pxSize = 2.0 / max(u.projY * pxRows, 1e-4);
+    const float dEye0 = u.projOrtho > 0.5 ? 0.0 : length(pModel - camM);
     // Own primitive: material row + smooth normal. Sphere impostors keep the
     // depth normal (analytic, already smooth); a pixel whose primary ray finds
     // no matching caster (labels, lines, clipped caps) is not reflective.
@@ -3816,7 +5059,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
         }
       }
     }
-    float4 mat = (mi >= 0 && float(mi) < u.matCount) ? mats[mi] : float4(0.0);
+    float4 mat = (mi >= 0 && float(mi) < u.matCount) ? mats[kRTMatRow * mi] : float4(0.0);
     const float F0 = mat.x, tint = mat.y, rough = mat.z;
     if (F0 > 0.001) {
       float3 R0 = reflect(viewM, nSelf);
@@ -3826,6 +5069,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       float3 reflAcc = float3(0.0);
       int NS = rough > 0.0 ? max(int(u.reflSamples), 1) : 1;
       for (int si = 0; si < NS; ++si) {
+        const float rot = rt_hash(in.uv * 733.0 + float(si));
         float3 R = R0;
         if (rough > 0.0) {   // glossy: jitter inside a cone (frame-stable)
           float2 hx = float2(fract(rt_hash(in.uv * 977.0) + float(si) * 0.618034),
@@ -3863,13 +5107,16 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           if (res.type == intersection_type::none) break;
           float3 hitP = rr.origin + R * res.distance;
           float3 hn, hc;
+          int hmi = -1;
           bool isSphere = float(res.instance_id) < u.sphereCount;
           if (isSphere) {
             float4 c = sph[2u * res.instance_id];
             hc = sph[2u * res.instance_id + 1u].rgb;
+            hmi = int(sph[2u * res.instance_id + 1u].w);
             hn = normalize(hitP - c.xyz);
           } else {
             uint prim = triBase + res.primitive_id;
+            hmi = int(triMat[prim]);
             hn = rt_interp_normal(triNrms, prim, res.triangle_barycentric_coord);
             if (dot(hn, R) > 0.0) hn = -hn;          // face the incoming ray
             hc = float3(triCols[prim]);
@@ -3888,9 +5135,21 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           }
           reflCol = hc * min(inten, 1.0) + specv;
           // The light rig (#613) on top of the hit's classic colour, as the
-          // raster path puts it on top of the surface the mirror shows.
-          if (kRTLightRig)
-            reflCol = rt_rig_hit(rig, u, reflCol, hc, hitP, hn, R);
+          // raster path puts it on top of the surface the mirror shows (#709:
+          // using the hit surface's own studio light response; #855: lighting
+          // the procedural albedo).
+          if (kRTLightRig) {
+            const float3 ha = rt_hit_albedo(hc, hn, R, hitP, rt_hit_material(mats, hmi, u.matCount),
+                u.projOrtho > 0.5 ? pxSize : pxSize * (dEye0 + res.distance));
+            reflCol = kRTLightSoft
+                ? rt_rig_hit_soft(rig, u, soft, accel, mask, rot, reflCol, ha, hitP, hn, R,
+                                  rt_hit_response(mats, hmi, u.matCount))
+                : (kRTLightShadow
+                    ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, ha, hitP, hn, R,
+                                          rt_hit_response(mats, hmi, u.matCount))
+                    : rt_rig_hit(rig, u, reflCol, ha, hitP, hn, R,
+                                 rt_hit_response(mats, hmi, u.matCount)));
+          }
           // Fade distant hits toward the environment so far-off geometry does
           // not read as a hard mirror image (cheap "reflection fog").
           reflCol = mix(reflCol, envCol, saturate(res.distance / 120.0));
@@ -3922,17 +5181,38 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
               specv = u.lSpec * pow(max(dot(hn, H), 0.0), max(u.lShin, 1.0));
             }
             float3 tcol = tc.rgb * min(inten, 1.0) + specv;
-            if (kRTLightRig)
-              tcol = rt_rig_hit(rig, u, tcol, tc.rgb, tr.origin + R * th.distance,
-                                hn, R);
+            float ta = saturate(tc.a);
+            if (kRTLightRig) {
+              const int tmi = int(tocc[q]);
+              const RTHitMaterial tm = rt_hit_material(tmats, tmi, u.tMatCount);
+              const LightResponse tresp = rt_hit_response(tmats, tmi, u.tMatCount);
+              const float3 tp = tr.origin + R * th.distance;
+              if (tm.family == kRTFamilyGlass && tm.mode != kMatMode_jelly) {
+                const float4 gc = kRTLightSoft
+                    ? rt_rig_glass_hit_soft(rig, u, soft, accel, mask, rot, tcol, tc.rgb, tp, hn, R, tresp, ta, tm.p[0])
+                    : (kRTLightShadow
+                        ? rt_rig_glass_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, tc.rgb, tp, hn, R, tresp, ta, tm.p[0])
+                        : rt_rig_glass_hit(rig, u, tcol, tc.rgb, tp, hn, R, tresp, ta, tm.p[0]));
+                tcol = gc.rgb;
+                ta = gc.a;
+              } else {
+                const float3 talb = rt_hit_albedo(tc.rgb, hn, R, tp, tm,
+                    u.projOrtho > 0.5 ? pxSize : pxSize * (dEye0 + th.distance));
+                tcol = kRTLightSoft
+                    ? rt_rig_hit_soft(rig, u, soft, accel, mask, rot, tcol, talb, tp, hn, R, tresp)
+                    : (kRTLightShadow
+                        ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, talb, tp, hn, R, tresp)
+                        : rt_rig_hit(rig, u, tcol, talb, tp, hn, R, tresp));
+              }
+            }
             tcol = mix(tcol, envCol, saturate(th.distance / 120.0));
-            reflCol = mix(reflCol, tcol, saturate(tc.a));
+            reflCol = mix(reflCol, tcol, ta);
           }
         }
         reflAcc += reflCol;
       }
       float3 reflCol = reflAcc / float(NS);
-      reflCol *= mix(float3(1.0), saturate(colRaw * 1.6), tint);
+      reflCol *= mix(float3(1.0), rt_reflect_tint(colRaw), tint);
       float NdotV = saturate(dot(nSelf, -viewM));
       float F = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
       col = mix(col, reflCol, F);
@@ -3943,7 +5223,13 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   if (u.bgFog.w > 0.5) {
     float dist = -pEye.z; // eye distance (pEye.z is the eye-space z, negative)
     float f = clamp((dist - u.fogStart) / max(u.fogEnd - u.fogStart, 1e-3), 0.0, 1.0);
-    col = mix(col, u.bgFog.rgb, f);
+    // bg_gradient (#689): fade toward the background at this pixel.
+    float3 fogCol = u.bgFog.rgb;
+    if (u.gradTop.w > 0.5) {
+      float t = saturate((in.uv.y - u.gradSpan.x) / max(u.gradSpan.y, 1e-6));
+      fogCol = mix(u.gradTop.rgb, u.gradBottom.rgb, t);
+    }
+    col = mix(col, fogCol, f);
   }
   return float4(col, 1.0);
 }
@@ -4183,22 +5469,31 @@ void RendererMetal::buildSphereProtoAS()
 // atom, transform = translate(center)·scale(radius), MODEL space). Rebuilt only
 // when the accumulated sphere set changes — model-space centers are invariant
 // under camera rotation, so this does NOT rebuild while orbiting.
-// Upload the per-occurrence traced-reflection material table ({reflect, tint,
-// rough, 0} per RT geometry occurrence, indexed by the per-primitive occurrence
+// Upload a per-occurrence traced-reflection material table (#709, #855, #712: five float4,
+// 20 floats per RT geometry occurrence, indexed by the per-primitive occurrence
 // index the built AS carries). Tiny; rewritten whenever the record or a
 // material slider changes.
+void RendererMetal::uploadRTMatTable(id<MTLBuffer>& buffer,
+    const std::vector<RTMatRow>& rows)
+{
+  const size_t n = rows.size();
+  const size_t bytes = std::max<size_t>(n, 1) * std::tuple_size<RTMatRow>::value * sizeof(float);
+  if (!buffer || buffer.length < bytes) {
+    [buffer release];
+    buffer = [_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  }
+  if (!buffer) return;
+  float* dst = static_cast<float*>(buffer.contents);
+  if (n == 0) {
+    for (size_t i = 0; i < std::tuple_size<RTMatRow>::value; ++i) dst[i] = 0.0f;
+    return;
+  }
+  std::memcpy(dst, rows.data(), n * std::tuple_size<RTMatRow>::value * sizeof(float));
+}
+
 void RendererMetal::uploadRTMaterials()
 {
-  const size_t n = _rtBuiltMat.size();
-  const size_t bytes = std::max<size_t>(n, 1) * 4 * sizeof(float);
-  if (!_rtMatBuffer || _rtMatBuffer.length < bytes) {
-    [_rtMatBuffer release];
-    _rtMatBuffer = [_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-  }
-  if (!_rtMatBuffer) return;
-  float* dst = static_cast<float*>(_rtMatBuffer.contents);
-  if (n == 0) { dst[0] = dst[1] = dst[2] = dst[3] = 0.0f; return; }
-  std::memcpy(dst, _rtBuiltMat.data(), n * 4 * sizeof(float));
+  uploadRTMatTable(_rtMatBuffer, _rtBuiltMat);
 }
 
 // metal_rt_transparent (#532): record a transparent draw's use of cached RT
@@ -4216,6 +5511,7 @@ void RendererMetal::rtNoteTransparent(const void* key, uint64_t gen)
   std::memcpy(delta.data(), &d, 64);
   _rtTFrameXform.push_back(delta);
   _rtTFrameClip.push_back({_repClipFront, _repClipBack});
+  _rtTFrameMat.push_back(rtOccurrenceMaterial());
   uint64_t h = _rtTFrameSig;
   h = (h ^ (uint64_t)reinterpret_cast<uintptr_t>(key)) * 1099511628211ULL;
   h = (h ^ gen) * 1099511628211ULL;
@@ -4238,6 +5534,8 @@ void RendererMetal::releaseRayTracingTransAS()
   [_rtTColBuffer release]; _rtTColBuffer = nil;
   [_rtTNrmBuffer release]; _rtTNrmBuffer = nil;
   [_rtTOccBuffer release]; _rtTOccBuffer = nil;
+  [_rtTMatBuffer release]; _rtTMatBuffer = nil;
+  _rtTBuiltMat.clear();
   _rtTTriCount = 0;
   _rtTBuiltSig = 0;
   _rtTBuiltEmpty = false;
@@ -4289,12 +5587,18 @@ void RendererMetal::ensureRayTracingTransAS()
     if (_rtTransAS) releaseRayTracingTransAS();
     return;
   }
+  // (A new skip or rebuild condition here belongs in rayTracingCurrent().)
   // Built already -- to a structure, or to nothing when every transparent
   // triangle was clipped away (latched too, or that frame record would be
   // re-gathered every frame for nothing).
   if (((_rtTReady && _rtTransAS) || _rtTBuiltEmpty) && !_rtTGeomDirty &&
-      _rtTFrameSig == _rtTBuiltSig)
+      _rtTFrameSig == _rtTBuiltSig) {
+    if (_rtTFrameMat.size() == _rtTBuiltMat.size() && _rtTFrameMat != _rtTBuiltMat) {
+      _rtTBuiltMat = _rtTFrameMat;
+      uploadRTMatTable(_rtTMatBuffer, _rtTBuiltMat);
+    }
     return;
+  }
   _rtTGeomDirty = false;
   _rtTBuiltKeys = std::unordered_set<const void*>(_rtTFrameKeys.begin(), _rtTFrameKeys.end());
 
@@ -4400,6 +5704,7 @@ void RendererMetal::ensureRayTracingTransAS()
   if (nTris == 0) {
     _rtTBuiltSig = _rtTFrameSig;
     _rtTBuiltEmpty = true;
+    _rtTBuiltMat = _rtTFrameMat;
     return;
   }
   id<MTLBuffer> tb = [_device newBufferWithBytes:tris.data()
@@ -4430,7 +5735,9 @@ void RendererMetal::ensureRayTracingTransAS()
                                       options:MTLResourceStorageModeShared];
   _rtTTriCount = nTris;
   _rtTBuiltSig = _rtTFrameSig;
-  _rtTReady = _rtTColBuffer && _rtTNrmBuffer && _rtTOccBuffer;
+  _rtTBuiltMat = _rtTFrameMat;
+  uploadRTMatTable(_rtTMatBuffer, _rtTBuiltMat);
+  _rtTReady = _rtTColBuffer && _rtTNrmBuffer && _rtTOccBuffer && _rtTMatBuffer;
   static int once = 0;
   if (_rtTReady && once++ < 5)
     NSLog(@"RendererMetal RT: transparent AS rebuilt — %zu triangles", nTris);
@@ -4446,6 +5753,7 @@ void RendererMetal::ensureRayTracingAS()
   // geometry itself was never gathered — a pure camera move re-draws the same
   // entries at the same generations and lands on the same signature.
   uint64_t h = _rtFrameSig;
+  // A new skip or rebuild condition here belongs in rayTracingCurrent() too.
   if (_rtReady && _rtInstanceAS && !_rtGeomDirty && h == _rtSphereHash) {
     // Unchanged casters. The grid cell RECTS are not part of the signature (a
     // window resize must not rebuild), so refresh them from this frame's record.
@@ -4817,7 +6125,8 @@ void RendererMetal::ensureRayTracingAS()
 // The RT pass pipelines, specialised on kRTTrans (function constant 0). The
 // light rig's constant (kRTLightRig) is always set, false: these are the
 // pipelines every frame without a rig runs. Its variants come from
-// buildRTRigComposite. So is HDR's (#624, kLightHdr), always false here.
+// buildRTRigComposite. So is HDR's (#624, kLightHdr), always false here, and
+// studio shadow maps (#664, kRTLightShadow), always false here.
 void RendererMetal::buildRTPipelines(bool transparent,
     id<MTLRenderPipelineState>* ao, id<MTLRenderPipelineState>* composite)
 {
@@ -4829,6 +6138,10 @@ void RendererMetal::buildRTPipelines(bool transparent,
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
   bool hdr = false;
   [fc setConstantValue:&hdr type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
+  bool shadow = false;
+  [fc setConstantValue:&shadow type:MTLDataTypeBool atIndex:kRTLightShadowConstantIndex];
+  bool soft = false;
+  [fc setConstantValue:&soft type:MTLDataTypeBool atIndex:kRTLightSoftConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fao = [_rtLib newFunctionWithName:@"rt_ao" constantValues:fc error:&err];
   id<MTLFunction> fco = fao ? [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err] : nil;
@@ -4862,10 +6175,12 @@ void RendererMetal::buildRTPipelines(bool transparent,
 // AO pass never sees the rig, so it has no variant. HDR's constant (#624,
 // kLightHdr) as asked: true for an HDR frame (a traced hit goes through the
 // tone curve at the frame's exposure), false for the 8-bit knee as before
-// #624. Both come from the retained _rtLib, so neither compiles the library
-// again. Returns +1, or nil after logging; the caller tries each once and
-// draws the classic composite otherwise.
-id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, bool hdr)
+// #624. Studio shadow maps (#664, kRTLightShadow) as asked: true for a frame
+// whose maps are ready and without grid, false otherwise. All come from the
+// retained _rtLib, so none compiles the library again. Returns +1, or nil
+// after logging; the caller tries each once and draws the classic composite
+// otherwise.
+id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, bool hdr, bool shadow, bool soft)
 {
   if (!_rtLib)
     return nil;
@@ -4877,6 +6192,10 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, 
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
   bool h = hdr;
   [fc setConstantValue:&h type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
+  bool s = shadow;
+  [fc setConstantValue:&s type:MTLDataTypeBool atIndex:kRTLightShadowConstantIndex];
+  bool so = soft;
+  [fc setConstantValue:&so type:MTLDataTypeBool atIndex:kRTLightSoftConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fco = [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err];
   [fc release];
@@ -4890,10 +6209,50 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, 
     [pd release];
   }
   if (!pipeline)
-    NSLog(@"RendererMetal RT: light-rig %s%s composite failed: %@",
-          transparent ? "transparent" : "default", hdr ? " HDR" : "", err);
+    NSLog(@"RendererMetal RT: light-rig %s%s%s%s composite failed: %@",
+          transparent ? "transparent" : "default", hdr ? " HDR" : "",
+          shadow ? " shadow" : "", soft ? " soft" : "", err);
   [vtx release]; [fco release];
   return pipeline;
+}
+
+bool RendererMetal::ensureRTSoftPipeline()
+{
+  if (_rtSoftPipeline)
+    return true;
+  if (_rtSoftTried || !_rtLib)
+    return false;
+  _rtSoftTried = true;
+  NSError* err = nil;
+  MTLFunctionConstantValues* fc = [[MTLFunctionConstantValues alloc] init];
+  bool c0 = false;
+  [fc setConstantValue:&c0 type:MTLDataTypeBool atIndex:0];
+  bool c1 = true;
+  [fc setConstantValue:&c1 type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
+  bool c2 = false;
+  [fc setConstantValue:&c2 type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
+  bool c3 = false;
+  [fc setConstantValue:&c3 type:MTLDataTypeBool atIndex:kRTLightShadowConstantIndex];
+  bool c4 = false;
+  [fc setConstantValue:&c4 type:MTLDataTypeBool atIndex:kRTLightSoftConstantIndex];
+  id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
+  id<MTLFunction> fsoft = [_rtLib newFunctionWithName:@"rt_light_soft" constantValues:fc error:&err];
+  [fc release];
+  if (vtx && fsoft) {
+    MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+    pd.vertexFunction = vtx;
+    pd.fragmentFunction = fsoft;
+    pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+    _rtSoftPipeline = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
+    [pd release];
+  }
+  if (!_rtSoftPipeline) {
+    NSLog(@"RendererMetal RT: soft shadow pipeline failed: %@", err);
+    _rtSoftBroken = true;
+  }
+  [vtx release];
+  [fsoft release];
+  return _rtSoftPipeline != nil;
 }
 
 // Screen-space AO (metal_ssao) tuning shared by the raster pass (post_ssao_fog)
@@ -4944,7 +6303,10 @@ void RendererMetal::runPostChain()
 
   // Pass 1-RT: real ray-traced AO + shadow (+ fog), replacing the SSAO/shadow
   // pass when metal_raytrace is on. Traces against the atom-sphere instance AS.
-  if (doRT) {
+  // A dust-only frame (#685) reuses the kept pre-air image from pass 1:
+  if (_airOnlyFrame) {
+    sceneSrc = _airCacheColor;
+  } else if (doRT) {
     struct RTU {
       float invModelview[16];
       float lightDirModel[4];
@@ -4962,10 +6324,13 @@ void RendererMetal::runPostChain()
       float aoCrease;            // matches MSL RTU: crease-term intensity (0 = off)
       float aoCreaseRadiusPx;    // matches MSL RTU: crease ring radius (px)
       float aoExemptEnabled;     // matches MSL RTU: cartoon mask bound at texture(4)
-      float pad3;                // matches MSL RTU padding (16-byte multiple)
+      float aoHdr;               // matches MSL RTU: HDR rig frame, AO in scene units (#732)
       float reflEnv, reflSamples, sphereCount, matCount;   // traced reflections (see MSL RTU)
       float lAmbient, lDirect, lReflect, lSpec;
-      float lShin, pad4, pad5, pad6;
+      float lShin, tMatCount, aoAces, pad6;
+      float gradTop[4];          // matches MSL RTU (#689)
+      float gradBottom[4];
+      float gradSpan[4];
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -4980,6 +6345,14 @@ void RendererMetal::runPostChain()
     u.lightDirModel[2] = lm.z; u.lightDirModel[3] = 0.0f;
     u.bgFog[0] = _bgR; u.bgFog[1] = _bgG; u.bgFog[2] = _bgB;
     u.bgFog[3] = doFog ? 1.0f : 0.0f;
+    for (int i = 0; i < 3; ++i) {
+      u.gradTop[i] = _bgGradTop[i];
+      u.gradBottom[i] = _bgGradBottom[i];
+    }
+    u.gradTop[3] = _bgGradOn ? 1.0f : 0.0f;
+    u.gradBottom[3] = 0.0f;
+    u.gradSpan[0] = _bgGradSpan[0]; u.gradSpan[1] = _bgGradSpan[1];
+    u.gradSpan[2] = u.gradSpan[3] = 0.0f;
     u.projA = _projA; u.projB = _projB; u.projX = _projX; u.projY = _projY;
     u.projOrtho = _projOrtho;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
@@ -5031,7 +6404,8 @@ void RendererMetal::runPostChain()
     u.aoCrease = doAO ? kSSAOIntensity : 0.0f;
     u.aoCreaseRadiusPx = (float)_rtH * kSSAORadiusFrac;
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
-    u.pad3 = 0.0f;
+    u.aoHdr = _lightHdrOn ? 1.0f : 0.0f;
+    u.aoAces = _lightAcesOn ? 1.0f : 0.0f;
     // Traced self-reflections: materials come from the per-occurrence table
     // (each draw's reflect/tint/rough); only the global knobs and the
     // hit-shading light model travel in the uniform. matCount 0 = nothing
@@ -5044,7 +6418,8 @@ void RendererMetal::runPostChain()
     u.matCount = anyReflective ? (float)_rtBuiltMat.size() : 0.0f;
     u.lAmbient = _lightAmbient; u.lDirect = _lightDirect; u.lReflect = _lightReflect;
     u.lSpec = _lightSpecular; u.lShin = _lightShininess;
-    u.pad4 = u.pad5 = u.pad6 = 0.0f;
+    u.tMatCount = doRTTrans ? (float)_rtTBuiltMat.size() : 0.0f;
+    u.pad6 = 0.0f;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -5120,6 +6495,71 @@ void RendererMetal::runPostChain()
       _rtAOHistoryValid = true;
       _rtAOHashPrev = aoHash;
       _modelviewInvPrev = _modelviewInv;
+      _rtAOAccumFrames = reset ? 1 : std::min(_rtAOAccumFrames + 1, 1 << 20);
+      _rtAOTemporalRan = true;
+    }
+
+    // Pass A.6 (#741): traced soft shadows.
+    bool rtSoftReady = false;
+    if (_lightSoftFrame && _lightRigOn && _rtAO) {
+      if (!_rtSoft || _rtSoft.width != _rtAO.width || _rtSoft.height != _rtAO.height) {
+        [_rtSoft release];
+        MTLTextureDescriptor* sd = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                         width:_rtAO.width height:_rtAO.height mipmapped:NO];
+        sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        sd.storageMode = MTLStorageModePrivate;
+        _rtSoft = [_device newTextureWithDescriptor:sd];
+      }
+      rtSoftReady = (_rtSoft != nil);
+    }
+    const bool doSoft = _lightSoftFrame && _lightRigOn && ensureRTSoftPipeline() && rtSoftReady;
+    struct RTSoftU {
+      float head[4];
+      float radius[8];
+    } su;
+    static_assert(sizeof(RTSoftU) == 48, "RTSoftU must be 48 bytes");
+    su.head[0] = float(_offscreen ? kRTSoftRaysExport : kRTSoftRaysLive);
+    su.head[1] = float(_offscreen ? kRTSoftHitRaysExport : kRTSoftHitRaysLive);
+    su.head[2] = 0.0f;
+    su.head[3] = 0.0f;
+    for (int i = 0; i < 6; ++i) {
+      su.radius[i] = _lightSoftRadius[i] > 0.0f
+          ? _lightSoftRadius[i]
+          : (_lightRigBlock.light[i].pos[3] >= 0.0f ? 0.0f : -1.0f);
+    }
+    su.radius[6] = -1.0f;
+    su.radius[7] = -1.0f;
+
+    if (doSoft) {
+      MTLRenderPassDescriptor* psoft = [MTLRenderPassDescriptor renderPassDescriptor];
+      psoft.colorAttachments[0].texture = _rtSoft;
+      psoft.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+      psoft.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> esoft =
+          [_cmdBuffer renderCommandEncoderWithDescriptor:psoft];
+      [esoft setRenderPipelineState:_rtSoftPipeline];
+      [esoft setFragmentTexture:_sceneDepth atIndex:1];
+      [esoft setFragmentSamplerState:_postSampler atIndex:0];
+      if (_rtSphereProtoAS)
+        [esoft useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+      for (id<MTLAccelerationStructure> as : _rtTriProtoASs)
+        [esoft useResource:as usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+      [esoft setFragmentAccelerationStructure:_rtInstanceAS atBufferIndex:0];
+      [esoft setFragmentBytes:&u length:sizeof(u) atIndex:1];
+      if (_rtTriBuffer) {
+        [esoft setFragmentBuffer:_rtTriBuffer offset:0 atIndex:2];
+      } else {
+        float dummyTri[9] = {0};
+        [esoft setFragmentBytes:dummyTri length:sizeof(dummyTri) atIndex:2];
+      }
+      [esoft setFragmentBytes:&gu length:sizeof(gu) atIndex:3];
+      LightRigBlock softRigBlock = _lightRigBlock;
+      softRigBlock.head[2] = _projOrtho > 0.5f ? 1.0f : 0.0f;
+      [esoft setFragmentBytes:&softRigBlock length:sizeof(softRigBlock) atIndex:kRTLightRigBufferIndex];
+      [esoft setFragmentBytes:&su length:sizeof(su) atIndex:kRTSoftBufferIndex];
+      [esoft drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [esoft endEncoding];
     }
 
     // Pass B: depth-aware-blur the AO + shadow/fog composite -> _postColor.
@@ -5129,45 +6569,85 @@ void RendererMetal::runPostChain()
     pd.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> er =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-    // The light rig on the reflection hits (#613): its composite only while a
-    // rig is on AND something reflects (the rig code lives in the reflection
-    // block, which matCount 0 skips). Otherwise, or if the variant cannot be
-    // built, today's composite. The variant follows the frame: transparent or
-    // not, and HDR colour or the knee (#624, _lightHdrOn).
+    // The light rig on the reflection hits (#613) and soft shadows (#741): its
+    // composite when a rig is on AND (something reflects OR soft shadows run).
+    // Otherwise, or if the variant cannot be built, today's composite. The
+    // variant follows the frame: transparent or not, HDR colour or the knee
+    // (#624, _lightHdrOn), studio shadows on hits (#664), and soft shadows (#741).
     id<MTLRenderPipelineState> composite =
         doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline;
     bool rtRig = false;
-    if (_lightRigOn && u.matCount > 0.5f) {
+    int rigS = 0;
+    bool usingSoftComposite = false;
+    if (_lightRigOn && (u.matCount > 0.5f || doSoft)) {
+      // Grid mode (shadowGrid[1] > 0) deliberately keeps the unshadowed variant:
+      // the composite is one full-screen pass, but the maps hold one tile per cell.
+      const bool rtShadow = lightShadowsReady() && (int)_lightRigBlock.shadowGrid[1] <= 0;
       const int rigT = doRTTrans ? 1 : 0;
       const int rigH = _lightHdrOn ? 1 : 0;
-      id<MTLRenderPipelineState>* rigComposite = &_rtResolvePipelineRig[rigT][rigH];
-      bool* tried = &_rtRigTried[rigT][rigH];
+      rigS = rtShadow ? 1 : 0;
+      const int rigSoft = doSoft ? 1 : 0;
+      id<MTLRenderPipelineState>* rigComposite = &_rtResolvePipelineRig[rigT][rigH][rigS][rigSoft];
+      bool* tried = &_rtRigTried[rigT][rigH][rigS][rigSoft];
       if (!*rigComposite && !*tried) {
         *tried = true;
-        *rigComposite = buildRTRigComposite(doRTTrans, _lightHdrOn);
+        *rigComposite = buildRTRigComposite(doRTTrans, _lightHdrOn, rtShadow, doSoft);
       }
       if (*rigComposite) {
         composite = *rigComposite;
         rtRig = true;
+        usingSoftComposite = (rigSoft == 1);
+      } else if (rigSoft == 1) {
+        // Fall back to non-soft selection (#741)
+        static bool sLoggedFallback = false;
+        if (!sLoggedFallback) {
+          sLoggedFallback = true;
+          NSLog(@"RendererMetal RT: soft rig composite failed, falling back to non-soft");
+        }
+        // From the next frame on the traced lights keep their maps (#741).
+        _rtSoftBroken = true;
+        id<MTLRenderPipelineState>* fallback = &_rtResolvePipelineRig[rigT][rigH][rigS][0];
+        bool* fallbackTried = &_rtRigTried[rigT][rigH][rigS][0];
+        if (!*fallback && !*fallbackTried) {
+          *fallbackTried = true;
+          *fallback = buildRTRigComposite(doRTTrans, _lightHdrOn, rtShadow, false);
+        }
+        if (*fallback) {
+          composite = *fallback;
+          rtRig = true;
+        }
       }
     }
     [er setRenderPipelineState:composite];
+    if (usingSoftComposite) {
+      [er setFragmentTexture:_rtSoft atIndex:kRTSoftTextureIndex];
+      [er setFragmentBytes:&su length:sizeof(su) atIndex:kRTSoftBufferIndex];
+    }
     if (doRTTrans) {
       [er useResource:_rtTransAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
       [er setFragmentAccelerationStructure:_rtTransAS atBufferIndex:9];
       [er setFragmentBuffer:_rtTColBuffer offset:0 atIndex:10];
       [er setFragmentBuffer:_rtTNrmBuffer offset:0 atIndex:11];
+      [er setFragmentBuffer:_rtTOccBuffer offset:0 atIndex:12];
+      [er setFragmentBuffer:_rtTMatBuffer offset:0 atIndex:14];
     }
     if (rtRig) {
       // This frame's rig, as bindLightRig binds it for a raster draw; head.z
       // follows the projection (the hits use the ray's own view vector).
       LightRigBlock block = _lightRigBlock;
       block.head[2] = _projOrtho > 0.5f ? 1.0f : 0.0f;
+      if (rigS) {
+        block.shadowTile[0] = 0.0f;
+        block.shadowTile[1] = 0.0f;
+        block.shadowTile[2] = 1.0f;
+        block.shadowTile[3] = 1.0f;
+        [er setFragmentTexture:_lightShadowArray atIndex:kRTLightShadowTextureIndex];
+      }
       [er setFragmentBytes:&block length:sizeof(block) atIndex:kRTLightRigBufferIndex];
     }
     [er setFragmentTexture:_sceneColor atIndex:0];
     [er setFragmentTexture:_sceneDepth atIndex:1];
-    [er setFragmentTexture:_shadowDepth atIndex:2];
+    [er setFragmentTexture:shadowTextureForBind() atIndex:2];
     [er setFragmentTexture:aoForComposite atIndex:3];
     // texture(4) = cartoon AO-exempt mask; bind a valid 2D texture even when
     // unused (aoExemptEnabled gates the sample), since the shader declares it.
@@ -5222,9 +6702,18 @@ void RendererMetal::runPostChain()
       float shadowBias;        // matches MSL PostU: metal_shadow_bias multiplier
       float projOrtho;         // matches MSL PostU: 1 = orthographic (#139)
       float klx, kly, klz;     // matches MSL PostU: key-light dir (toward light)
-      float pad0, pad1;        // matches MSL PostU padding (16-byte multiple)
+      float aoHdr, aoAces;     // matches MSL PostU: HDR rig frame, AO in scene units (#732, #735)
+      float gtR, gtG, gtB, gradOn;   // matches MSL PostU (#689)
+      float gbR, gbG, gbB, gradY0;
+      float gradH, gradP0, gradP1, gradP2;
     } u;
-    u.pad0 = 0.0f; u.pad1 = 0.0f;
+    u.aoHdr = _lightHdrOn ? 1.0f : 0.0f; u.aoAces = _lightAcesOn ? 1.0f : 0.0f;
+    u.gtR = _bgGradTop[0]; u.gtG = _bgGradTop[1]; u.gtB = _bgGradTop[2];
+    u.gradOn = _bgGradOn ? 1.0f : 0.0f;
+    u.gbR = _bgGradBottom[0]; u.gbG = _bgGradBottom[1];
+    u.gbB = _bgGradBottom[2];
+    u.gradY0 = _bgGradSpan[0]; u.gradH = _bgGradSpan[1];
+    u.gradP0 = u.gradP1 = u.gradP2 = 0.0f;
     u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
     u.projA = _projA; u.projB = _projB;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
@@ -5251,7 +6740,7 @@ void RendererMetal::runPostChain()
     [e1 setRenderPipelineState:_ssaoPipeline];
     [e1 setFragmentTexture:_sceneColor atIndex:0];
     [e1 setFragmentTexture:_sceneDepth atIndex:1];
-    [e1 setFragmentTexture:_shadowDepth atIndex:2];
+    [e1 setFragmentTexture:shadowTextureForBind() atIndex:2];
     // texture(3) = AO-exempt mask; bind a valid 2D texture even when unused
     // (aoExemptEnabled gates the sample), since the shader declares it.
     [e1 setFragmentTexture:(aoMaskReady ? _aoExemptMaskTex : _sceneColor) atIndex:3];
@@ -5267,6 +6756,9 @@ void RendererMetal::runPostChain()
   // (both read the same raster depth, rig and maps, so they get the same air),
   // and before the OIT resolve, so glass and transparent surfaces composite
   // over it. Only while the frame has air and the rig is on.
+  // Keep the pre-air image for dust-only ticks (#685).
+  keepPreAirImage(sceneSrc);
+  _airAlphaDrawn = false;
   if (_lightAirOn && _lightRigOn && _postColor && _sceneDepth &&
       ensureAirPipelines())
     sceneSrc = encodeAirPass(sceneSrc);
@@ -5514,17 +7006,18 @@ void RendererMetal::runPostChain()
   // ahead of the !_offscreen block so the offscreen PNG capture (which reads
   // sceneSrc directly) is processed identically to the live view. Exposure is
   // independent of the tone-map toggle, so the pass also runs when exposure != 1.
-  // HDR colour (#624): in an HDR rig frame the rig shaders apply the exposure
-  // in scene units (the block's tone.x), so this pass exposes at 1 (ACES
-  // only, when metal_tonemap is on). Without a rig, or at the 8-bit knee,
-  // postExposure is metal_exposure, as before #624.
+  // HDR colour (#624, #735): in an HDR rig frame the rig shaders apply the exposure
+  // in scene units (the block's tone.x). When metal_tonemap is on, ACES is the rig's
+  // curve (tone.z) so this pass applies neither exposure nor ACES. Without a rig,
+  // or at the 8-bit knee, postExposure is metal_exposure, as before #624.
   const float postExposure = _lightHdrOn ? 1.0f : _exposure;
+  const bool postAces = _tonemapEnabled && !_lightAcesOn;
   bool exposureActive = (postExposure < 0.999f || postExposure > 1.001f);
-  if ((_tonemapEnabled || exposureActive) && _tonemapPipeline) {
+  if ((postAces || exposureActive) && _tonemapPipeline) {
     id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
     struct { float exposure; float tonemap; float _p0, _p1; } u;
     u.exposure = postExposure;
-    u.tonemap = _tonemapEnabled ? 1.0f : 0.0f;
+    u.tonemap = postAces ? 1.0f : 0.0f;
     u._p0 = u._p1 = 0.0f;
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
     pd.colorAttachments[0].texture = dst;
@@ -5585,6 +7078,19 @@ void RendererMetal::runPostChain()
     [ea endEncoding];
     sceneSrc = dst;
   }
+
+  // metal_light_air_alpha (#684): the air counts toward the matte. Only a
+  // transparent export of a frame whose air pass drew its alpha (setting on).
+  if (_airAlphaDrawn)
+    sceneSrc = encodeAirAlphaMerge(sceneSrc);
+
+  // Screen-space overlays (ramp gadgets, #689): after the tonemap, DOF, OIT
+  // resolve and the transparent-export matte, so a gadget keeps its exact
+  // colours, is not fogged or depth-of-field blurred, and stays opaque in a
+  // transparent export. The live view's FXAA / upscale below still apply,
+  // as they do to the whole frame.
+  if (!_screenOverlayDraws.empty() && sceneSrc)
+    encodeScreenOverlays(sceneSrc);
 
   // Final pass → drawable: FXAA if available, else a 1:1 blit.
   // PYMOL_NO_AA forces the blit (A/B testing + user escape hatch).
@@ -5687,6 +7193,21 @@ id<MTLDepthStencilState> RendererMetal::oitDepthPeelAwareState()
   // put on the encoder does not survive to the draw -- this is the one place
   // that decides, and it has to agree with the pass that is open.
   return _oitPeelTest ? peelTestState() : oitDepthState();
+}
+
+id<MTLDepthStencilState> RendererMetal::labelOitNoDepthState()
+{
+  // float_labels in the OIT pass (#736): no depth test and, like every
+  // transparent draw, no depth write. Built once (MRC: +1, released in the
+  // destructor).
+  if (!_labelOitNoDepthState) {
+    MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
+    dsd.depthCompareFunction = MTLCompareFunctionAlways;
+    dsd.depthWriteEnabled = NO;
+    _labelOitNoDepthState = [_device newDepthStencilStateWithDescriptor:dsd];
+    [dsd release];
+  }
+  return _labelOitNoDepthState;
 }
 
 id<MTLDepthStencilState> RendererMetal::oitDepthState()
@@ -5948,6 +7469,15 @@ void RendererMetal::beginTransparentOIT(bool peel)
   _oitActive = true;
   _oitPeelTest = peel;
   _oitHasContent = true;
+  // Labels of the objects peeled before this pass (#736, see drawLabels).
+  if (!peel && !_peelDeferredLabels.empty()) {
+    std::vector<PeelDeferredLabels> deferred;
+    deferred.swap(_peelDeferredLabels);
+    for (const auto& d : deferred)
+      encodeLabels(d.call, d.modelview, d.projection, d.depthTest);
+    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setCullMode:MTLCullModeNone];
+  }
 }
 
 void RendererMetal::endTransparentOIT()
@@ -5996,9 +7526,10 @@ void RendererMetal::setShadowBias(float bias)
   _shadowBias = (bias > 0.0f) ? bias : 0.0f;
 }
 
-void RendererMetal::beginShadowPass()
+bool RendererMetal::beginShadowPass(const float* view)
 {
-  if (!_cmdBuffer || !_shadowPassDesc || !_vboShadowPipelineUByte) return;
+  if (!view || !_cmdBuffer || !_vboShadowPipelineUByte) return false;
+  if (!ensureShadowMap()) return false;  // the lazy 4096^2 map (#667)
   buildShadowPipelines();  // no-op if already built
   // End the scene encoder opened by beginFrame (it has only the pending clear;
   // no opaque geometry has drawn yet). Switch to the light-POV depth pass.
@@ -6012,7 +7543,7 @@ void RendererMetal::beginShadowPass()
   // scene and OIT passes -- a reflective object must reflect the same room
   // whichever pass draws it.
   bindEnvironment(_encoder);
-  if (!_encoder) { _passDesc = _scenePassDesc; return; }
+  if (!_encoder) { _passDesc = _scenePassDesc; return false; }
   MTLViewport vp = {0.0, 0.0, (double)kShadowDim, (double)kShadowDim, 0.0, 1.0};
   [_encoder setViewport:vp];
   if (!_shadowDepthState) {
@@ -6025,6 +7556,11 @@ void RendererMetal::beginShadowPass()
   [_encoder setDepthStencilState:_shadowDepthState];
   [_encoder setCullMode:MTLCullModeNone];
   _shadowMode = true;
+  // #665: until endShadowPass every modelview is seen from the light
+  // (loadMatrixf, loadIdentity) and the impostors ray-cast orthographically.
+  std::memcpy(_lightShadowView, view, sizeof(_lightShadowView));
+  _classicShadowViewOpen = true;
+  return true;
 }
 
 void RendererMetal::endShadowPass()
@@ -6032,6 +7568,7 @@ void RendererMetal::endShadowPass()
   if (!_shadowMode) return;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _shadowMode = false;
+  _classicShadowViewOpen = false;
   _shadowMapValid = true;
   // Re-open the scene pass with a fresh CLEAR — the shadow pre-pass runs BEFORE
   // the opaque loop, so the scene starts empty (mirrors beginFrame's clear; the
@@ -6084,6 +7621,7 @@ bool RendererMetal::ensureLightShadowArray()
     return false;
   // A size change: the old maps go (an in-flight command buffer keeps its own
   // reference until it completes).
+  _lightShadowMapsKept = false;
   [_lightShadowArray release];
   _lightShadowArray = nil;
   _lightShadowArraySize = 0;
@@ -6118,6 +7656,7 @@ bool RendererMetal::ensureLightShadowArray()
 
 bool RendererMetal::beginLightShadowMap(int slot, const float* view)
 {
+  _lightShadowMapsKept = false;
   if (slot < 0 || slot >= kLightRigBlockShadowSlots || !view)
     return false;
   if (!_cmdBuffer || !_lightRigOn || !_lightStudioShadows)
@@ -6164,6 +7703,7 @@ bool RendererMetal::beginLightShadowMap(int slot, const float* view)
     return false;
   }
   ++_lightShadowSlicesOpened;
+  ++_lightShadowSlicesRendered;
   const double side = (double)_lightShadowArraySize;
   MTLViewport vp = {0.0, 0.0, side, side, 0.0, 1.0};
   [_encoder setViewport:vp];
@@ -6218,6 +7758,8 @@ void RendererMetal::endLightShadowMaps()
   _lightShadowMapsReady = _lightRigOn && !_lightShadowFailed &&
                           _lightShadowSlicesOpened > 0 &&
                           _lightShadowSlicesOpened == (int)_lightRigBlock.head[3];
+  _lightShadowMapsKept = _lightShadowMapsReady;
+  _lightShadowMapsKeptCount = _lightShadowSlicesOpened;
   // Re-open the scene pass with a fresh CLEAR, as endShadowPass does (the
   // statements below are its own, copied verbatim; CI compares them).
   _passDesc = _scenePassDesc;
@@ -6243,6 +7785,28 @@ void RendererMetal::endLightShadowMaps()
     applyDepthStencilState();
     [_encoder setCullMode:_cullFaceEnabled ? MTLCullModeBack : MTLCullModeNone];
   }
+}
+
+// #666: this frame samples the maps the last pass left, instead of drawing
+// them again. Only the maps of one complete pass, of this frame's planned
+// count (head.w) and size, in the array that pass drew into; never inside a
+// slice. Nothing is encoded: the scene encoder stays the frame's own, as
+// when no slice opens.
+bool RendererMetal::reuseLightShadowMaps(int count)
+{
+  if (!_lightShadowMapsKept || !_cmdBuffer || !_lightRigOn ||
+      !_lightStudioShadows || _lightShadowSlotOpen >= 0 ||
+      _lightShadowPassActive)
+    return false;
+  if (count <= 0 || count != _lightShadowMapsKeptCount ||
+      count != (int)_lightRigBlock.head[3])
+    return false;
+  // (A reallocation clears _lightShadowMapsKept, so kept maps are the
+  // array's own.)
+  if (!_lightShadowArray || _lightShadowArraySize != _lightShadowSize)
+    return false;
+  _lightShadowMapsReady = true;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -6572,10 +8136,20 @@ void RendererMetal::bindEnvironment(id<MTLRenderCommandEncoder> enc)
 
 void RendererMetal::clearColor(float r, float g, float b, float a)
 {
+  if (_clearR == r && _clearG == g && _clearB == b && _clearA == a)
+    return;
   _clearR = r;
   _clearG = g;
   _clearB = b;
   _clearA = a;
+
+  // If an encoder is active on the scene pass before any geometry has drawn
+  // (e.g. SceneRenderMetal updating clearColor after beginFrame), re-clear so
+  // this frame reflects the new colour immediately.
+  if (_encoder && _passDesc == _scenePassDesc && !_shadowMode && !_oitActive) {
+    clear(true, true, true);
+    ensureEncoder();
+  }
 }
 
 void RendererMetal::scissor(int x, int y, int w, int h)
@@ -6751,11 +8325,6 @@ void RendererMetal::drawArrays(PrimitiveType mode, int first, int count)
     [_encoder setVertexBuffer:it->second offset:0 atIndex:0];
   }
 
-  // Set current pipeline if available
-  if (_currentPipeline) {
-    [_encoder setRenderPipelineState:_currentPipeline];
-  }
-
   [_encoder drawPrimitives:toMTL(mode)
                vertexStart:static_cast<NSUInteger>(first)
                vertexCount:static_cast<NSUInteger>(count)];
@@ -6771,10 +8340,6 @@ void RendererMetal::drawElements(
   auto vit = _buffers.find(_boundArrayBuffer);
   if (vit != _buffers.end()) {
     [_encoder setVertexBuffer:vit->second offset:0 atIndex:0];
-  }
-
-  if (_currentPipeline) {
-    [_encoder setRenderPipelineState:_currentPipeline];
   }
 
   // If an element array buffer is bound, use it
@@ -7039,9 +8604,10 @@ void RendererMetal::loadIdentity()
 {
   if (_matrixMode == 0) {
     _modelviewMatrix = identityMatrix();
-    // While a studio shadow map is open (#616) every modelview is seen from
-    // its light: the map's eye-space view, premultiplied (see loadMatrixf).
-    if (_lightShadowSlotOpen >= 0)
+    // While a shadow map is open (a studio slice, #616, or the classic map,
+    // #665) every modelview is seen from its light: the map's eye-space view,
+    // premultiplied (see loadMatrixf).
+    if (shadowCasterViewOpen())
       std::memcpy(_modelviewMatrix.data(), _lightShadowView, 16 * sizeof(float));
   } else {
     _projectionMatrix = identityMatrix();
@@ -7053,13 +8619,14 @@ void RendererMetal::loadMatrixf(const float* m)
   if (!m) return;
   Mat4& mat = (_matrixMode == 0) ? _modelviewMatrix : _projectionMatrix;
   std::memcpy(mat.data(), m, 16 * sizeof(float));
-  // While a studio shadow map is open (#616), the modelview is premultiplied
-  // by the map's view (camera eye space -> the light's view): every reload --
-  // the scene's camera, an object's TTT, a matrix pop -- comes through here,
-  // so VBO geometry lands in the light's clip space and sphere and cylinder
-  // impostors face the light and ray-cast from it, with no new shaders. The
-  // view is rigid, so the impostors' radius scale holds.
-  if (_matrixMode == 0 && _lightShadowSlotOpen >= 0) {
+  // While a shadow map is open (a studio slice, #616, or the classic map,
+  // #665), the modelview is premultiplied by the map's view (camera eye
+  // space -> the light's view): every reload -- the scene's camera, an
+  // object's TTT, a matrix pop -- comes through here, so VBO geometry lands
+  // in the light's clip space and sphere and cylinder impostors face the
+  // light and ray-cast from it, with no new shaders. The view is rigid, so
+  // the impostors' radius scale holds.
+  if (_matrixMode == 0 && shadowCasterViewOpen()) {
     Mat4 lightView;
     std::memcpy(lightView.data(), _lightShadowView, 16 * sizeof(float));
     mat = multiplyMatrices(lightView, mat);
@@ -7266,7 +8833,6 @@ void RendererMetal::endBatch()
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Always use the built-in batch pipeline for batch rendering.
-  // _currentPipeline is for VBO draws with a different vertex layout.
   [_encoder setRenderPipelineState:_batchPipeline];
 
   MTLPrimitiveType mtlPrim =
@@ -7417,6 +8983,12 @@ constant bool kMatGlass = (kMatFamily == 3);
 // MaterialU) reads it; the rig's own block stays at the end of this library.
 constant bool kLightRig [[function_constant(1)]];
 
+// HDR colour's constant (#624), specialised per pipeline: true only on the rig
+// variants of an HDR frame. Declared here, beside kLightRig, since #712 because
+// the materials' own knee (mat_inner_knee) reads it; the HDR helpers stay in
+// their block near the end of this library.
+constant bool kLightHdr [[function_constant(3)]];
+
 constant int kMatMode_frosted_glass = 5;
 constant int kMatMode_jelly = 6;
 
@@ -7473,13 +9045,27 @@ constant float kMatMarbleWrap = 0.35;
 //
 // Below the knee nothing changes at all, which is what keeps `default`
 // byte-identical: its specular rarely reaches 0.8, and where it does the curve
-// is continuous and C1 at the knee.
+// is continuous (C0) at the knee; the slope drops from 1 to 0.2 there.
 static float3 mat_soft_knee(float3 c) {
   const float knee = 0.8;
   float3 over = max(c - float3(knee), float3(0.0));
   // Reinhard on the excess only: x/(1+x) asymptotes to 1, so a very bright
   // reflection compresses toward white instead of arriving there and staying.
   return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
+}
+
+// A material's OWN knee (#712, #731): mat_soft_knee, except on an HDR rig
+// pipeline (kLightRig && kLightHdr), where it is the identity. There the
+// fragment's whole colour, these terms included, goes through the tone curve
+// T once (light_finish), in scene units; squeezing a highlight through the
+// 8-bit knee first compressed it twice and capped it below 1.0 before T saw
+// it. Every classic pipeline (kLightRig false) and every rig pipeline at the
+// 8-bit knee (kLightHdr false) keeps mat_soft_knee: both constants are
+// function constants, so `if (false)` folds away and those renders are
+// byte-identical to the build before #712.
+static float3 mat_inner_knee(float3 c) {
+  if (kLightRig && kLightHdr) return c;
+  return mat_soft_knee(c);
 }
 
 // Schlick's Fresnel: how much the surface reflects at this grazing angle. f0 is
@@ -7612,9 +9198,8 @@ constant float kMatGlassIor = 1.33;
 constant float kMatGlassRefractStrength = 0.2;
 constant float kOitRefractFar = 60000.0;   // RendererMetal::kOitRefractFar
 // Called from every lit library, for the whole glass family. The sphere rep
-// never draws clear or frosted glass (they degrade to `default` there), but
-// sphere impostors other reps emit -- cartoon ring spheres, surface dots --
-// can, and refract like the rest.
+// draws clear and frosted glass since #635, as do sphere impostors other reps
+// emit -- cartoon ring spheres, surface dots -- and all refract like the rest.
 static float4 mat_glass_refraction(float3 N, float3 posEye, float refrPx,
     int refrOrtho) {
   if (refrPx <= 0.0)
@@ -7647,13 +9232,9 @@ static float4 mat_glass_refraction(float3 N, float3 posEye, float refrPx,
 // and the pixel is the highlight. In between, the transmitted background is
 // dimmed by the highlight's share -- an approximation, but the one that keeps
 // a single colour and coverage per fragment.
-// Marked unused: this block is shared by every material library, and the
-// sphere library never calls it. The sphere rep degrades clear and frosted
-// glass to `default`; the glass spheres other reps emit (cartoon rings,
-// surface dots) shade through mat_impostor_composite's additive body + hi
-// instead, so their reflection is not separated from the coverage.
-// Without the attribute that is a new -Wunused-function in the sphere library
-// (the VBO and cylinder libraries both call it).
+// Marked unused: this block is shared by every material library, and one that
+// does not call it would otherwise get a -Wunused-function. (The VBO, cylinder
+// and, since #635, sphere libraries all call it.)
 __attribute__((unused)) static float4 mat_glass_cover(float3 body, float3 hi, float a) {
   float h = saturate(max(hi.r, max(hi.g, hi.b)));
   float cover = saturate(a + (1.0 - a) * h);
@@ -7698,7 +9279,7 @@ static float3 mat_env_specular(float3 N, float3 V, float rough, float3 f0,
   // the pre-filtered sample carries the lobe, which is what keeps this one
   // texture fetch instead of an integral per fragment.
   float3 F = mat_fresnel(f0, ndotv);
-  return mat_soft_knee(room * F);
+  return mat_inner_knee(room * F);
 }
 
 constant int kMatMode_matte  = 1;
@@ -7728,6 +9309,10 @@ struct MaterialU {
   float lightTint;
   float lightWrap;
   float lightClassic;
+  float lightHighlight2;
+  float lightSharpness2;
+  float lightTint2;
+  float lightTintGain;
   float _pad3;
   float _pad4;
 };
@@ -7753,11 +9338,19 @@ constant float kMatJellyGlowWrap = 0.6;
 constant float kMatJellyGlowGain = 1.15;
 constant float kMatJellyWetExp = 70.0;
 constant float kMatJellyWetTint = 0.25;
+// Mirrored in layer1/Material.cpp for #712.
+constant float kMatJellySheen = 0.12;
+// Mirrored in layer1/Material.cpp for #712.
+constant float kMatJellySheenExp = 8.0;
+// Mirrored in layer1/Material.cpp for #712.
+constant float kMatJellyTintGain = 1.3;
 
 // Rubber's broad key highlight (mat_shade_procedural): its exponent and tint
 // toward the base, named and mirrored for #615 as jelly's are.
 constant float kMatRubberHighlightExp = 8.0;
 constant float kMatRubberHighlightTint = 0.7;
+// Mirrored in layer1/Material.cpp for #712.
+constant float kMatRubberTintGain = 1.4;
 
 // Jelly (#496): a gummy -- a dense scattering BODY under a sharp wet skin. It
 // shares the glass family's pipeline and its peel, and is otherwise the
@@ -7850,10 +9443,10 @@ static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
                   ? max(dot(N, normalize(halfVec)), 0.0) : 0.0;
   // Both are the key light's, so both follow the rig's classic (#615,
   // mat_classic_light: 1 without the rig).
-  col += (m.p[2] * pow(ndoth, kMatJellyWetExp) + 0.12 * pow(ndoth, 8.0))
+  col += (m.p[2] * pow(ndoth, kMatJellyWetExp) + kMatJellySheen * pow(ndoth, kMatJellySheenExp))
          * mat_classic_light(m)
-         * mix(float3(1.0), saturate(base * 1.3), kMatJellyWetTint);
-  return mat_soft_knee(col);
+         * mix(float3(1.0), saturate(base * kMatJellyTintGain), kMatJellyWetTint);
+  return mat_inner_knee(col);
 }
 
 // --- value noise -----------------------------------------------------------
@@ -7947,6 +9540,21 @@ static float3 mat_marble_albedo(float3 base, float3 pModel, constant MaterialU& 
   return mix(stone, veinCol, vein * m.p[4]);
 }
 
+// The body materials' second grain octave (mat_grain's harmonic and offset)
+// and clay's grazing darkening, named so the classic shading
+// (mat_shade_procedural) and the studio rig's albedo (mat_rig_albedo, #710)
+// take the same pattern.
+constant float kMatClayGrainHarmonic = 2.7;
+constant float kMatClayGrainOffset = 5.0;
+constant float kMatRubberGrainHarmonic = 3.1;
+constant float kMatRubberGrainOffset = 7.0;
+
+// Clay's dry grazing darkening, from the z of the unit normal facing the
+// camera: p[2] at the silhouette, none face-on.
+static float mat_clay_edge(float nz, constant MaterialU& m) {
+  return 1.0 - m.p[2] * pow(1.0 - saturate(nz), 2.0);
+}
+
 // --- matte / clay / rubber -------------------------------------------------
 // One shading model with three parameter sets, replacing the default two-light
 // result entirely. `expo` compresses the diffuse falloff: 1.0 is plain Lambert
@@ -7983,7 +9591,8 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
     // grazing angles. Both are tinted toward the base so they never read as a
     // glossy clear coat -- that is plastic, not rubber.
     float3 col = mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
-                                keyDir, m, 0.85, 3.1, 7.0);
+                                keyDir, m, 0.85,
+                                kMatRubberGrainHarmonic, kMatRubberGrainOffset);
     float3 L1 = normalize(keyDir);
     float3 H = normalize(L1 + float3(0.0, 0.0, 1.0));
     float n1 = max(dot(N, L1), 0.0);
@@ -7995,19 +9604,56 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
                  (n1 > 0.0 ? 1.0 : 0.0) * mat_classic_light(m);
     float sheen = m.p[3] * pow(1.0 - saturate(N.z), 3.0);
     return col + (spec + sheen) *
-                 mix(float3(1.0), saturate(base * 1.4), kMatRubberHighlightTint);
+                 mix(float3(1.0), saturate(base * kMatRubberTintGain), kMatRubberHighlightTint);
   }
   if (m.mode == kMatMode_clay) {
     // Dead-matte ceramic: faint grain, no specular at all, and a dry grazing
     // darkening that reads as an unglazed porous body.
     float3 col = mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
-                                keyDir, m, 0.9, 2.7, 5.0);
-    return col * (1.0 - m.p[2] * pow(1.0 - saturate(N.z), 2.0));
+                                keyDir, m, 0.9,
+                                kMatClayGrainHarmonic, kMatClayGrainOffset);
+    return col * mat_clay_edge(N.z, m);
   }
   // matte (and any procedural mode this build cannot draw): Lambert and
   // nothing else. Every knob is zero, so the grain and the grazing terms fold
   // away -- this is the "kill the highlights" look users ask for first.
   return mat_matte_shade(base, N, pModel, ambient, direct, reflectAmt, keyDir, m);
+}
+
+// The albedo a procedural material's own shading lights, for the studio rig
+// (#710). The rig's diffuse lights THIS, not the raw base colour, so marble's
+// veins, the grain of matte, clay and rubber, and clay's edge darkening stay
+// under a rig at classic 0 instead of fading with the classic light. It is
+// the factor each classic shader applies to the base: marble's albedo before
+// its two-light model, the body materials' grain (and clay's edge) after
+// theirs. Rubber's highlight and sheen are light, not albedo, and are not
+// added here; the rig's highlight tint (light_terms_view's `base`, 0.7 for
+// rubber) does follow this albedo, so it carries the grain too (at most
+// p[0] of it), as the stone's veins would tint a highlight on marble.
+// Every other family returns `base`; kMatProcedural is a function constant,
+// so their rig pipelines fold to exactly the call they made before.
+//
+// nEye: the eye-space normal, any length, either side. Clay's edge reads the
+// side facing the camera, as the classic VBO shading does once it has flipped
+// its normal two-sided; an impostor hit's normal already faces the camera
+// (|z| differs from the classic saturate(z) only on a sphere's last rim pixel
+// in perspective). pModel: the model-space point the pattern is evaluated at.
+__attribute__((unused)) static float3 mat_rig_albedo(float3 base, float3 nEye,
+    float3 pModel, constant MaterialU& m) {
+  if (!kMatProcedural) return base;
+  if (m.mode == kMatMode_marble) return mat_marble_albedo(base, pModel, m);
+  if (m.mode == kMatMode_rubber)
+    return base * mat_grain(pModel, m.p[0], m.p[1], kMatRubberGrainHarmonic,
+                            kMatRubberGrainOffset);
+  if (m.mode == kMatMode_clay) {
+    const float nl = length(nEye);
+    const float nz = nl > 1e-8 ? abs(nEye.z) / nl : 1.0;
+    return base * mat_grain(pModel, m.p[0], m.p[1], kMatClayGrainHarmonic,
+                            kMatClayGrainOffset) * mat_clay_edge(nz, m);
+  }
+  // matte (and any procedural mode this build cannot draw), as
+  // mat_matte_shade: its grain only.
+  return base * mat_grain(pModel, m.p[0], m.p[1], 1.0, 0.0);
 }
 
 // --- Studio light rig (#613, lighting epic #610) ------------------------------
@@ -8062,6 +9708,10 @@ struct LightResponse {
   float sharpness;
   float tint;
   float wrap;
+  float highlight2;
+  float sharpness2;
+  float tint2;
+  float tintGain;
 };
 
 // The rig's light at one point: radiance sums, diffuse and specular kept
@@ -8080,6 +9730,10 @@ __attribute__((unused)) static LightResponse light_response_neutral() {
   r.sharpness = 1.0;
   r.tint = 0.0;
   r.wrap = 0.0;
+  r.highlight2 = 0.0;
+  r.sharpness2 = 1.0;
+  r.tint2 = 0.0;
+  r.tintGain = 1.0;
   return r;
 }
 
@@ -8098,6 +9752,10 @@ __attribute__((unused)) static LightResponse light_response(
   r.sharpness = mat.lightSharpness;
   r.tint = mat.lightTint;
   r.wrap = mat.lightWrap;
+  r.highlight2 = mat.lightHighlight2;
+  r.sharpness2 = mat.lightSharpness2;
+  r.tint2 = mat.lightTint2;
+  r.tintGain = mat.lightTintGain;
   return r;
 }
 
@@ -8124,17 +9782,22 @@ __attribute__((unused)) static float light_visibility(constant LightRigU& rig,
 // falloff reference are both at least 1e-3, the cone never divides by a zero
 // band, pow() is skipped at falloff 0, and the zero vectors normalize() would
 // turn into 0/0 are guarded.
+//
+// A material carries up to two specular lobes and a tint gain (#712): both
+// lobes tint toward the same tint colour tc = saturate(base * tintGain).
 __attribute__((unused)) static LightTerms light_terms_view(
     constant LightRigU& rig, float3 base, float3 nEye, float3 pEye, float3 V,
     LightResponse r) {
   LightTerms t;
   t.diffuse = float3(0.0);
   t.specular = float3(0.0);
+  float3 spec2 = float3(0.0);
   const int n = int(rig.head.x);
   const float nl = length(nEye);
   float3 N = nl > 1e-8 ? nEye / nl : V;
   if (dot(N, V) < 0.0) N = -N;
   const float shin = max(rig.head.y * r.sharpness, 1.0);
+  const float shin2 = max(rig.head.y * r.sharpness2, 1.0);
   for (int i = 0; i < 6; ++i) {
     if (i >= n) break;
     const float3 Lv = rig.L[i].pos.xyz - pEye;
@@ -8157,11 +9820,15 @@ __attribute__((unused)) static LightTerms light_terms_view(
     t.diffuse += rad * (wd * r.diffuse);
     const float3 H = Ld + V;
     if (ndl > 0.0 && dot(H, H) > 1e-8) {
-      t.specular += rad * (rig.L[i].misc.x * r.highlight *
-                           pow(saturate(dot(N, normalize(H))), shin));
+      const float ndh = saturate(dot(N, normalize(H)));
+      t.specular += rad * (rig.L[i].misc.x * r.highlight * pow(ndh, shin));
+      if (r.highlight2 > 0.0)
+        spec2 += rad * (rig.L[i].misc.x * r.highlight2 * pow(ndh, shin2));
     }
   }
-  t.specular *= mix(float3(1.0), base, r.tint);
+  const float3 tc = r.tintGain != 1.0 ? saturate(base * r.tintGain) : base;
+  t.specular = t.specular * mix(float3(1.0), tc, r.tint) +
+               spec2 * mix(float3(1.0), tc, r.tint2);
   return t;
 }
 
@@ -8187,13 +9854,32 @@ __attribute__((unused)) static LightTerms light_terms(constant LightRigU& rig,
 // reach these helpers sets it: RendererMetal::materialFragmentFunction,
 // bezierTubeRigFunction and airFunction (kRTSrc has its own copy, at its own
 // index). It is the ONLY function constant the light_ helpers read.
-constant bool kLightHdr [[function_constant(3)]];
+// kLightHdr is declared at the top of this library, beside kLightRig (#712).
 
 // T's knee k and white point W (pymol::kLightToneKnee, kLightToneWhite in
 // layer1/LightTone.h, which mirrors these functions operation for operation;
 // lighting_hdr_msl.py pins them equal).
 constant float kLightToneKnee = 0.55;
 constant float kLightToneWhite = 10.0;
+constant float kLightAcesA = 2.51;
+constant float kLightAcesB = 0.03;
+constant float kLightAcesC = 2.43;
+constant float kLightAcesD = 0.59;
+constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
+
+// Finite tests that fast math cannot fold (#739). The libraries compile with
+// Metal's default fast math, which may assume no NaN or inf and so fold
+// isfinite and isnan away. These read the bits instead: a float is not finite
+// exactly when its exponent bits are all ones. Every NaN guard of the light
+// helpers and the air (and kRTSrc's copies) uses them.
+__attribute__((unused)) static bool light_finite(float x) {
+  return (as_type<uint>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+__attribute__((unused)) static bool light_finite3(float3 c) {
+  return all((as_type<uint3>(c) & 0x7f800000u) != 0x7f800000u);
+}
 
 // T1(m): the identity up to the knee, then an extended-Reinhard shoulder, C1
 // at the knee (slope 1), exactly 1 at the white point and 1 beyond. With
@@ -8201,7 +9887,7 @@ constant float kLightToneWhite = 10.0;
 // T1 = k + s t (1 + t / w^2) / (1 + t). Non-finite and negative input reads
 // as 0 (the NaN rule: a NaN would not stay local under OIT).
 __attribute__((unused)) static float light_tone_scalar(float m) {
-  m = (isfinite(m) && m > 0.0) ? m : 0.0;
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
   if (m <= kLightToneKnee) return m;
   if (m >= kLightToneWhite) return 1.0;
   const float s = 1.0 - kLightToneKnee;
@@ -8214,7 +9900,7 @@ __attribute__((unused)) static float light_tone_scalar(float m) {
 // the knee: u = (y - k) / s, t = 2u / ((1 - u) + sqrt((1 - u)^2 + 4u / w^2)).
 // The identity to the knee, W at 1 (and above). NaN rule as above.
 __attribute__((unused)) static float light_tone_scalar_inverse(float y) {
-  y = (isfinite(y) && y > 0.0) ? y : 0.0;
+  y = (light_finite(y) && y > 0.0) ? y : 0.0;
   if (y <= kLightToneKnee) return y;
   if (y >= 1.0) return kLightToneWhite;
   const float s = 1.0 - kLightToneKnee;
@@ -8231,7 +9917,7 @@ __attribute__((unused)) static float light_tone_scalar_inverse(float y) {
 // exactly 1 at or beyond W. A colour with any non-finite channel is black;
 // negative channels read as 0.
 __attribute__((unused)) static float3 light_tone(float3 c) {
-  if (!all(isfinite(c))) return float3(0.0);
+  if (!light_finite3(c)) return float3(0.0);
   c = max(c, float3(0.0));
   const float m = max(c.r, max(c.g, c.b));
   if (m <= kLightToneKnee) return c;
@@ -8242,11 +9928,53 @@ __attribute__((unused)) static float3 light_tone(float3 c) {
 // light in scene units over a colour already through T. Tinv(1) = W, so
 // white stays white. NaN rule as light_tone.
 __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
-  if (!all(isfinite(c))) return float3(0.0);
+  if (!light_finite3(c)) return float3(0.0);
   c = clamp(c, float3(0.0), float3(1.0));
   const float m = max(c.r, max(c.g, c.b));
   if (m <= kLightToneKnee) return c;
   return c * light_tone_scalar_inverse(m) / m;
+}
+
+// The ACES tone curve (Narkowicz 2015 fit, #735), hue-preserving: the largest
+// channel goes through light_aces_scalar and the other channels follow it
+// (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
+__attribute__((unused)) static float light_aces_scalar(float m) {
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
+  return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
+}
+__attribute__((unused)) static float light_aces_scalar_inverse(float y) {
+  y = (light_finite(y) && y > 0.0) ? min(y, 1.0) : 0.0;
+  const float a = kLightAcesA - kLightAcesC * y;
+  const float b = kLightAcesB - kLightAcesD * y;
+  return 2.0 * kLightAcesE * y / (b + sqrt(b * b + 4.0 * kLightAcesE * a * y));
+}
+__attribute__((unused)) static float3 light_aces(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar(m) / m;
+}
+__attribute__((unused)) static float3 light_aces_inverse(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar_inverse(m) / m;
+}
+// The rig's curve (#735): ACES when `aces` (tone.z) is set, else T.
+__attribute__((unused)) static float light_curve_scalar(float m, float aces) {
+  if (aces > 0.5) return light_aces_scalar(m);
+  return light_tone_scalar(m);
+}
+__attribute__((unused)) static float3 light_curve(float3 c, float aces) {
+  if (aces > 0.5) return light_aces(c);
+  return light_tone(c);
+}
+__attribute__((unused)) static float3 light_curve_inverse(float3 c, float aces) {
+  if (aces > 0.5) return light_aces_inverse(c);
+  return light_tone_inverse(c);
 }
 
 // The rig path's one seam: a rig fragment's whole colour (decision 15's
@@ -8255,8 +9983,8 @@ __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
 // (#494), the 8-bit soft knee the rig had before #624, so several bright
 // lights compress toward white instead of clipping flat. (Clear and frosted
 // glass take light_glass_cover instead, or mat_glass_cover's knee.)
-__attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
-  if (kLightHdr) return light_tone(c * exposure);
+__attribute__((unused)) static float3 light_finish(float3 c, float4 tone) {
+  if (kLightHdr) return light_curve(c * tone.x, tone.z);
   return mat_soft_knee(c);
 }
 
@@ -8310,7 +10038,7 @@ __attribute__((unused)) static float3 light_apply(float3 rgb, float3 base,
     float3 nEye, float3 pEye, constant LightRigU& rig, LightResponse r) {
   const LightTerms t = light_terms(rig, base, nEye, pEye, r);
   return light_outline(light_finish(rgb + base * t.diffuse + t.specular,
-                                    rig.tone.x),
+                                    rig.tone),
                        pEye, rig);
 }
 
@@ -8336,11 +10064,12 @@ __attribute__((unused)) static float3 light_glass_glints(float3 s) {
 // `kLightRig && kLightHdr` and mat_glass_cover otherwise. The divide is by at
 // least 1e-4, and T zeroes anything non-finite (the NaN rule).
 __attribute__((unused)) static float4 light_glass_cover(float3 body, float3 hi,
-    float a, float e) {
-  const float h = light_tone_scalar(e * max(hi.r, max(hi.g, hi.b)));
+    float a, float4 tone) {
+  const float e = tone.x;
+  const float h = light_curve_scalar(e * max(hi.r, max(hi.g, hi.b)), tone.z);
   const float cover = saturate(a + (1.0 - a) * h);
   const float3 S = (body * a + hi) / max(cover, 1e-4);
-  return float4(light_tone(e * S), cover);
+  return float4(light_curve(e * S, tone.z), cover);
 }
 
 // --- Studio shadow maps (#616) -------------------------------------------------
@@ -8418,11 +10147,13 @@ __attribute__((unused)) static LightTerms light_terms_view_shadowed(
   LightTerms t;
   t.diffuse = float3(0.0);
   t.specular = float3(0.0);
+  float3 spec2 = float3(0.0);
   const int n = int(rig.head.x);
   const float nl = length(nEye);
   float3 N = nl > 1e-8 ? nEye / nl : V;
   if (dot(N, V) < 0.0) N = -N;
   const float shin = max(rig.head.y * r.sharpness, 1.0);
+  const float shin2 = max(rig.head.y * r.sharpness2, 1.0);
   for (int i = 0; i < 6; ++i) {
     if (i >= n) break;
     const float3 Lv = rig.L[i].pos.xyz - pEye;
@@ -8441,11 +10172,15 @@ __attribute__((unused)) static LightTerms light_terms_view_shadowed(
     t.diffuse += rad * (wd * r.diffuse);
     const float3 H = Ld + V;
     if (ndl > 0.0 && dot(H, H) > 1e-8) {
-      t.specular += rad * (rig.L[i].misc.x * r.highlight *
-                           pow(saturate(dot(N, normalize(H))), shin));
+      const float ndh = saturate(dot(N, normalize(H)));
+      t.specular += rad * (rig.L[i].misc.x * r.highlight * pow(ndh, shin));
+      if (r.highlight2 > 0.0)
+        spec2 += rad * (rig.L[i].misc.x * r.highlight2 * pow(ndh, shin2));
     }
   }
-  t.specular *= mix(float3(1.0), base, r.tint);
+  const float3 tc = r.tintGain != 1.0 ? saturate(base * r.tintGain) : base;
+  t.specular = t.specular * mix(float3(1.0), tc, r.tint) +
+               spec2 * mix(float3(1.0), tc, r.tint2);
   return t;
 }
 
@@ -8463,7 +10198,7 @@ __attribute__((unused)) static float3 light_apply_shadowed(float3 rgb,
     depth2d_array<float> maps, sampler smp, LightResponse r) {
   const LightTerms t = light_terms_shadowed(rig, maps, smp, base, nEye, pEye, r);
   return light_outline(light_finish(rgb + base * t.diffuse + t.specular,
-                                    rig.tone.x),
+                                    rig.tone),
                        pEye, rig);
 }
 
@@ -8513,14 +10248,14 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     float3 hi;
     float3 body = mat_glass_shade(base, N, V, m.rough, m.p[0], taps, keyDir,
                                   envMap, envSmp, hi, mat_classic_light(m));
-    return mat_soft_knee(body + hi);
+    return mat_inner_knee(body + hi);
   }
   if (kMatReflective) {
     // Same base as the lit VBO path, so one object's surface and its spheres
     // reflect the same room -- the drift that bit marble in #487.
     float3 V = float3(0.0, 0.0, 1.0);
     float3 f0 = mix(float3(m.reflect), base * m.reflect, m.tint);
-    return mat_soft_knee(base * min(defaultIntensity, 1.0) + defaultSpecular
+    return mat_inner_knee(base * min(defaultIntensity, 1.0) + defaultSpecular
                        + mat_env_specular(N, V, m.rough, f0, envMap, envSmp));
   }
   if (kMatProcedural) {
@@ -8542,6 +10277,15 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
                                 keyDir, m);
   }
   return base * min(defaultIntensity, 1.0) + defaultSpecular;
+}
+
+// mat_rig_albedo at an impostor's eye-space hit (#710): the model-space point
+// from the inverse modelview, as a POINT, exactly as mat_impostor_composite
+// derives it.
+static float3 mat_impostor_rig_albedo(float3 base, float3 N, float3 pEye,
+    constant MaterialU& m) {
+  if (!kMatProcedural) return base;
+  return mat_rig_albedo(base, N, (m.invModelview * float4(pEye, 1.0)).xyz, m);
 }
 )";
 
@@ -8666,7 +10410,7 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     float3 body = mat_glass_shade(baseColor, N, V, mat.rough, mat.p[0], taps,
                                   float3(lt.klx, lt.kly, lt.klz), envMap,
                                   envSmp, hi, mat_classic_light(mat));
-    return mat_soft_knee(body + hi);
+    return mat_inner_knee(body + hi);
   }
   if (kMatReflective) {
     // The reflective family's BASE: the default shading plus one GGX lobe
@@ -8680,7 +10424,7 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     // object's own colour, which is what separates a coloured metal from a
     // clear coat over it.
     float3 f0 = mix(float3(mat.reflect), baseColor * mat.reflect, mat.tint);
-    return mat_soft_knee(vbo_shade(baseColor, nEye, lt)
+    return mat_inner_knee(vbo_shade(baseColor, nEye, lt)
                        + mat_env_specular(N, V, mat.rough, f0, envMap, envSmp));
   }
   if (kMatProcedural) {
@@ -8749,14 +10493,17 @@ fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
     const float3 shaded = vbo_material_shade(in.color.rgb, in.normalEye,
                                              in.posModel, lt, mat, envMap,
                                              envSmp);
+    // The rig lights the material's albedo, not the raw base (#710).
+    const float3 albedo = mat_rig_albedo(in.color.rgb, in.normalEye,
+                                         in.posModel, mat);
     // Studio shadow maps (#616): each light through its own map. The #613
     // rig pipelines specialise kLightShadow false and return below.
     if (kLightShadow)
-      return float4(light_apply_shadowed(shaded, in.color.rgb, in.normalEye,
+      return float4(light_apply_shadowed(shaded, albedo, in.normalEye,
                                          in.posEye, rig, lightShadowMaps,
                                          lightShadowSmp, light_response(mat)),
                     in.color.a);
-    return float4(light_apply(shaded, in.color.rgb, in.normalEye, in.posEye,
+    return float4(light_apply(shaded, albedo, in.normalEye, in.posEye,
                               rig, light_response(mat)),
                   in.color.a);
   }
@@ -8937,7 +10684,7 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     // HDR (#624): body and glints composed in scene units, one tone curve at
     // the frame's exposure; mat_glass_cover's knee otherwise, as before.
     if (kLightRig && kLightHdr)
-      c = light_glass_cover(body, hi, in.color.a, rig.tone.x);
+      c = light_glass_cover(body, hi, in.color.a, rig.tone);
     else
       c = mat_glass_cover(body, hi, in.color.a);
     if (kLightRig) c.rgb = light_outline(c.rgb, in.posEye, rig);
@@ -8953,12 +10700,15 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     // The light rig (#613), on top of the classic shading; the coverage is
     // the material's, unchanged.
     if (kLightRig) {
+      // The rig lights the material's albedo, not the raw base (#710).
+      const float3 albedo = mat_rig_albedo(in.color.rgb, in.normalEye,
+                                           in.posModel, mat);
       // Studio shadow maps (#616) under kLightShadow; #613's call otherwise.
       c.rgb = kLightShadow
-          ? light_apply_shadowed(c.rgb, in.color.rgb, in.normalEye, in.posEye,
+          ? light_apply_shadowed(c.rgb, albedo, in.normalEye, in.posEye,
                                  rig, lightShadowMaps, lightShadowSmp,
                                  light_response(mat))
-          : light_apply(c.rgb, in.color.rgb, in.normalEye, in.posEye, rig,
+          : light_apply(c.rgb, albedo, in.normalEye, in.posEye, rig,
                           light_response(mat));
     }
     if (kMatGlass) {
@@ -9863,6 +11613,227 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
 }
 
 // ---------------------------------------------------------------------------
+#pragma mark - Screen-space overlays (ramp gadgets, #689)
+// ---------------------------------------------------------------------------
+
+// Screen-space overlay shader for ramp gadgets (#689).
+static NSString* const kScreenOverlaySrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct OverlayVertexIn {
+  float3 position [[attribute(0)]];
+  float3 normal   [[attribute(1)]];
+  float4 color    [[attribute(2)]];
+};
+
+struct OverlayVertexInNoNormal {
+  float3 position [[attribute(0)]];
+  float4 color    [[attribute(2)]];
+};
+
+struct OverlayUniforms {
+  float4x4 projection;
+  float4 offset;
+};
+
+struct OverlayVertexOut {
+  float4 position [[position]];
+  float4 color;
+};
+
+static float4 overlay_clip(constant OverlayUniforms& u, float3 p) {
+  float4 pos = u.projection * float4(p + u.offset.xyz, 1.0);
+  pos.z = 0.5 * (pos.z + pos.w);  // GL z [-1,1] -> Metal [0,1]
+  return pos;
+}
+
+vertex OverlayVertexOut overlay_vertex(
+    OverlayVertexIn in [[stage_in]],
+    constant OverlayUniforms& uniforms [[buffer(1)]])
+{
+  OverlayVertexOut out;
+  out.position = overlay_clip(uniforms, in.position);
+  // ramp.fs: NdotV with V = (0,0,1), so the bevel edges darken.
+  out.color = float4(in.color.rgb * in.normal.z, in.color.a);
+  return out;
+}
+
+vertex OverlayVertexOut overlay_vertex_nonormal(
+    OverlayVertexInNoNormal in [[stage_in]],
+    constant OverlayUniforms& uniforms [[buffer(1)]])
+{
+  OverlayVertexOut out;
+  out.position = overlay_clip(uniforms, in.position);
+  out.color = in.color;
+  return out;
+}
+
+fragment float4 overlay_fragment(OverlayVertexOut in [[stage_in]])
+{
+  return in.color;
+}
+)";
+
+id<MTLRenderPipelineState> RendererMetal::screenOverlayPipeline(
+    const ScreenOverlayDraw& draw, MTLPixelFormat pixelFormat)
+{
+  // A library that failed to compile stays failed: no recompile per draw.
+  if (_overlayLibFailed) return nil;
+  if (!_overlayLib) {
+    NSError* err = nil;
+    _overlayLib = [_device newLibraryWithSource:kScreenOverlaySrc
+                                        options:nil
+                                          error:&err];
+    if (!_overlayLib) {
+      _overlayLibFailed = true;
+      static bool warned = false;
+      if (!warned) {
+        NSLog(@"RendererMetal: screen overlay library failed: %@", err);
+        warned = true;
+      }
+      return nil;
+    }
+  }
+  if (!_overlayVtxFunc) {
+    _overlayVtxFunc = [_overlayLib newFunctionWithName:@"overlay_vertex"];
+  }
+  if (!_overlayVtxNoNormalFunc) {
+    _overlayVtxNoNormalFunc =
+        [_overlayLib newFunctionWithName:@"overlay_vertex_nonormal"];
+  }
+  if (!_overlayFragFunc) {
+    _overlayFragFunc = [_overlayLib newFunctionWithName:@"overlay_fragment"];
+  }
+  if (!_overlayVtxFunc || !_overlayVtxNoNormalFunc || !_overlayFragFunc) {
+    static bool warned = false;
+    if (!warned) {
+      NSLog(@"RendererMetal: screen overlay functions missing");
+      warned = true;
+    }
+    return nil;
+  }
+
+  uint64_t key = ((uint64_t)(draw.stride & 0x3FF))
+               | (((uint64_t)(draw.posOffset & 0x3FF)) << 10)
+               | (((uint64_t)((draw.normalOffset + 1) & 0x7FF)) << 20)
+               | (((uint64_t)(draw.colorOffset & 0x3FF)) << 31)
+               | (((uint64_t)(draw.colorType & 0x3)) << 41)
+               | (((uint64_t)(pixelFormat & 0xFFFF)) << 43);
+
+  auto it = _screenOverlayPipelines.find(key);
+  if (it != _screenOverlayPipelines.end()) {
+    return it->second;
+  }
+
+  MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
+  if (draw.posOffset >= 0) {
+    vd.attributes[0].format = MTLVertexFormatFloat3;
+    vd.attributes[0].offset = static_cast<NSUInteger>(draw.posOffset);
+    vd.attributes[0].bufferIndex = 0;
+  }
+  if (draw.normalOffset >= 0) {
+    vd.attributes[1].format = MTLVertexFormatFloat3;
+    vd.attributes[1].offset = static_cast<NSUInteger>(draw.normalOffset);
+    vd.attributes[1].bufferIndex = 0;
+  }
+  if (draw.colorOffset >= 0) {
+    vd.attributes[2].format = (draw.colorType == 0)
+        ? MTLVertexFormatUChar4Normalized : MTLVertexFormatFloat4;
+    vd.attributes[2].offset = static_cast<NSUInteger>(draw.colorOffset);
+    vd.attributes[2].bufferIndex = 0;
+  }
+  vd.layouts[0].stride = static_cast<NSUInteger>(draw.stride);
+  vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+
+  MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+  pd.vertexFunction =
+      (draw.normalOffset >= 0) ? _overlayVtxFunc : _overlayVtxNoNormalFunc;
+  pd.fragmentFunction = _overlayFragFunc;
+  pd.vertexDescriptor = vd;
+  pd.colorAttachments[0].pixelFormat = pixelFormat;
+  pd.colorAttachments[0].blendingEnabled = YES;
+  pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+  pd.colorAttachments[0].destinationRGBBlendFactor =
+      MTLBlendFactorOneMinusSourceAlpha;
+  pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+  pd.colorAttachments[0].destinationAlphaBlendFactor =
+      MTLBlendFactorOneMinusSourceAlpha;
+  pd.rasterSampleCount = 1;
+
+  NSError* err = nil;
+  id<MTLRenderPipelineState> pipeline =
+      [_device newRenderPipelineStateWithDescriptor:pd error:&err];
+  if (!pipeline) {
+    NSLog(@"RendererMetal: screen overlay pipeline failed: %@", err);
+  }
+  [pd release];
+
+  _screenOverlayPipelines[key] = pipeline;
+  return pipeline;
+}
+
+// Draw this frame's stashed screen overlays (ramp gadgets, #689) over
+// `target` in place, after the post chain: unlit like the GL ramp shader,
+// never fogged, blurred or tone-mapped, and opaque in a transparent export
+// (the blend writes alpha 1 where a gadget covers).
+void RendererMetal::encodeScreenOverlays(id<MTLTexture> target)
+{
+  if (!target || _screenOverlayDraws.empty()) return;
+
+  MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
+  pd.colorAttachments[0].texture = target;
+  pd.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+  id<MTLRenderCommandEncoder> enc =
+      [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+  if (!enc) return;
+
+  [enc setCullMode:MTLCullModeNone];
+
+  for (const auto& draw : _screenOverlayDraws) {
+    id<MTLRenderPipelineState> pipeline =
+        screenOverlayPipeline(draw, target.pixelFormat);
+    if (!pipeline) continue;
+
+    [enc setRenderPipelineState:pipeline];
+    [enc setViewport:draw.viewport];
+    // The draw's own scissor (a grid_mode cell), clamped to the target; a
+    // rect left empty by the clamp draws nothing.
+    MTLScissorRect sc = {0, 0, target.width, target.height};
+    if (draw.scissorOn) {
+      sc = draw.scissor;
+      if (sc.x >= target.width || sc.y >= target.height) continue;
+      if (sc.x + sc.width > target.width) sc.width = target.width - sc.x;
+      if (sc.y + sc.height > target.height) sc.height = target.height - sc.y;
+      if (sc.width == 0 || sc.height == 0) continue;
+    }
+    [enc setScissorRect:sc];
+
+    [enc setVertexBuffer:draw.vbo offset:0 atIndex:0];
+
+    struct {
+      float projection[16];
+      float offset[4];
+    } uniforms;
+    std::memcpy(uniforms.projection, draw.projection, 64);
+    uniforms.offset[0] = draw.offset[0];
+    uniforms.offset[1] = draw.offset[1];
+    uniforms.offset[2] = draw.offset[2];
+    uniforms.offset[3] = 0.0f;
+    [enc setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:1];
+
+    MTLPrimitiveType primType = toMTL(draw.mode);
+    [enc drawPrimitives:primType
+            vertexStart:0
+            vertexCount:(NSUInteger)draw.count];
+  }
+
+  [enc endEncoding];
+}
+
+// ---------------------------------------------------------------------------
 #pragma mark - VBO Drawing
 // ---------------------------------------------------------------------------
 
@@ -9884,18 +11855,73 @@ static float repCapDepth(const float* P, float repClipFront)
   return 0.5f * (cz / cw + 1.0f); // GL NDC [-1,1] -> window [0,1]
 }
 
+// The Metal buffer for a CPU vertex array: the cached one for this pointer,
+// else a new upload, cached. nil only if the upload fails.
+id<MTLBuffer> RendererMetal::cachedVBOBuffer(const void* data, size_t dataSize)
+{
+  auto cacheIt = _vboCache.find(data);
+  if (cacheIt != _vboCache.end())
+    return cacheIt->second;
+  id<MTLBuffer> vbo = [_device newBufferWithBytes:data
+                                           length:dataSize
+                                          options:MTLResourceStorageModeShared];
+  if (vbo)
+    _vboCache[data] = vbo;
+  return vbo;
+}
+
+void RendererMetal::clearScreenOverlayDraws()
+{
+  for (auto& d : _screenOverlayDraws)
+    [d.vbo release];
+  _screenOverlayDraws.clear();
+}
+
 void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     const void* data, size_t dataSize, size_t stride,
     int posOffset, int normalOffset, int colorOffset, int colorType,
     int interiorCap)
 {
   if (!data || dataSize == 0 || vertexCount <= 0) return;
+
+  // Screen overlay (ramp gadgets, #689): stash the draw for
+  // encodeScreenOverlays, which draws it after the post chain. Drawn here it
+  // would land in the OIT pass, which skips unlit geometry, and be fogged,
+  // blurred and tone-mapped, and cut out of a transparent export.
+  if (_screenOverlay) {
+    // Points are not drawn: the overlay shaders write no point size.
+    if (_shadowMode || _peelMode || colorOffset < 0 || posOffset < 0 ||
+        mode == PrimitiveType::Points)
+      return;
+    id<MTLBuffer> vbo = cachedVBOBuffer(data, dataSize);
+    if (!vbo) return;
+    ScreenOverlayDraw sod;
+    // Retained until the stash is cleared (MRC): the draw is encoded at the
+    // end of the frame, and _vboCache may drop its entry before then.
+    sod.vbo = [vbo retain];
+    sod.mode = mode;
+    sod.count = vertexCount;
+    sod.stride = stride;
+    sod.posOffset = posOffset;
+    sod.normalOffset = normalOffset;
+    sod.colorOffset = colorOffset;
+    sod.colorType = colorType;
+    std::memcpy(sod.projection, _projectionMatrix.data(), 64);
+    for (int i = 0; i < 3; ++i)
+      sod.offset[i] = _screenOverlayOffset[i];
+    sod.viewport = _viewport;
+    sod.scissorOn = _scissorEnabled;
+    sod.scissor = _scissorRect;
+    _screenOverlayDraws.push_back(sod);
+    return;
+  }
+
   ensureEncoder();
   if (!_encoder) return;
 
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer — the frame only records that this buffer contributed.
-  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_overlayDraw && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(data, nullptr,
         rtMixParams({(uint64_t)mode, (uint64_t)vertexCount, (uint64_t)stride,
                      (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType}),
@@ -9906,17 +11932,8 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   }
 
   // Reuse cached Metal buffer if same data pointer, otherwise create new
-  id<MTLBuffer> vbo = nil;
-  auto cacheIt = _vboCache.find(data);
-  if (cacheIt != _vboCache.end()) {
-    vbo = cacheIt->second;
-  } else {
-    vbo = [_device newBufferWithBytes:data
-                              length:dataSize
-                             options:MTLResourceStorageModeShared];
-    if (!vbo) return;
-    _vboCache[data] = vbo;
-  }
+  id<MTLBuffer> vbo = cachedVBOBuffer(data, dataSize);
+  if (!vbo) return;
 
   // Build a vertex descriptor matching the VBO layout
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
@@ -10234,13 +12251,15 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
 {
   if (!vertexData || !indexData || vertexDataSize == 0 ||
       indexDataSize == 0 || indexCount <= 0) return;
+  // Gadgets are never indexed (#689).
+  if (_screenOverlay) return;
   ensureEncoder();
   if (!_encoder) return;
 
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer. Keyed on the vertex data, with the index buffer as an alias so
   // freeing either one drops the cached triangles.
-  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_overlayDraw && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(vertexData, indexData,
         rtMixParams({(uint64_t)mode, (uint64_t)indexCount, (uint64_t)stride,
                      (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType,
@@ -10774,7 +12793,8 @@ static void sphere_shade_material(SphereVOut in, constant SphereU& u,
 }
 
 // The light rig's copy of sphere_shade_material (#613): the same statements,
-// then the rig's lights on top of the lit surface. An interior cap returns
+// then the rig's lights on top of the lit surface. The rig lights the
+// material's albedo (mat_impostor_rig_albedo, #710). An interior cap returns
 // before the light as it returns before the material, so caps stay as they
 // are. Called only under `if (kLightRig)`, so the classic pipelines drop it.
 static void sphere_shade_material_rig(SphereVOut in, constant SphereU& u,
@@ -10789,7 +12809,8 @@ static void sphere_shade_material_rig(SphereVOut in, constant SphereU& u,
   rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
                                u.lReflect, float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
-  rgb = light_apply(rgb, in.color.rgb, n, pt, rig, light_response(mat));
+  rgb = light_apply(rgb, mat_impostor_rig_albedo(in.color.rgb, n, pt, mat),
+                    n, pt, rig, light_response(mat));
 }
 
 // sphere_shade_material_rig with the studio shadow maps (#616): the maps
@@ -10808,8 +12829,9 @@ static void sphere_shade_material_rig_shadowed(SphereVOut in,
   rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
                                u.lReflect, float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
-  rgb = light_apply_shadowed(rgb, in.color.rgb, n, pt, rig, maps, smp,
-                             light_response(mat));
+  rgb = light_apply_shadowed(rgb,
+                             mat_impostor_rig_albedo(in.color.rgb, n, pt, mat),
+                             n, pt, rig, maps, smp, light_response(mat));
 }
 
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
@@ -10838,58 +12860,6 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
   return out;
 }
 
-// The light rig (#613) on a glass-family sphere impostor's composite colour
-// `rgb`. Jelly takes light_apply, as on the opaque path. Clear and frosted
-// glass (other reps' glass spheres: cartoon rings, surface dots) split the rig
-// as the VBO and cylinder glass do (orchestrator decision Q1): the rig's
-// diffuse lights the body at the glass's coverage (base x
-// kMatGlassBaseAttenuation), and its highlights join the glints through the
-// classic glint curve, scaled by the Reflection knob. This path folds its
-// glints into the colour (it has no mat_glass_cover), so the rig's are folded
-// the same way: mat_impostor_composite's glass branch is redone with the rig's
-// light inside it, through the rig's seam (light_finish at the frame's
-// exposure: T under HDR, #624; mat_soft_knee, as before, otherwise), then the
-// outlines. Called only under `if (kLightRig)`.
-static float3 sphere_glass_rig(float3 rgb, float3 base, float3 n, float3 pt,
-    constant SphereU& u, constant MaterialU& mat, texturecube<float> envMap,
-    sampler envSmp, constant LightRigU& rig) {
-  if (mat.mode == kMatMode_jelly)
-    return light_apply(rgb, base, n, pt, rig, light_response(mat));
-  int taps = (mat.mode == kMatMode_frosted_glass) ? int(max(1.0, mat.p[5])) : 1;
-  float3 hi;
-  float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
-                                mat.p[0], taps, float3(u.klx, u.kly, u.klz),
-                                envMap, envSmp, hi, mat_classic_light(mat));
-  const LightTerms rigLight = light_terms(rig, base, n, pt, light_response(mat));
-  body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
-  hi += light_glass_glints(rigLight.specular) *
-        (kMatGlassReflection * saturate(mat.p[0]));
-  return light_outline(light_finish(body + hi, rig.tone.x), pt, rig);
-}
-
-// sphere_glass_rig with the studio shadow maps (#616): the maps after `rig`
-// and the _shadowed light calls, nothing else (drift-guarded). Called only
-// under `if (kLightRig && kLightShadow)`.
-static float3 sphere_glass_rig_shadowed(float3 rgb, float3 base, float3 n,
-    float3 pt, constant SphereU& u, constant MaterialU& mat,
-    texturecube<float> envMap, sampler envSmp, constant LightRigU& rig,
-    depth2d_array<float> maps, sampler smp) {
-  if (mat.mode == kMatMode_jelly)
-    return light_apply_shadowed(rgb, base, n, pt, rig, maps, smp,
-                                light_response(mat));
-  int taps = (mat.mode == kMatMode_frosted_glass) ? int(max(1.0, mat.p[5])) : 1;
-  float3 hi;
-  float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
-                                mat.p[0], taps, float3(u.klx, u.kly, u.klz),
-                                envMap, envSmp, hi, mat_classic_light(mat));
-  const LightTerms rigLight = light_terms_shadowed(rig, maps, smp, base, n, pt,
-                                                   light_response(mat));
-  body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
-  hi += light_glass_glints(rigLight.specular) *
-        (kMatGlassReflection * saturate(mat.p[0]));
-  return light_outline(light_finish(body + hi, rig.tone.x), pt, rig);
-}
-
 fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
@@ -10900,11 +12870,45 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
     sampler lightShadowSmp [[sampler(7), function_constant(kLightShadow)]]) {
   float3 rgb; float a; float depth;
   float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
-  if (kMatGlass) {
-    // The glass family on sphere impostors: jelly spheres (#590), and the
-    // clear or frosted glass of spheres another rep emits (cartoon rings,
-    // surface dots; the sphere rep itself degrades those to `default`). All
-    // refract: sphere_shade_material, unrolled for the hit point and normal.
+  if (kMatGlass && mat.mode != kMatMode_jelly) {
+    // Clear and frosted glass spheres -- the sphere rep's own since #635,
+    // and those other reps emit (cartoon rings, surface dots): body at its
+    // coverage, reflection on top (#535, #713); see mat_glass_cover and
+    // cyl_impostor_fragment_oit, which this copies.
+    float3 n = float3(0.0), pt = float3(0.0);
+    float intensity = 0.0, specular = 0.0;
+    bool lit = true;
+    sphere_shade(in, u, rgb, a, depth, n, pt, intensity, specular, lit);
+    if (lit) {
+      const float3 base = in.color.rgb;
+      int taps = (mat.mode == kMatMode_frosted_glass)
+                   ? int(max(1.0, mat.p[5])) : 1;
+      float3 hi;
+      float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
+                                    mat.p[0], taps, float3(u.klx, u.kly, u.klz),
+                                    envMap, envSmp, hi, mat_classic_light(mat));
+      if (kLightRig) {
+        const LightTerms rigLight = kLightShadow
+            ? light_terms_shadowed(rig, lightShadowMaps, lightShadowSmp, base,
+                                   n, pt, light_response(mat))
+            : light_terms(rig, base, n, pt, light_response(mat));
+        body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
+        hi += light_glass_glints(rigLight.specular) *
+              (kMatGlassReflection * saturate(mat.p[0]));
+      }
+      float4 g;
+      if (kLightRig && kLightHdr)
+        g = light_glass_cover(body, hi, a, rig.tone);
+      else
+        g = mat_glass_cover(body, hi, a);
+      rgb = g.rgb;
+      if (kLightRig) rgb = light_outline(rgb, pt, rig);
+      a = g.a;
+      refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
+    }
+  } else if (kMatGlass) {
+    // Jelly spheres (#526, #590): the composite, the rig on top as on the
+    // opaque path, jelly's coverage unchanged; they refract.
     float3 n = float3(0.0), pt = float3(0.0);
     float intensity = 0.0, specular = 0.0;
     bool lit = true;
@@ -10914,17 +12918,12 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
                                    u.lReflect, float3(u.klx, u.kly, u.klz),
                                    mat, intensity, specular, u.lSSSWrap,
                                    envMap, envSmp);
-      // The light rig (#613): jelly takes it on top, as on the opaque path;
-      // clear and frosted glass split it as the VBO and cylinder glass do
-      // (sphere_glass_rig). The coverage is the material's, unchanged.
-      // Studio shadow maps (#616) under kLightShadow.
       if (kLightRig && kLightShadow)
-        rgb = sphere_glass_rig_shadowed(rgb, in.color.rgb, n, pt, u, mat,
-                                        envMap, envSmp, rig, lightShadowMaps,
-                                        lightShadowSmp);
+        rgb = light_apply_shadowed(rgb, in.color.rgb, n, pt, rig,
+                                   lightShadowMaps, lightShadowSmp,
+                                   light_response(mat));
       else if (kLightRig)
-        rgb = sphere_glass_rig(rgb, in.color.rgb, n, pt, u, mat, envMap, envSmp,
-                               rig);
+        rgb = light_apply(rgb, in.color.rgb, n, pt, rig, light_response(mat));
       refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
     }
   } else {
@@ -11039,9 +13038,9 @@ void RendererMetal::buildImpostorPipelines()
     op.colorAttachments[1].sourceAlphaBlendFactor = MTLBlendFactorZero;
     op.colorAttachments[1].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
     // The per-family loop below sets the attachment: the glass family's
-    // sphere pipeline writes it -- jelly spheres, and the clear or frosted
-    // glass of the sphere impostors other reps emit (the sphere rep itself
-    // degrades those to `default`) (#590).
+    // sphere pipeline writes it -- jelly spheres, clear and frosted glass
+    // spheres (since #635), and the glass sphere impostors other reps emit
+    // (#590).
     op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     for (int f = 0; f < cMaterialFamily_count; ++f) {
@@ -11282,7 +13281,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // consecutive verts sharing the same a_vertex_radius (float4 @ offset 0).
   // sphereSizeScale is baked into the stored radius, so it is part of the
   // params signature: changing sphere_scale re-extracts.
-  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_overlayDraw && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(call.data, nullptr,
         rtMixParams({(uint64_t)vertexCount, (uint64_t)call.stride,
                      (uint64_t)call.posRadiusOff,
@@ -11357,9 +13356,12 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   u.lSSSWrap = _sssWrap;
   u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
   u.sphere_size_scale = call.sphereSizeScale;
-  // A studio shadow map (#616) is a perspective view from its light: the
-  // impostors ray-cast from the light, whatever the camera's projection.
-  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f : (float)call.ortho;
+  // A shadow map ray-casts the impostors from its light, whatever the camera's
+  // projection: perspective for a studio slice (#616), orthographic for the
+  // classic map (#665).
+  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f
+            : _classicShadowViewOpen ? 1.0f
+                                     : (float)call.ortho;
   // Projection is GL-convention ([-1,1] clip Z): remap to [0,1] for Metal's
   // fragment depth (matches the GL sphere.fs `0.5 + 0.5 * clipZ/clipW`).
   u.depthZeroToOne = 0.0f;
@@ -11522,6 +13524,26 @@ static float cyl_oit_weight(float a, float z) {
                pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
 }
 
+// Where the ray origin + t * dir (dir toward the camera) crosses a cylinder
+// end at c: its ball (isRound) or its disc (normal outAxis, within the
+// radius). leaving picks the exit (where the ray, travelling away from the
+// camera, leaves) over the entry. False on a miss.
+static bool cyl_end_hit(float3 origin, float3 dir, float3 c, float3 outAxis,
+    bool isRound, float radius2, bool leaving, thread float3& p) {
+  if (isRound) {
+    float3 sd = c - origin;
+    float b = dot(sd, dir);
+    float pos = b*b + radius2 - dot(sd, sd);
+    if (pos < 0.0) return false;
+    p = origin + (leaving ? b - sqrt(pos) : b + sqrt(pos)) * dir;
+    return true;
+  }
+  float dNV = dot(outAxis, dir);           // > 0: the disc faces the camera
+  if (leaving ? (dNV >= 0.0) : (dNV < 0.0)) return false;
+  p = origin + dir * (dot(outAxis, c - origin) / dNV);
+  return dot(p - c, p - c) <= radius2;     // as the pick's resolve()
+}
+
 // Shared ray-cylinder intersection (caps + two-color interp) + PyMOL shading.
 // Discards on miss; returns lit rgb, alpha, window depth.
 // Geometry, depth and the DEFAULT two-light result; material-free for the same
@@ -11560,6 +13582,10 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   bool endcapround   = (cyl_bit(fcap) > 0.5) && (u.no_flat_caps > 0.5);
   bool nocolorinterp = !(cyl_bit(fcap) > 0.5);
 
+  // The base end's shape, before the end-cap branch below reuses
+  // frontcapround for whichever end the front point is past.
+  const bool basecapround = frontcapround;
+
   float ratio = dot(new_point - in.base, in.end_cyl - in.base) * in.inv_sqr_height;
   if (nocolorinterp) {
     float dp = clamp(-u.half_bond * new_point.z * u.inv_height, 0.0, 0.5);
@@ -11571,6 +13597,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
 
   bool cap_test_base = 0.0 > dot(new_point - in.base, in.axis);
   bool cap_test_end  = 0.0 < dot(new_point - in.end_cyl, in.axis);
+  bool openFront = false;
   if (cap_test_base || cap_test_end) {
     float3 thisaxis = -in.axis;
     float3 thisbase = in.base;
@@ -11578,38 +13605,46 @@ static void cyl_shade(CylVOut in, constant CylU& u,
       thisaxis = in.axis; thisbase = in.end_cyl;
       frontcap = endcap; frontcapround = endcapround;
     }
-    if (!frontcap) discard_fragment();
-    if (frontcapround) {
-      float3 sd = thisbase - ray_origin;
-      float b = dot(sd, ray_dir);
-      float pos = b*b + radius2 - dot(sd, sd);
-      if (pos < 0.0) discard_fragment();
-      float nr = sqrt(pos) + b;
-      new_point = nr * ray_dir + ray_origin;
-      normal = normalize(new_point - thisbase);
-    } else {
-      float dNV = dot(thisaxis, ray_dir);
-      if (dNV < 0.0) discard_fragment();
-      float nr = dot(thisaxis, thisbase - ray_origin) / dNV;
-      new_point = ray_dir * nr + ray_origin;
-      if (dot(new_point - thisbase, new_point - thisbase) > radius2) discard_fragment();
-      normal = thisaxis;
+    // An open end draws nothing, but its disc still bounds the solid the
+    // slab's interior cap tests (#641): keep it for that test only.
+    if (!frontcap) {
+      if (u.interiorCap < 0.5) discard_fragment();
+      openFront = true;
     }
+    if (!cyl_end_hit(ray_origin, ray_dir, thisbase, thisaxis, frontcapround,
+                     radius2, false, new_point)) discard_fragment();
+    normal = frontcapround ? normalize(new_point - thisbase) : thisaxis;
   }
 
   float4 clip = u.projection * float4(new_point, 1.0);
   float ndcz = clip.z / clip.w;
   depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
   if (depth <= 0.0) {
-    // Surface point is in front of the slab. If the cylinder body still straddles
+    // Surface point is in front of the slab. If the capped solid still straddles
     // the slab (its far wall is inside), cap the cross-section with a flat
     // interior color instead of discarding (= see-through). Else discard.
     if (u.interiorCap < 0.5) discard_fragment();
-    float dist2 = (-a1 - sqrt(d)) / a2;            // far body intersection
+    // The far wall is the CAPPED solid's exit (#641), not the infinite
+    // tube's: the tube's far crossing between the end planes; past an end,
+    // that end's ball (round) or disc (flat, or open). Else a stick wholly
+    // in front of the slab, whose axis runs on past it, would cap the slab
+    // where none of it is. An open end's disc is the tube segment's own end:
+    // the atom's ball is another bond's round end, so the bonds' caps
+    // together are exactly the cross-section of the sticks' union.
+    float dist2 = (-a1 - sqrt(d)) / a2;            // far tube crossing
     float3 p2 = ray_target + dist2 * ray_dir;
+    float z2 = dot(p2 - in.base, in.axis);
+    float hz = dot(in.end_cyl - in.base, in.axis);
+    if (z2 < 0.0 || z2 > hz) {
+      bool atEnd = z2 > hz;
+      if (!cyl_end_hit(ray_origin, ray_dir, atEnd ? in.end_cyl : in.base,
+                       atEnd ? in.axis : -in.axis,
+                       atEnd ? endcapround : basecapround, radius2, true, p2))
+        discard_fragment();
+    }
     float4 c2 = u.projection * float4(p2, 1.0);
     float d2 = (u.depthZeroToOne >= 0.5) ? (c2.z / c2.w) : (0.5 + 0.5 * c2.z / c2.w);
-    if (d2 <= 0.0) discard_fragment();             // whole stick in front of slab
+    if (d2 <= 0.0) discard_fragment();             // the whole solid is in front of the slab
     depth = 1e-5;                                  // flat disc at the slab plane
     rgb = (u.interiorColor.a > 0.5) ? u.interiorColor.rgb  // ray_interior_color
                                     : color.rgb * 0.45;    // else bond darkened
@@ -11617,6 +13652,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
     litOut = false;
     return;
   }
+  if (openFront) discard_fragment();   // an open end inside the slab: nothing
 
   // PyMOL two-light model, driven by the live lighting settings in CylU.
   float ambient    = u.lAmbient;
@@ -11670,7 +13706,8 @@ static void cyl_shade_material_rig(CylVOut in, constant CylU& u,
   rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
                                float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
-  rgb = light_apply(rgb, base, n, pt, rig, light_response(mat));
+  rgb = light_apply(rgb, mat_impostor_rig_albedo(base, n, pt, mat), n, pt,
+                    rig, light_response(mat));
 }
 
 // cyl_shade_material_rig with the studio shadow maps (#616); see
@@ -11687,8 +13724,8 @@ static void cyl_shade_material_rig_shadowed(CylVOut in, constant CylU& u,
   rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
                                float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
-  rgb = light_apply_shadowed(rgb, base, n, pt, rig, maps, smp,
-                             light_response(mat));
+  rgb = light_apply_shadowed(rgb, mat_impostor_rig_albedo(base, n, pt, mat),
+                             n, pt, rig, maps, smp, light_response(mat));
 }
 
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
@@ -11757,7 +13794,7 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
       // HDR (#624): as on the VBO glass (vbo_fragment_oit).
       float4 g;
       if (kLightRig && kLightHdr)
-        g = light_glass_cover(body, hi, a, rig.tone.x);
+        g = light_glass_cover(body, hi, a, rig.tone);
       else
         g = mat_glass_cover(body, hi, a);
       rgb = g.rgb;
@@ -12116,8 +14153,8 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // once per CPU buffer (opaque pass only) — this used to be 24 triangles per
   // stick regenerated on every frame, including pure camera moves. 8
   // verts/cylinder share v1/v2/radius.
-  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent) &&
-      call.cylinderCount > 0) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_overlayDraw &&
+      (!_oitActive || _rtTransparent) && call.cylinderCount > 0) {
     rtNoteGeometry(call.vdata, nullptr,
         rtMixParams({(uint64_t)call.cylinderCount, (uint64_t)call.stride,
                      (uint64_t)call.v1Off, (uint64_t)call.v2Off,
@@ -12189,8 +14226,12 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.lSSSWrap = _sssWrap;
   u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
   u.uni_radius = call.uniRadius;
-  // A studio shadow map (#616): ray-cast from its light (as the spheres).
-  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f : (float)call.ortho;
+  // A shadow map ray-casts the impostors from its light, whatever the camera's
+  // projection: perspective for a studio slice (#616), orthographic for the
+  // classic map (#665).
+  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f
+            : _classicShadowViewOpen ? 1.0f
+                                     : (float)call.ortho;
   u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
   u.no_flat_caps = (float)call.noFlatCaps;
   // Negative tells the shader to read a_cap per-vertex (attribute 6) instead.
@@ -12308,15 +14349,18 @@ fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
 // LightU from the classic source and the light_ helpers from the shared
 // material block.
 //
-// The two functions are copies of the classic ones: the vertex stage adds the
-// eye-space position the spot cones need, and the fragment adds the rig on
-// top of the classic two-light colour. lighting_msl.py keeps the copies equal
-// to the originals. Neither reads a function constant (nor does any helper
-// they reach), so the builder takes them with plain newFunctionWithName:. The
-// rig is a plain buffer(9) argument for the same reason: this library is
-// never specialised, and the rig pipeline is only ever drawn with the rig on.
-// Every material takes the rig the same way until #615, and a tube has no
-// material, so it uses the neutral response directly.
+// The functions are copies of the classic ones: the vertex stage adds the
+// eye-space position the spot cones need, the fragment adds the rig on
+// top of the classic two-light colour, and the shadow fragment (#663) adds
+// the studio shadow maps. lighting_msl.py keeps the copies equal to the
+// originals. None of them reads a function constant (nor does any helper
+// they reach, except kLightHdr through light_finish), so the builder takes
+// them with plain newFunctionWithName: (or specialised for kLightHdr). The
+// rig is a plain buffer(9) argument and the maps are plain
+// texture(7)/sampler(7) arguments for the same reason: this library is never
+// specialised for kLightRig or kLightShadow, and the rig pipelines are only
+// ever drawn with the rig on. Every material takes the rig the same way until
+// #615, and a tube has no material, so it uses the neutral response directly.
 static NSString* const kBezierTubeRigSrc = @R"(
 struct TubeRigOut {
   float4 position [[position]];
@@ -12384,6 +14428,40 @@ fragment float4 bezier_tube_fragment_rig(TubeRigOut in [[stage_in]],
   rgb = light_apply(rgb, in.color.rgb, nrm, in.posEye, rig, light_response_neutral());
   return float4(rgb, in.color.a);
 }
+
+// The studio shadow maps (#663): bezier_tube_fragment_rig with the studio
+// shadow maps, used only while this frame's maps are ready. lighting_msl.py
+// keeps it equal to the rig copy.
+fragment float4 bezier_tube_fragment_rig_shadow(TubeRigOut in [[stage_in]],
+    constant LightU& lt [[buffer(0)]],
+    constant LightRigU& rig [[buffer(9)]],
+    depth2d_array<float> lightShadowMaps [[texture(7)]],
+    sampler lightShadowSmp [[sampler(7)]]) {
+  // PyMOL two-light model driven by the live lighting settings (Scene sliders).
+  // Two-sided via the view vector: orient the normal toward the camera
+  // (eye-space +z) so both the outer surface and the open tube ends/interior
+  // are lit, never black.
+  float3 nrm = normalize(in.eyeNormal);
+  if (nrm.z < 0.0) nrm = -nrm;
+  float ambient = lt.ambient, direct = lt.direct, reflectv = lt.reflect;
+  float spec_value = lt.spec, shininess = max(lt.shininess, 1.0);
+  const float3 L0 = float3(0.0,0.0,1.0);
+  const float3 L1 = normalize(float3(lt.klx, lt.kly, lt.klz));  // key light (cSetting_light)
+  float intensity = ambient, specular = 0.0;
+  float n0 = dot(nrm, L0);
+  intensity += direct * saturate((n0 + lt.wrap) / (1.0 + lt.wrap));
+  float n1 = dot(nrm, L1);
+  intensity += reflectv * saturate((n1 + lt.wrap) / (1.0 + lt.wrap));
+  if (n1 > 0.0) {
+    float3 H1 = normalize(L1 + float3(0.0,0.0,1.0));
+    specular += spec_value * pow(max(dot(nrm, H1), 0.0), shininess);
+  }
+  float3 rgb = in.color.rgb * min(intensity, 1.0) + specular;
+  rgb = light_apply_shadowed(rgb, in.color.rgb, nrm, in.posEye, rig,
+                             lightShadowMaps, lightShadowSmp,
+                             light_response_neutral());
+  return float4(rgb, in.color.a);
+}
 )";
 
 void RendererMetal::buildBezierTubePipeline()
@@ -12422,6 +14500,51 @@ void RendererMetal::buildBezierTubePipeline()
     NSLog(@"RendererMetal: bezier tube pipeline failed: %@", err);
 }
 
+// The bezier tube's depth-only pipeline (#663): the studio shadow maps and
+// the classic shadow pre-pass. Lazy, single attempt; sample-count independent
+// (rasterSampleCount = 1, Depth32Float, no colour attachment).
+void RendererMetal::buildBezierTubeShadowPipeline()
+{
+  if (_bezierTubeShadowTried) return;
+  _bezierTubeShadowTried = true;
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:kBezierTubeSrc
+                                             options:nil error:&err];
+  if (!lib) {
+    NSLog(@"RendererMetal: bezier tube shadow compile failed: %@", err);
+    return;
+  }
+  id<MTLFunction> vfn = [lib newFunctionWithName:@"bezier_tube_vertex"];
+  if (!vfn) {
+    NSLog(@"RendererMetal: bezier tube shadow funcs missing");
+    [lib release];
+    return;
+  }
+
+  MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
+  vd.attributes[0].format = MTLVertexFormatFloat3;  // control point position
+  vd.attributes[0].offset = 0;
+  vd.attributes[0].bufferIndex = 0;
+  vd.layouts[0].stride = 12;
+  vd.layouts[0].stepFunction = MTLVertexStepFunctionPerPatchControlPoint;
+
+  MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+  psd.vertexFunction = vfn;
+  psd.vertexDescriptor = vd;
+  psd.rasterSampleCount = 1;
+  psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+  psd.maxTessellationFactor = 64;
+  psd.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionConstant;
+  psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
+  psd.tessellationOutputWindingOrder = MTLWindingClockwise;
+  psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;
+  _bezierTubeShadowPipeline =
+      [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+  if (!_bezierTubeShadowPipeline)
+    NSLog(@"RendererMetal: bezier tube shadow pipeline failed: %@", err);
+  [psd release]; [vfn release]; [lib release];
+}
+
 // One of the tube rig library's functions (#613). The vertex function reads
 // no function constant, so plain newFunctionWithName: is enough for it. The
 // fragment reads one, kLightHdr (#624), through light_apply's light_finish,
@@ -12444,8 +14567,9 @@ static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name,
   bool rig = false;
   [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
   // The studio shadow maps' constant (#616), declared by kMaterialSrc too:
-  // false, so every constant Metal could list here is set. Tubes neither cast
-  // nor receive studio shadows.
+  // false, so every constant Metal could list here is set. The tube's
+  // studio-shadow fragment (#663) takes the maps as plain texture(7)/sampler(7)
+  // arguments, not under this constant, so it is false for every tube function.
   bool shadow = false;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
   // HDR colour's constant (#624), read by light_finish: true for an HDR
@@ -12518,6 +14642,18 @@ void RendererMetal::buildBezierTubeRigPipeline()
     if (!_bezierTubeRigPipeline[h])
       NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
     [ffn release];   // MRC: the pipeline state keeps what it needs
+
+    id<MTLFunction> sfn = bezierTubeRigFunction(
+        lib, @"bezier_tube_fragment_rig_shadow", /*lightHdr*/ h == 1);
+    if (sfn) {
+      psd.fragmentFunction = sfn;
+      _bezierTubeRigShadowPipeline[h] =
+          [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+      if (!_bezierTubeRigShadowPipeline[h])
+        NSLog(@"RendererMetal: bezier tube studio-shadow pipeline "
+              @"failed: %@", err);
+      [sfn release];   // MRC
+    }
   }
   // MRC: the pipeline states keep what they need; vd is autoreleased.
   [psd release]; [vfn release]; [lib release];
@@ -12639,6 +14775,12 @@ bool RendererMetal::ensureAirPipelines()
       }
     }
   }
+  // #684: the alpha pass, R8, no constants. Its own failure only costs the
+  // option (logged by newAirPipeline), never the air.
+  _airAlphaPipeline = newAirPipeline(_device, lib, vfn, @"post_air_alpha",
+                                     MTLPixelFormatR8Unorm, false);
+  _airAlphaMergePipeline = newAirPipeline(_device, lib, vfn, @"post_air_alpha_merge",
+                                          MTLPixelFormatBGRA8Unorm, false);
   // MRC: the pipeline states keep what they need.
   [vfn release]; [lib release];
   // The maps' stand-in, in the same single attempt.
@@ -12651,6 +14793,10 @@ bool RendererMetal::ensureAirPipelines()
     }
     [_airMarchPipeline release];
     _airMarchPipeline = nil;
+    [_airAlphaPipeline release];
+    _airAlphaPipeline = nil;
+    [_airAlphaMergePipeline release];
+    _airAlphaMergePipeline = nil;
   }
   return _airFullPipeline[h] != nil;
 }
@@ -12711,8 +14857,8 @@ bool RendererMetal::ensureAirTerm(NSUInteger w, NSUInteger h)
 // value copies of the frame's blocks in its own index space and never touches
 // the lit draws' bindings (bindLightRig):
 // - the air block, with this frame's projection (ortho, A, B, X, Y);
-// - the rig block, with the whole slice as the shadow tile (a grid frame
-//   draws no air) and head.w (the maps this frame) 0 unless the maps were
+// - the rig block, with the whole slice as the shadow tile (or in grid_mode,
+//   each cell's tile, #686) and head.w (the maps this frame) 0 unless the maps were
 //   rendered (lightShadowsReady), so planned but unrendered maps are never
 //   read; _airNoMaps is bound in their place then.
 // At full resolution (view.x 1) one pass, post_air_full. At half (view.x 0.5)
@@ -12724,6 +14870,7 @@ bool RendererMetal::ensureAirTerm(NSUInteger w, NSUInteger h)
 id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
 {
   LightAirBlock air = _lightAirBlock;
+  if (_airDebugPoison) air.medium[0] = std::numeric_limits<float>::infinity();
   air.view[1] = _projOrtho;
   air.proj[0] = _projA;
   air.proj[1] = _projB;
@@ -12746,15 +14893,84 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
                     ensureAirTerm(dst.width, dst.height);
   if (!half)
     air.view[0] = 1.0f;
-  // What every air pass reads: the depth, the maps, the blocks, the samplers.
+
+  // #686: grid_mode draws the air once per cell (_rtFrameCells, setGridSlot):
+  // each draw scissored to its cell, its rays measured against the cell's
+  // rect and its shadow lookups in the cell's tile of each map (the tile
+  // bindLightRig gives the cell's lit draws). Without a grid, one draw over
+  // the frame with the whole slice, as before.
+  struct AirCell { float rect[4]; float tile[4]; };
+  std::vector<AirCell> cells;
+  const bool grid = !_rtFrameCells.empty();
+  if (!grid) {
+    cells.push_back({{0.0f, 0.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f}});
+  } else {
+    const int firstGridSlot = (int)_lightRigBlock.shadowGrid[1];
+    cells.reserve(_rtFrameCells.size());
+    for (const auto& c : _rtFrameCells) {
+      AirCell ac;
+      std::memcpy(ac.rect, c.rect, sizeof(ac.rect));
+      if (maps && firstGridSlot > 0) {
+        const pymol::LightShadowTile tile = pymol::LightShadowTileRect(
+            c.slot - firstGridSlot, (int)_lightRigBlock.shadowGrid[0],
+            _lightShadowArraySize);
+        std::memcpy(ac.tile, tile.uv, sizeof(ac.tile));
+      } else {
+        ac.tile[0] = 0.0f;
+        ac.tile[1] = 0.0f;
+        ac.tile[2] = 1.0f;
+        ac.tile[3] = 1.0f;
+      }
+      cells.push_back(ac);
+    }
+  }
+
+  // What every air pass reads: the depth, the maps, the air block, the samplers.
   auto bindAir = [&](id<MTLRenderCommandEncoder> e) {
     [e setFragmentTexture:_sceneDepth atIndex:kAirDepthTextureIndex];
     [e setFragmentTexture:mapsTex atIndex:kAirMapsTextureIndex];
     [e setFragmentSamplerState:_postSampler atIndex:kAirPostSamplerIndex];
     [e setFragmentSamplerState:_shadowSampler atIndex:kAirMapsSamplerIndex];
     [e setFragmentBytes:&air length:sizeof(air) atIndex:kAirParamsBufferIndex];
-    [e setFragmentBytes:&rig length:sizeof(rig) atIndex:kAirRigBufferIndex];
   };
+
+  auto drawCells = [&](id<MTLRenderCommandEncoder> e, NSUInteger targetW,
+                       NSUInteger targetH, bool isHalf) {
+    for (const auto& c : cells) {
+      if (grid) {
+        const long x0 = std::clamp(lround(c.rect[0] * dst.width), 0L, (long)dst.width);
+        const long y0 = std::clamp(lround(c.rect[1] * dst.height), 0L, (long)dst.height);
+        const long x1 = std::clamp(lround(c.rect[2] * dst.width), 0L, (long)dst.width);
+        const long y1 = std::clamp(lround(c.rect[3] * dst.height), 0L, (long)dst.height);
+        NSUInteger sx, sy, sw, sh;
+        if (!isHalf) {
+          sx = (NSUInteger)x0;
+          sy = (NSUInteger)y0;
+          sw = (NSUInteger)std::max(0L, x1 - x0);
+          sh = (NSUInteger)std::max(0L, y1 - y0);
+        } else {
+          // The texels whose first pixel (2t) is in the cell, so cells
+          // meeting on an odd pixel never share (and overwrite) a texel.
+          const long hx0 = std::clamp((x0 + 1L) / 2L, 0L, (long)targetW);
+          const long hy0 = std::clamp((y0 + 1L) / 2L, 0L, (long)targetH);
+          const long hx1 = std::clamp((x1 + 1L) / 2L, 0L, (long)targetW);
+          const long hy1 = std::clamp((y1 + 1L) / 2L, 0L, (long)targetH);
+          sx = (NSUInteger)hx0;
+          sy = (NSUInteger)hy0;
+          sw = (NSUInteger)std::max(0L, hx1 - hx0);
+          sh = (NSUInteger)std::max(0L, hy1 - hy0);
+        }
+        if (sw == 0 || sh == 0)
+          continue;
+        [e setScissorRect:MTLScissorRect{sx, sy, sw, sh}];
+      }
+      std::memcpy(rig.shadowTile, c.tile, sizeof(rig.shadowTile));
+      [e setFragmentBytes:&rig length:sizeof(rig) atIndex:kAirRigBufferIndex];
+      [e setFragmentBytes:c.rect length:sizeof(c.rect) atIndex:kAirCellBufferIndex];
+      [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+  };
+
   if (half) {
     MTLRenderPassDescriptor* md = [MTLRenderPassDescriptor renderPassDescriptor];
     md.colorAttachments[0].texture = _airTerm;
@@ -12763,12 +14979,17 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
     id<MTLRenderCommandEncoder> em = [_cmdBuffer renderCommandEncoderWithDescriptor:md];
     [em setRenderPipelineState:_airMarchPipeline];
     bindAir(em);
-    [em drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    drawCells(em, _airTerm.width, _airTerm.height, true);
     [em endEncoding];
+  }
+  if (grid) {
+    id<MTLBlitCommandEncoder> b = [_cmdBuffer blitCommandEncoder];
+    [b copyFromTexture:sceneSrc toTexture:dst];
+    [b endEncoding];
   }
   MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
   pd.colorAttachments[0].texture = dst;
-  pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pd.colorAttachments[0].loadAction = grid ? MTLLoadActionLoad : MTLLoadActionDontCare;
   pd.colorAttachments[0].storeAction = MTLStoreActionStore;
   id<MTLRenderCommandEncoder> ea = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
   [ea setRenderPipelineState:(half ? _airUpsamplePipeline[h] : _airFullPipeline[h])];
@@ -12776,9 +14997,246 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
   [ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];
   if (half)
     [ea setFragmentTexture:_airTerm atIndex:kAirTermTextureIndex];
-  [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  drawCells(ea, dst.width, dst.height, false);
   [ea endEncoding];
+  std::vector<std::array<float, 4>> rects;
+  rects.reserve(cells.size());
+  for (const auto& c : cells) {
+    rects.push_back({c.rect[0], c.rect[1], c.rect[2], c.rect[3]});
+  }
+  encodeAirAlpha(sceneSrc, dst, air.view[2] > 0.5f, air, rects, grid);
   return dst;
+}
+
+// metal_light_air_alpha (#684): what the air added to a frame, as an alpha
+// (post_air_alpha), for the transparent export's matte (encodeAirAlphaMerge).
+// `before` is the colour the composite read (still intact: `after` was the
+// other ping-pong target) and `after` what it wrote. Only a transparent
+// offscreen frame whose block asked for it (`wanted`: view.z) draws it, so
+// with the setting off (the default), in the live view and in an opaque
+// export nothing here runs and _airAlphaDrawn stays false.
+void RendererMetal::encodeAirAlpha(id<MTLTexture> before, id<MTLTexture> after,
+                                   bool wanted, const LightAirBlock& air,
+                                   const std::vector<std::array<float, 4>>& rects,
+                                   bool grid)
+{
+  if (!wanted || !_offscreen || !(_clearA < 0.5f) || !_airAlphaPipeline ||
+      !_airAlphaMergePipeline || !ensureAirAlpha(after.width, after.height))
+    return;
+  MTLRenderPassDescriptor* ad = [MTLRenderPassDescriptor renderPassDescriptor];
+  ad.colorAttachments[0].texture = _airAlphaTex;
+  // #810: in grid_mode the pass draws per cell (the motes' cover follows
+  // each cell's rays), so the gaps between cells are cleared to 0, the
+  // alpha master's full-frame pass gave them (no air was composited there).
+  ad.colorAttachments[0].loadAction = grid ? MTLLoadActionClear : MTLLoadActionDontCare;
+  ad.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+  ad.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> eb = [_cmdBuffer renderCommandEncoderWithDescriptor:ad];
+  [eb setRenderPipelineState:_airAlphaPipeline];
+  [eb setFragmentTexture:before atIndex:0];
+  [eb setFragmentTexture:after atIndex:1];
+  [eb setFragmentTexture:_sceneDepth atIndex:2];
+  [eb setFragmentBytes:&air length:sizeof(air) atIndex:0];
+  for (const auto& rect : rects) {
+    if (grid) {
+      const long x0 = std::clamp(lround(rect[0] * after.width), 0L, (long)after.width);
+      const long y0 = std::clamp(lround(rect[1] * after.height), 0L, (long)after.height);
+      const long x1 = std::clamp(lround(rect[2] * after.width), 0L, (long)after.width);
+      const long y1 = std::clamp(lround(rect[3] * after.height), 0L, (long)after.height);
+      NSUInteger sx = (NSUInteger)x0;
+      NSUInteger sy = (NSUInteger)y0;
+      NSUInteger sw = (NSUInteger)std::max(0L, x1 - x0);
+      NSUInteger sh = (NSUInteger)std::max(0L, y1 - y0);
+      if (sw == 0 || sh == 0)
+        continue;
+      [eb setScissorRect:MTLScissorRect{sx, sy, sw, sh}];
+    }
+    [eb setFragmentBytes:rect.data() length:sizeof(float) * 4 atIndex:2];
+    [eb drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  }
+  [eb endEncoding];
+  _airAlphaDrawn = true;
+}
+
+// The export's matte with the air in it (#684): `matte` is the transparent
+// export's output (colour, alpha from depth); the result has the larger of
+// that alpha and the air's. Called only when _airAlphaDrawn.
+id<MTLTexture> RendererMetal::encodeAirAlphaMerge(id<MTLTexture> matte)
+{
+  if (!_airAlphaDrawn || !_airAlphaMergePipeline || !_airAlphaTex)
+    return matte;
+  id<MTLTexture> dst = (matte == _sceneColor) ? _postColor : _sceneColor;
+  MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
+  pd.colorAttachments[0].texture = dst;
+  pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> em = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+  [em setRenderPipelineState:_airAlphaMergePipeline];
+  [em setFragmentTexture:matte atIndex:0];
+  [em setFragmentTexture:_airAlphaTex atIndex:1];
+  [em drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [em endEncoding];
+  return dst;
+}
+
+// The air's alpha target (#684): R8Unorm, w x h, private, made on the first
+// transparent export that asks for it and re-made on a size change; a size it
+// could not be made for is logged once and not retried until the size changes
+// (the export then keeps today's matte).
+bool RendererMetal::ensureAirAlpha(NSUInteger w, NSUInteger h)
+{
+  if (w == _airAlphaW && h == _airAlphaH)
+    return _airAlphaTex != nil;
+  [_airAlphaTex release];   // MRC: the one made for the old size
+  _airAlphaTex = nil;
+  _airAlphaW = w;
+  _airAlphaH = h;
+  if (w == 0 || h == 0)
+    return false;
+  MTLTextureDescriptor* d = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+                                   width:w height:h mipmapped:NO];
+  d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  d.storageMode = MTLStorageModePrivate;
+  _airAlphaTex = [_device newTextureWithDescriptor:d];
+  if (!_airAlphaTex)
+    NSLog(@"RendererMetal: air alpha %lux%lu failed; the export keeps the depth matte",
+          (unsigned long) w, (unsigned long) h);
+  return _airAlphaTex != nil;
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Animated Dust Tick Cache (#685)
+// ---------------------------------------------------------------------------
+
+void RendererMetal::noteSceneFrame()
+{
+  _airOnlyArmed = false;
+  _airOnlyFrame = false;
+  _airCacheValid = false;
+  _rtAOTemporalRan = false;
+  ++_statSceneFrames;
+}
+
+bool RendererMetal::airCacheUsable() const
+{
+  return _airCacheValid && !_offscreen && !_cmdBuffer && !_encoder &&
+         _airCacheColor && _sceneColor && _postColor && _sceneDepth &&
+         _airCacheColor.width == _sceneColor.width &&
+         _airCacheColor.height == _sceneColor.height &&
+         _lbOriginX == _airCacheLbX && _lbOriginY == _airCacheLbY;
+}
+
+bool RendererMetal::armAirOnlyFrame()
+{
+  _airOnlyArmed = airCacheUsable();
+  return _airOnlyArmed;
+}
+
+bool RendererMetal::airOnlyArmed() const
+{
+  return _airOnlyArmed;
+}
+
+bool RendererMetal::beginAirOnlyFrame()
+{
+  if (!_airOnlyArmed)
+    return false;
+  _airOnlyArmed = false;
+  if (!airCacheUsable())
+    return false;
+  _cmdBuffer = [_queue commandBuffer];
+  _encoder = nil;
+  _airOnlyFrame = true;
+  ++_statAirFrames;
+  return true;
+}
+
+bool RendererMetal::airCacheStats(int& sceneFrames, int& postChains,
+                                  int& airFrames, bool forget)
+{
+  if (forget) {
+    _statSceneFrames = 0;
+    _statPostChains = 0;
+    _statAirFrames = 0;
+    _airCacheValid = false;
+  }
+  sceneFrames = _statSceneFrames;
+  postChains = _statPostChains;
+  airFrames = _statAirFrames;
+  return true;
+}
+
+bool RendererMetal::setAirDebugPoison(bool on)
+{
+  _airDebugPoison = on;
+  return true;
+}
+
+// #685: whether the next beginFrame would rebuild nothing, i.e. this frame's
+// record is the one the structures were built from. Mirrors the skip tests of
+// ensureRayTracingAS and ensureRayTracingTransAS: keep them in step. With ray
+// tracing off no structure is traced, so nothing can be stale.
+bool RendererMetal::rayTracingCurrent() const
+{
+  if (!_rtEnabled || !_rtSupported) return true;
+  const bool opaque = _rtFrameKeys.empty()
+      ? !_rtReady
+      : (_rtReady && _rtInstanceAS && !_rtGeomDirty &&
+         _rtFrameSig == _rtSphereHash && _rtFrameMat == _rtBuiltMat);
+  if (!opaque) return false;
+  if (!_rtTransparent || _rtTFrameKeys.empty() || _rtFrameKeys.empty())
+    return _rtTransAS == nil;
+  return ((_rtTReady && _rtTransAS) || _rtTBuiltEmpty) && !_rtTGeomDirty &&
+         _rtTFrameSig == _rtTBuiltSig && _rtTFrameMat == _rtTBuiltMat;
+}
+
+void RendererMetal::keepPreAirImage(id<MTLTexture> src)
+{
+  // A dust-only frame reads the kept image (sceneSrc is _airCacheColor):
+  // it stays valid for the next tick.
+  if (_airOnlyFrame)
+    return;
+  // A full frame: keep its image only when nothing would make the next
+  // frame differ but the dust. Otherwise the next tick renders in full.
+  _airCacheValid = false;
+  const bool air = _lightAirOn && _lightRigOn && _postColor && _sceneDepth;
+  // A live frame without the air: the kept image's memory goes too.
+  if (!_offscreen && !air) {
+    [_airCacheColor release];
+    _airCacheColor = nil;
+  }
+  if (!_airTickFrame || _offscreen || !src || !air || _contourActive ||
+      !rayTracingCurrent() ||
+      (_rtAOTemporalRan && _rtAOAccumFrames < kAirCacheAOFrames))
+    return;
+
+  if (!_airCacheColor || _airCacheColor.width != src.width ||
+      _airCacheColor.height != src.height ||
+      _airCacheColor.pixelFormat != src.pixelFormat) {
+    [_airCacheColor release];
+    _airCacheColor = nil;
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:src.pixelFormat
+                                     width:src.width
+                                    height:src.height
+                                 mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModePrivate;
+    _airCacheColor = [_device newTextureWithDescriptor:d];
+    if (!_airCacheColor) {
+      _airCacheValid = false;
+      return;
+    }
+  }
+
+  id<MTLBlitCommandEncoder> blit = [_cmdBuffer blitCommandEncoder];
+  [blit copyFromTexture:src toTexture:_airCacheColor];
+  [blit endEncoding];
+
+  _airCacheValid = true;
+  _airCacheLbX = _lbOriginX;
+  _airCacheLbY = _lbOriginY;
 }
 
 // half-float bit pattern for a tessellation factor
@@ -12793,22 +15251,25 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
     float radius, float r, float g, float b)
 {
   if (!cp || dataSize < 48) return;       // need at least one 4-point patch
-  // The tube has no depth-only shadow pipeline yet; skip casting in shadow mode
-  // (it still receives shadows). Avoids a pipeline/attachment mismatch crash.
-  if (_shadowMode) return;
-  // Same reason for the peel pre-pass (#488), which has ZERO colour
-  // attachments -- exactly the mismatch this guard exists to prevent.
+  // The peel pre-pass (#488) has ZERO colour attachments and the tube has no
+  // peel pipeline: skip it.
   if (_peelMode) return;
   ensureEncoder();
   if (!_encoder) return;
-  buildBezierTubePipeline();
-  if (!_bezierTubePipeline) return;
-  // The light rig (#613): its own tube pipeline while the rig is on (the
-  // shadow and peel passes returned above), else today's. A rig pipeline that
-  // cannot be built draws the classic tube and logs once.
-  id<MTLRenderPipelineState> tubePipeline = _bezierTubePipeline;
+  // The shadow passes (studio slices and the classic pre-pass) draw the
+  // tube depth-only (#663); a colour draw starts from the classic tube.
+  id<MTLRenderPipelineState> tubePipeline = nil;
+  if (_shadowMode) {
+    buildBezierTubeShadowPipeline();
+    if (!_bezierTubeShadowPipeline) return;  // can't cast: skip safely
+    tubePipeline = _bezierTubeShadowPipeline;
+  } else {
+    buildBezierTubePipeline();
+    if (!_bezierTubePipeline) return;
+    tubePipeline = _bezierTubePipeline;
+  }
   bool tubeRig = false;
-  if (_lightRigOn) {
+  if (_lightRigOn && !_shadowMode) {
     buildBezierTubeRigPipeline();
     // HDR colour (#624): an HDR frame's variant, else the 8-bit knee's.
     id<MTLRenderPipelineState> rigTube = _bezierTubeRigPipeline[_lightHdrOn ? 1 : 0];
@@ -12818,6 +15279,21 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
     } else if (!_lightRigWarned) {
       NSLog(@"RendererMetal: light-rig bezier tube pipeline failed; drawing without the rig");
       _lightRigWarned = true;
+    }
+    // The studio shadow maps (#663): while this frame's maps are ready, the
+    // shadow variant of the rig tube (bindLightRig below binds the maps);
+    // the rig tube itself if it was not built (logged once). Only on top of
+    // the rig tube: without it nothing binds the rig the variant reads.
+    if (tubeRig && lightShadowsReady()) {
+      id<MTLRenderPipelineState> shadowTube =
+          _bezierTubeRigShadowPipeline[_lightHdrOn ? 1 : 0];
+      if (shadowTube) {
+        tubePipeline = shadowTube;
+      } else if (!_lightShadowWarned) {
+        NSLog(@"RendererMetal: studio-shadow bezier tube pipeline failed; "
+              @"drawing the rig without its shadow maps");
+        _lightShadowWarned = true;
+      }
     }
   }
 
@@ -12856,8 +15332,12 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   }
 
   [_encoder setRenderPipelineState:tubePipeline];
-  // Opaque geometry: standard depth test + write.
-  [_encoder setDepthStencilState:bezierDepthState()];
+  // Opaque geometry: standard depth test + write; the shadow passes' LESS +
+  // write from the light's point of view.
+  if (_shadowMode)
+    [_encoder setDepthStencilState:_shadowDepthState];
+  else
+    [_encoder setDepthStencilState:bezierDepthState()];
   [_encoder setCullMode:MTLCullModeNone];
   [_encoder setVertexBuffer:cpBuf offset:0 atIndex:0];
 
@@ -12903,6 +15383,13 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
 // textured glyph quads; the atlas RGBA already carries the baked label color
 // (RGB = color, A = glyph coverage). Picking/fog/background-color effects from
 // the full GL label shader are intentionally omitted here.
+//
+// Labels draw in the TRANSPARENT pass (RepLabel::render), which on Metal is the
+// weighted-blended OIT pass: RGBA16F accum + R16F reveal (+ the glass
+// refraction target), single-sample. label_fragment's BGRA8/MSAA pipeline does
+// not match those targets, and drawing with it there wrote undefined values
+// into accum/reveal -- every label resolved to the same magenta, or not at all,
+// whatever its colour (#736). label_fragment_oit is the OIT pass's variant.
 static NSString* const kLabelShaderSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -12999,11 +15486,36 @@ fragment float4 label_fragment(LabelVtxOut in [[stage_in]],
     discard_fragment();
   return c;
 }
+
+// The OIT pass's variant: the same glyph, written as every other transparent
+// fragment is (vbo_fragment_oit's OITFragOut and weight). A glyph pixel no
+// transparent surface overlaps resolves to exactly its atlas colour.
+struct LabelOITOut {
+  float4 accum  [[color(0)]];
+  float  reveal [[color(1)]];
+  float4 refr   [[color(2)]];   // glass refraction (#588): masked off here
+};
+fragment LabelOITOut label_fragment_oit(LabelVtxOut in [[stage_in]],
+    texture2d<float> atlas [[texture(0)]],
+    sampler smp [[sampler(0)]]) {
+  float4 c = atlas.sample(smp, in.texcoords);
+  if (c.a < 0.05)
+    discard_fragment();
+  float w = clamp(pow(min(1.0, c.a * 10.0) + 0.01, 3.0) * 1e8 *
+                  pow(1.0 - in.position.z * 0.9, 3.0), 1e-2, 3e3);
+  LabelOITOut o;
+  o.accum = float4(c.rgb * c.a, c.a) * w;
+  o.reveal = c.a;
+  o.refr = float4(0.0);
+  return o;
+}
 )";
 
 void RendererMetal::buildLabelPipeline()
 {
-  if (_labelPipeline)
+  // The OIT variant is dropped on its own when the OIT passes gain the glass
+  // refraction target (rebuildDrawPipelines), so build whichever is missing.
+  if (_labelPipeline && _labelOitPipeline && _labelSampler)
     return;
 
   NSError* error = nil;
@@ -13016,8 +15528,10 @@ void RendererMetal::buildLabelPipeline()
   }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"label_vertex"];
   id<MTLFunction> ffn = [lib newFunctionWithName:@"label_fragment"];
-  if (!vfn || !ffn) {
+  id<MTLFunction> ofn = [lib newFunctionWithName:@"label_fragment_oit"];
+  if (!vfn || !ffn || !ofn) {
     NSLog(@"RendererMetal: label shader functions not found");
+    [vfn release]; [ffn release]; [ofn release]; [lib release];
     return;
   }
 
@@ -13054,19 +15568,52 @@ void RendererMetal::buildLabelPipeline()
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
-  _labelPipeline = [_device newRenderPipelineStateWithDescriptor:psd
-                                                           error:&error];
   if (!_labelPipeline) {
-    NSLog(@"RendererMetal: failed to create label pipeline: %@", error);
-    return;
+    _labelPipeline = [_device newRenderPipelineStateWithDescriptor:psd
+                                                             error:&error];
+    if (!_labelPipeline)
+      NSLog(@"RendererMetal: failed to create label pipeline: %@", error);
   }
 
-  MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
-  sd.minFilter = MTLSamplerMinMagFilterNearest;
-  sd.magFilter = MTLSamplerMinMagFilterNearest;
-  sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
-  sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
-  _labelSampler = [_device newSamplerStateWithDescriptor:sd];
+  // The OIT pass's targets, blended as oitPipelineForVD blends them. Its
+  // passes are single-sample, so the rasterSampleCount goes back to 1.
+  if (!_labelOitPipeline) {
+    psd.fragmentFunction = ofn;
+    psd.rasterSampleCount = 1;
+    MTLRenderPipelineColorAttachmentDescriptor* a0 = psd.colorAttachments[0];
+    a0.pixelFormat = MTLPixelFormatRGBA16Float;
+    a0.blendingEnabled = YES;
+    a0.sourceRGBBlendFactor = MTLBlendFactorOne;
+    a0.destinationRGBBlendFactor = MTLBlendFactorOne;
+    a0.sourceAlphaBlendFactor = MTLBlendFactorOne;
+    a0.destinationAlphaBlendFactor = MTLBlendFactorOne;
+    MTLRenderPipelineColorAttachmentDescriptor* a1 = psd.colorAttachments[1];
+    a1.pixelFormat = MTLPixelFormatR16Float;
+    a1.blendingEnabled = YES;
+    a1.sourceRGBBlendFactor = MTLBlendFactorZero;
+    a1.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    a1.sourceAlphaBlendFactor = MTLBlendFactorZero;
+    a1.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    setOitRefractAttachment(psd.colorAttachments[2], _oitRefractEnabled, false);
+    _labelOitPipeline = [_device newRenderPipelineStateWithDescriptor:psd
+                                                                error:&error];
+    if (!_labelOitPipeline)
+      NSLog(@"RendererMetal: failed to create label OIT pipeline: %@", error);
+  }
+  // MRC: the descriptor, functions and library (+1) are consumed by the
+  // pipelines.
+  [psd release];
+  [vfn release]; [ffn release]; [ofn release]; [lib release];
+
+  if (!_labelSampler) {
+    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+    sd.minFilter = MTLSamplerMinMagFilterNearest;
+    sd.magFilter = MTLSamplerMinMagFilterNearest;
+    sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+    sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    _labelSampler = [_device newSamplerStateWithDescriptor:sd];
+    [sd release];
+  }
 }
 
 void RendererMetal::ensureLabelAtlas(const unsigned char* pixels, int w, int h,
@@ -13114,14 +15661,33 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
   // vanish wherever a label sits in front of it.
   if (_peelMode)
     return;
+  // Upload the atlas now: its CPU copy can be reallocated later in the frame,
+  // so a deferred draw must not read call.atlasPixels again.
+  ensureLabelAtlas(call.atlasPixels, call.atlasW, call.atlasH, call.atlasGen);
+  // A peeled object's OIT pass tests against the depth of that object's own
+  // front shell, which would hide every label anchored inside it (an atom
+  // centre). Defer them to the frame's ordinary OIT pass, which tests against
+  // the opaque depth like every other label (beginTransparentOIT flushes).
+  if (_oitActive && _oitPeelTest) {
+    _peelDeferredLabels.push_back(
+        {call, _modelviewMatrix, _projectionMatrix, _depthTestEnabled});
+    return;
+  }
+  encodeLabels(call, _modelviewMatrix, _projectionMatrix, _depthTestEnabled);
+}
+
+void RendererMetal::encodeLabels(const LabelDrawCall& call, const Mat4& mv,
+    const Mat4& proj, bool depthTest)
+{
   ensureEncoder();
   if (!_encoder)
     return;
   buildLabelPipeline();
-  if (!_labelPipeline || !_labelSampler)
-    return;
-  ensureLabelAtlas(call.atlasPixels, call.atlasW, call.atlasH, call.atlasGen);
-  if (!_labelAtlas)
+  // Labels draw in the transparent pass, which is the OIT pass whenever one is
+  // open (#736): its targets need the OIT variant.
+  id<MTLRenderPipelineState> pipeline =
+      _oitActive ? _labelOitPipeline : _labelPipeline;
+  if (!pipeline || !_labelSampler || !_labelAtlas)
     return;
 
   // Upload (or reuse cached) the interleaved label vertex data.
@@ -13138,10 +15704,16 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
     _vboCache[call.data] = vbo;
   }
 
-  [_encoder setRenderPipelineState:_labelPipeline];
+  [_encoder setRenderPipelineState:pipeline];
   applyDepthStencilState();
-  if (_depthStencilState)
+  if (_oitActive) {
+    // Test against the opaque depth but never write it, as every transparent
+    // draw does; float_labels (depth test off) still draws over everything.
+    [_encoder setDepthStencilState:depthTest ? oitDepthState()
+                                             : labelOitNoDepthState()];
+  } else if (_depthStencilState) {
     [_encoder setDepthStencilState:_depthStencilState];
+  }
 
   [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
 
@@ -13156,8 +15728,8 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
     float clipRange;
     float _pad;
   } U;
-  std::memcpy(U.modelview, _modelviewMatrix.data(), 64);
-  std::memcpy(U.projection, _projectionMatrix.data(), 64);
+  std::memcpy(U.modelview, mv.data(), 64);
+  std::memcpy(U.projection, proj.data(), 64);
   U.screenSize[0] = call.screenW;
   U.screenSize[1] = call.screenH;
   U.screenOriginVertexScale = call.screenOriginVertexScale;

@@ -66,15 +66,22 @@ editing this file:
                                       WITHOUT its air (see below)
      "only": [tag, ...],              optional subset
      "extra": [python line, ...],     appended to every scene, after the view
+     "after_rig": [python line, ...], run in every scene after the rig
+                                      block, before the marker
      "size": [w, h],                  default [1280, 720]
      "scenes": [{"tag": t, "from": <l1 tag>, "rt": 0|1, "rig": ..., "size": [w, h],
-                 "lines": [python line, ...]}, ...]}   add or override tags
-A scene's lines run after the file's extra lines, before the rig block.
+                 "lines": [python line, ...],
+                 "after_rig": [python line, ...]}, ...]}   add or override tags
+A scene's lines run after the file's extra lines, before the rig block; its
+after_rig lines (the file's, then the scene's) run after the rig block, so a
+scene installs its own rig there instead of wrapping cmd.set_lights. With rig
+on or off the rig block leaves the harness's rig dict in `_lh_rig`, which
+after_rig lines may read.
 
 "rig": "on" installs RIG_OFF's lights enabled but drops its air (haze and
 dust 0), so that a scene file written before the air pass (#618) renders as
-it did then. A scene that wants air sets it itself (its own rig, or a shim of
-cmd.set_lights). --rig off is unchanged, RIG_OFF's air included: an off rig
+it did then. A scene that wants air sets it itself (its own rig, or its
+after_rig lines). --rig off is unchanged, RIG_OFF's air included: an off rig
 must ignore its air.
 
 Exit codes: 0 ok; 1 an image failed, or --compare found a difference;
@@ -225,7 +232,10 @@ RIGS = ('none', 'off', 'on')
 
 # Text the app acts on inside a command (PyMOLEngine.runCommandCore:
 # maybeWidenClipForSurface, handleSessionViewport), or that `run`, AUTOCMD (';')
-# and AUTOEXPORT (',') would split or expand.
+# and AUTOEXPORT (',') would split or expand. The app matches these as plain
+# substrings (`l.contains(...)` on the lowercased command), not whole words, so
+# check_path matches them as substrings too: `lighting_presets.json` is refused
+# for containing 'reset'. Do not switch to word-boundary matching.
 FORBIDDEN_WORDS = ('orient', 'reset', 'load ', 'fetch ', 'show ', '.pse')
 FORBIDDEN_CHARS = (',', ';', '$', "'", '"')
 MAIN_BUNDLE_ID = 'io.raymol.RayMol'
@@ -239,7 +249,8 @@ class Refusal(Exception):
 # --- jobs and scene scripts -------------------------------------------------
 
 class Job(object):
-    def __init__(self, tag, rep_lines, rt, shadows, rig, extra=(), size=SIZE):
+    def __init__(self, tag, rep_lines, rt, shadows, rig, extra=(), size=SIZE,
+                 after_rig=()):
         self.tag = tag
         self.rep_lines = list(rep_lines)
         self.rt = int(rt)
@@ -247,6 +258,7 @@ class Job(object):
         self.rig = rig
         self.extra = list(extra)
         self.size = (int(size[0]), int(size[1]))
+        self.after_rig = list(after_rig)
 
     def describe(self):
         return '%s rt=%d shadows=%d rig=%s size=%dx%d extra=%d' % (
@@ -254,10 +266,10 @@ class Job(object):
             self.size[1], len(self.extra))
 
 
-def l1_job(tag, rig, extra=(), size=SIZE):
+def l1_job(tag, rig, extra=(), size=SIZE, after_rig=()):
     rep, rt = _l1_parts(tag)
     return Job(tag, REPS[rep], rt, 1 if rep in SHADOW_REPS else 0, rig,
-               extra, size)
+               extra, size, after_rig)
 
 
 def l1_jobs(rig):
@@ -353,6 +365,9 @@ def scene_script(root, job, marker):
     lines.append('cmd.set_view(%r, animate=0)' % (VIEW,))
     lines += job.extra
     lines += _rig_block(job.rig)
+    if job.after_rig:
+        lines.append('# after_rig')
+        lines += job.after_rig
     lines += _marker_block(job.tag, marker)
     return '\n'.join(lines) + '\n'
 
@@ -386,8 +401,10 @@ def write_scripts(root, out, jobs):
 
 # --- scene files --------------------------------------------------------------
 
-_FILE_KEYS = {'base', 'rig', 'only', 'extra', 'size', 'scenes', 'comment'}
-_SCENE_KEYS = {'tag', 'from', 'rt', 'rig', 'size', 'lines', 'comment'}
+_FILE_KEYS = {'base', 'rig', 'only', 'extra', 'after_rig', 'size', 'scenes',
+              'comment'}
+_SCENE_KEYS = {'tag', 'from', 'rt', 'rig', 'size', 'lines', 'after_rig',
+               'comment'}
 
 
 def _lines(value, what):
@@ -427,13 +444,14 @@ def scene_file_jobs(path):
         raise Refusal('%s: unknown keys %s' % (path, ', '.join(unknown)))
     rig = _rig(spec.get('rig', 'none'), '%s: rig' % path)
     extra = _lines(spec.get('extra', []), '%s: extra' % path)
+    after_rig = _lines(spec.get('after_rig', []), '%s: after_rig' % path)
     size = _size(spec['size'], '%s: size' % path) if 'size' in spec else SIZE
     base = spec.get('base')
     if base not in (None, 'l1'):
         raise Refusal('%s: base must be "l1" or null, not %r' % (path, base))
     jobs = []
     if base == 'l1':
-        jobs = [l1_job(tag, rig, extra, size) for tag in l1_tags()]
+        jobs = [l1_job(tag, rig, extra, size, after_rig) for tag in l1_tags()]
     scenes = spec.get('scenes', [])
     if not isinstance(scenes, list):
         raise Refusal('%s: scenes must be a list' % path)
@@ -462,7 +480,8 @@ def scene_file_jobs(path):
         job = Job(tag, rep_lines, rt, shadows,
                   _rig(entry.get('rig', rig), '%s: rig' % what),
                   extra + _lines(entry.get('lines', []), '%s: lines' % what),
-                  _size(entry['size'], '%s: size' % what) if 'size' in entry else size)
+                  _size(entry['size'], '%s: size' % what) if 'size' in entry else size,
+                  after_rig + _lines(entry.get('after_rig', []), '%s: after_rig' % what))
         jobs = [j for j in jobs if j.tag != tag] + [job]
     only = spec.get('only')
     if only is not None:
@@ -485,7 +504,13 @@ def select(jobs, tags, what='--only'):
 # --- refusals -----------------------------------------------------------------
 
 def check_path(label, path):
-    """Refuse a path the app's command handling would split, expand or act on."""
+    """Refuse a path the app's command handling would split, expand or act on.
+
+    FORBIDDEN_WORDS are matched as case-insensitive substrings of the whole
+    path, not whole words, because the app's own trigger check is a substring
+    match (PyMOLEngine.maybeWidenClipForSurface uses `contains`). So
+    'lighting_612_presets.json' is refused for the 'reset' inside 'presets';
+    rename the file or directory."""
     if any(c.isspace() for c in path):
         raise Refusal('%s %r contains whitespace: `run` takes its path unquoted'
                       % (label, path))
@@ -497,8 +522,12 @@ def check_path(label, path):
     lower = path.lower()
     for word in FORBIDDEN_WORDS:
         if word in lower:
-            raise Refusal('%s %r contains %r, which the app acts on inside a '
-                          'command (PyMOLEngine.runCommandCore)' % (label, path, word))
+            raise Refusal('%s %r contains %r as a substring (not only as a '
+                          'whole word): the app acts on that text anywhere '
+                          'inside a command (PyMOLEngine.runCommandCore uses '
+                          'substring triggers). Rename the file or directory '
+                          'so the path does not contain %r'
+                          % (label, path, word, word))
 
 
 def app_info(app):

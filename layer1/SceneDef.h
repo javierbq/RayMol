@@ -33,6 +33,7 @@ Z* -------------------------------------------------------------------
 #include "LightRig.h"
 #include<list>
 #include<vector>
+#include <cstdint>
 
 #include <glm/mat4x4.hpp>
 
@@ -132,6 +133,7 @@ class CScene : public Block {
   double AnimationStartTime{};
   double AnimationLagTime{};
   int AnimationStartFrame{};
+  int AnimationSerial{};
   double ApproxRenderTime{};
   float VertexScale{0.01F};
   float FogStart{};
@@ -154,10 +156,49 @@ class CScene : public Block {
   bool DofExtentFlag{}; /* false = 'dof_focus' is empty/undefined */
   float DofExtentCenter[3]{};
 
+  /* Studio shadow-map reuse (#666). ContentGeneration is bumped by
+     everything that can change what the scene draws (SceneDirty, and with it
+     SceneInvalidate and SceneChanged; SceneInvalidateExtentCache; a
+     SceneUpdate rebuild), but not by a reshape: the viewport is part of the
+     key itself. LightShadowMapKey is the key of the last frame whose map
+     pass ran (empty: none); see SceneRenderLightShadowMaps. */
+  unsigned ContentGeneration{};
+  std::vector<std::uint32_t> LightShadowMapKey;
+
+  // #685: the inputs of the last full live Metal frame, taken by
+  // SceneRenderMetal after its update phase. A dust-only tick may reuse that
+  // frame's image only while all of them still hold.
+  struct MetalAirFrameKey {
+    unsigned long generation = 0;   // PyMOL_GetRedisplayGeneration
+    unsigned contentGeneration = 0; // ContentGeneration (#666)
+    float projection[16]{};
+    float modelview[16]{};
+    int viewport[4]{};              // Renderer::getViewportRect
+    int width = 0, height = 0;      // I->Width, I->Height
+    bool valid = false;
+  } MetalAirFrame;
+
   /* The light rig (#611; SceneLights.h). nullopt = no rig; a rig with
      enabled == false is present but off. One per instance, cleared by
      SceneReinitialize. Not an object: never in Obj, never in an extent. */
   std::optional<pymol::LightRig> lightRig;
+
+  /* #661: a scene recall's rig blend, stepped with the camera animation
+     (SceneLightsRecallStep). from = the live rig when the recall started,
+     to = the scene's rig, serial = AnimationSerial of that camera animation. */
+  struct LightRecall { pymol::LightRig from, to; int serial = 0; };
+  std::optional<LightRecall> lightRecall;
+  /* #661: AnimationSerial of the camera animation the last scene recall
+     started, or -1 when it started none (no view recalled, animate=0, no
+     GUI). SceneLightsRecall blends only along that animation, and consumes
+     it, so a recall never rides another command's camera move. */
+  int recallAnimationSerial{-1};
+
+  /* Document generation (#649): bumped when the whole document is replaced
+     (SceneReinitialize, a full ExecutiveSetSession), so the app can tell a
+     replacement made from Python or MCP. Read through
+     SceneGetDocumentGeneration. */
+  unsigned DocumentGeneration{};
 
   /* Scene Names */
   int ButtonsShown{}, ButtonDrag{}, ButtonMargin{}, ButtonsValid{};

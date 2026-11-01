@@ -1,0 +1,5 @@
+# actionlint config. Declares the custom label of the self-hosted runner on
+# the Mac mini "puma" (beta-selfhosted.yml) so runner-label checks pass.
+self-hosted-runner:
+  labels:
+    - puma

@@ -52,10 +52,10 @@ pymol::Result<pymol::LightRig> LightRigFromPyDict(PyObject* obj);
  *
  *   [version,
  *    [enabled, centre, size, ambient, classic],
- *    [haze, dust, dust_size, dust_speed, scatter, seed],
+ *    [haze, dust, dust_size, dust_speed, scatter, seed, dust_glow, dust_opacity],
  *    [[name, anchor, orbit, pitch, radius, position, aim, aim_point,
  *      aim_selection, beam, softness, color, warmth, intensity, highlight,
- *      falloff, shadow, outline], ...]]
+ *      falloff, shadow, outline, size], ...]]
  *
  * Plain values only: bools and the anchor/aim choices as the ints 0|1,
  * numbers as int or float, vectors as lists of 3 floats, text as str, an
@@ -129,7 +129,8 @@ PyObject* LightRigEyeAsPyDict(
  *                   'lights': [{'name', 'position': [3], 'shadow_slot': int,
  *                               'direction': [3], 'cos_outer',
  *                               'radiance': [3], 'cos_inner', 'highlight',
- *                               'falloff', 'falloff_ref', 'outline': bool},
+ *                               'falloff', 'falloff_ref', 'outline': bool,
+ *                               'soft_radius': float},
  *                              ...]},
  *    'shadows': None | {'count', 'size', 'tiles', 'first_slot',
  *                       'slots': [{'slot', 'light', 'name', 'view': [16],
@@ -150,9 +151,9 @@ PyObject* LightFrameAsPyDict(
 /**
  * One frame's air block (#618, SceneLightsAir) for
  * _cmd.get_light_air_frame():
- *   {'block': [20 floats], 'haze_density', 'dust_occupancy', 'scatter',
+ *   {'block': [24 floats], 'haze_density', 'dust_occupancy', 'scatter',
  *    'seed_offset', 'near', 'far', 'focus', 'cell', 'time', 'mote_radius',
- *    'defocus', 'shadow_filter': int, 'scale'}
+ *    'defocus', 'shadow_filter': int, 'scale', 'dust_glow', 'dust_opacity'}
  * 'block' is the LightAirBlock as the GPU reads it, float by float; the
  * named fields are decoded from it at the offsets LightAirBlock.h documents,
  * so the tests pin the layout as well as the values. New reference.

@@ -37,6 +37,23 @@ private let kGutterW: CGFloat = 26
 private let kIndentW: CGFloat = 13
 private let kMaxIndentDepth: Int = 3
 
+// Layout width of the leading disclosure column (chevron / ⊕ ⊖). Every row type
+// leads with this width so the checkbox column lines up; the selection,
+// alignment, MSA and "all" rows pad it with a Spacer instead of a button.
+private let kDisclosureW: CGFloat = 13
+// #751: the glyph is 9–10 pt, far below the 44 pt touch guideline and tight for
+// a pointer. The hit area is extended by this much to each side (and to the
+// full row height) WITHOUT changing the layout width, so near-misses expand
+// instead of falling through to the row tap (which toggles enable and makes
+// the object vanish). Right-hand slop stops just short of the checkbox glyph,
+// which sits centred in kGutterW; where they overlap the checkbox is the later
+// sibling and still wins.
+#if os(iOS)
+private let kDisclosureHitSlop: CGFloat = 14
+#else
+private let kDisclosureHitSlop: CGFloat = 8
+#endif
+
 /// Atom predicate behind the S ▸ / H ▸ "side chains" menu items.
 ///
 /// PyMOL's `sidechain` selection drops two backbone atoms the sticks need:
@@ -102,7 +119,7 @@ struct MaterialLook: Equatable {
 /// A rep's Custom material state, from the rep payload's `material` entry.
 struct MaterialCustomState: Equatable {
     /// The material the layer DRAWS with -- 0 when it has degraded to
-    /// `default` (glass on spheres or ball-and-stick), which has no knobs.
+    /// `default` (a material id from a newer build), which has no knobs.
     var drawn: Int = 0
     var knobs: [String: Double] = [:]   // suffix -> the value the draw uses
     var custom: Set<String> = []        // overridden knobs the drawn material has
@@ -153,6 +170,11 @@ struct ObjStateMeta: Equatable {
     /// isosurface is peelable and its front/back double blend is exactly what
     /// peel is for. Groups and ramps (a gadget) are excluded.
     var hasPeelRow: Bool = false
+
+    /// Atom count (`natoms`), read by the Morph sheet's memory estimate (#morph).
+    /// Nil for an object the selector does not accept, or a payload that
+    /// predates the key — the sheet then omits the estimate rather than show 0.
+    var atomCount: Int? = nil
 
     /// Does the object header show any of these rows at all?
     ///
@@ -319,6 +341,10 @@ struct SceneParam: Identifiable {
     // When set, this control is a dependent sub-setting: shown indented under
     // its parent toggle and hidden while the parent (a setting key) is off.
     var dependsOn: String? = nil
+    /// #878: the studio light rig replaces this setting while it is on, so the
+    /// row is disabled with `SceneCatalog.rigOverrideReason`; unlike
+    /// `dependsOn` it never hides the row.
+    var rigOverridden: Bool = false
     // Color rows (Background, Outline color) bind to sceneState.bg /
     // .outlineColor via a ColorPicker instead of the kind switch.
     var isColor: Bool = false
@@ -390,7 +416,7 @@ enum CustomMaterial {
 
     /// The knobs a layer may offer as Custom: those of the material it DRAWS
     /// with, and only when that is the material its setting names. A layer
-    /// that has degraded to `default` (glass on spheres or ball-and-stick)
+    /// that has degraded to `default` (a material id from a newer build)
     /// draws 0 and offers none.
     static func offeredKnobs(base: Int, drawn: Int?,
                              table: [Int: [MaterialKnobInfo]]) -> [MaterialKnobInfo] {
@@ -475,12 +501,41 @@ enum CameraCommands {
 }
 
 enum SceneCatalog {
+    /// A scene slider's value as the `set` command writes it.
+    static func format(_ v: Double, _ p: SceneParam) -> String {
+        p.decimals == 0 ? String(Int(v.rounded())) : String(format: "%.4f", v)
+    }
+
+    /// The command a scene slider runs for `v` (the Effects sliders and the
+    /// Lights inspector's Exposure row share it: one source of truth).
+    static func setCommand(_ p: SceneParam, _ v: Double) -> String {
+        "set \(p.setting), \(format(v, p))"
+    }
+
+    /// Effects > Exposure (metal_exposure), the setting the Lights inspector's
+    /// Exposure row edits too (#733).
+    static var exposure: SceneParam { params.first { $0.setting == "metal_exposure" }! }
+
     /// Scene settings whose value is a material id, so a `.menu` row for one is
     /// served from the core's material table rather than from its own options.
     /// Named explicitly: `SceneParam` has no optionSource field, and silently
     /// handing the material list to an unrelated menu is the failure this
     /// prevents. (#498 adds the rows themselves.)
     static let materialSettings: Set<String> = ["material_default"]
+
+    /// #878: the inline reason under the rows the studio rig overrides.
+    static let rigOverrideReason = "Not available while studio lights are on. The light rig's Ambient and Classic replace these; edit them in the Lights tool."
+    /// The reason `p`'s row is disabled for the rig (nil: enabled).
+    static func rigDisabledReason(_ p: SceneParam, rigOn: Bool) -> String? {
+        p.rigOverridden && rigOn ? rigOverrideReason : nil
+    }
+    static let studioLightsLabel = "Studio lights"
+    static let studioLightsHelp = "Turn the studio light rig on or off. Off uses PyMOL's classic lights. With no rig, turning it on adds a key light, as the Lights tool's Add does."
+    static let openLightsToolLabel = "Open Lights tool"
+    /// The Lighting group's Open Lights tool (#878): the ⌃L menu item's action.
+    @MainActor static func openLightsTool(_ engine: PyMOLEngine) {
+        engine.setInteractionMode(.lights)
+    }
 
     // Ordered sub-groups shown inside the SCENE section (see panel reorg).
     static let groups = ["Canvas", "Camera", "Lighting", "Shadows & AO", "Metal optimization", "Effects", "Quality"]
@@ -543,25 +598,19 @@ enum SceneCatalog {
                    help: "Bokeh quality: higher traces more gather samples (1→16, 2→32, 3→64, 4→96) for denser, cleaner out-of-focus blur; levels 2+ add a de-noise pass. 1 = fastest single-pass, 4 = smoothest (GPU-heavy)."),
 
         // --- Lighting: real-time lighting model + shading ---
-        // The two scene-wide MATERIAL rows lead the group (#498). They belong
-        // here rather than in "Metal optimization": what a representation is
-        // made of, and what it reflects, are part of the look -- the group
-        // below is about what the renderer spends time on.
+        // The scene-wide material row leads the group (#498). It belongs here
+        // rather than in "Metal optimization": what a representation is made of
+        // is part of the look -- the group below is about what the renderer
+        // spends time on.
         SceneParam(setting: "material_default", label: "Material default", kind: .menu, group: "Lighting",
                    help: "Material for every representation that has no material of its own. An object's own material still wins."),
-        // NOT served from the material table: material_env is an enum over
-        // environments, not a material id. SceneCatalog.materialSettings is
-        // what keeps the two apart, and it lists material_default only.
-        SceneParam(setting: "material_env", label: "Environment", kind: .menu,
-                   options: [("background", 0), ("studio", 1), ("none", 2)], group: "Lighting",
-                   help: "What the reflective materials reflect. 'background' follows the background colour; 'studio' is a fixed three-light room; 'none' disables the environment reflection."),
-        SceneParam(setting: "ambient",   label: "Ambient",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
+        SceneParam(setting: "ambient",   label: "Ambient",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting", rigOverridden: true,
                    help: "Baseline fill light hitting all surfaces evenly, even in shadow."),
-        SceneParam(setting: "direct",    label: "Direct",   kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
+        SceneParam(setting: "direct",    label: "Direct",   kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting", rigOverridden: true,
                    help: "Strength of the main directional light."),
-        SceneParam(setting: "reflect",   label: "Reflect",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
+        SceneParam(setting: "reflect",   label: "Reflect",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting", rigOverridden: true,
                    help: "Overall diffuse reflectivity of surfaces."),
-        SceneParam(setting: "specular",  label: "Specular", kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
+        SceneParam(setting: "specular",  label: "Specular", kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting", rigOverridden: true,
                    help: "Intensity of shiny specular highlights."),
         SceneParam(setting: "shininess", label: "Shininess", kind: .slider, min: 0, max: 100, step: 1, decimals: 0, group: "Lighting",
                    help: "Tightness of specular highlights. Higher = smaller, sharper glints."),
@@ -616,7 +665,7 @@ enum SceneCatalog {
         // pass whenever exposure != 1), so hiding the slider when tone-map is off
         // could strand a dimmed value with no way to fix it in the UI.
         SceneParam(setting: "metal_exposure", label: "Exposure", kind: .slider, min: 0.2, max: 2.0, step: 0.05, decimals: 2, group: "Effects",
-                   help: "Brightness multiplier (1.0 = neutral). Applies whether or not filmic tone-map is on."),
+                   help: "Brightness multiplier (1.0 = neutral). Applies whether or not filmic tone-map is on. Under a light rig it scales the lit scene and the air, not the background, labels or outlines (also in the Lights inspector)."),
         SceneParam(setting: "depth_cue",  label: "Depth cue / fog", kind: .toggle, group: "Effects",
                    help: "Fade distant parts of the scene into the background to convey depth."),
 
@@ -625,6 +674,18 @@ enum SceneCatalog {
                    options: [("0", 0), ("1", 1), ("2", 2)], group: "Quality",
                    help: "Surface mesh detail: 0 = coarse/fast, 2 = fine/slow."),
     ]
+}
+
+extension LightsExposureControl {
+    /// The Lights inspector's Exposure row over the scene's metal_exposure
+    /// (the Effects slider's setting, range and command). `values` is the
+    /// scene poll; `run` the engine's console command (the one Effects uses).
+    static func scene(values: [String: Double], run: @escaping (String) -> Void) -> LightsExposureControl {
+        let p = SceneCatalog.exposure
+        return LightsExposureControl(value: values[p.setting] ?? 1.0, range: p.min...p.max,
+                                     decimals: p.decimals,
+                                     set: { run(SceneCatalog.setCommand(p, $0)) })
+    }
 }
 
 // MARK: - Data Models
@@ -654,6 +715,11 @@ struct ObjectEntry: Identifiable, Equatable {
     // the existing memberwise initializers compiling.
     var isPending: Bool = false
     var pendingDetail: String? = nil
+    // Source object for a morph (#morph). Non-nil when this object was produced
+    // by morph_object and the source is still loaded. The inspector sheet uses it
+    // to reconnect the re-morph sheet to the correct source without a separate
+    // lookup. Defaults nil so the existing memberwise initializers keep compiling.
+    var morphSource: String? = nil
 
     var displayName: String {
         if isSelection, let count = atomCount {
@@ -1741,6 +1807,7 @@ struct ObjectPanel: View {
     @Environment(\.horizontalSizeClass) private var hSizeClass
     #endif
     @State private var showSelectionBuilder = false
+    @State private var showGlycanTopology = false
     @State private var renameText = ""
     @State private var groupNameText = ""
     @State private var copyToNewText = ""
@@ -1876,7 +1943,16 @@ struct ObjectPanel: View {
 
                     // OBJECTS — the loaded molecules + the global "all" row.
                     sectionHeader("OBJECTS", id: "objects",
-                                  tag: objects.isEmpty ? nil : "\(objects.count)") { EmptyView() }
+                                  tag: objects.isEmpty ? nil : "\(objects.count)") {
+                        Button(action: { showGlycanTopology = true }) {
+                            Image(systemName: "list.bullet.indent")
+                                .font(.system(size: 11))
+                                .foregroundColor(PanelTheme.headerColor)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Glycan topology")
+                        .help("Inspect glycan topology and geometry")
+                    }
                     if openSections.contains("objects") {
                         if objects.isEmpty {
                             emptyHint("No objects loaded")
@@ -1993,6 +2069,9 @@ struct ObjectPanel: View {
         .background(PanelTheme.background)
         .sheet(isPresented: $showSelectionBuilder) {
             SelectionBuilderSheet()
+        }
+        .sheet(isPresented: $showGlycanTopology) {
+            GlycanTopologyView().environmentObject(engine)
         }
         .onAppear {
             refreshObjects()
@@ -2166,7 +2245,7 @@ private struct ObjectRowView: View {
     var body: some View {
         HStack(spacing: 2) {
             // Align with object rows, which lead with a disclosure chevron.
-            Spacer().frame(width: 13)
+            Spacer().frame(width: kDisclosureW)
             // Enable/disable toggle
             Button(action: { toggleEnabled() }) {
                 Image(systemName: entry.isEnabled ? "checkmark.square.fill" : "square")
@@ -2241,7 +2320,7 @@ private struct AlignmentRowView: View {
     var body: some View {
         HStack(spacing: 6) {
             // Line up with the object rows' chevron + checkbox gutter.
-            Spacer().frame(width: 13 + kGutterW)
+            Spacer().frame(width: kDisclosureW + kGutterW)
 
             Text(entry.name)
                 .font(.system(size: 11))
@@ -2332,7 +2411,7 @@ private struct MSASearchRowView: View {
         HStack(spacing: 6) {
             // Line up with the object rows' chevron + checkbox gutter, as the
             // alignment rows do.
-            Spacer().frame(width: 13 + kGutterW)
+            Spacer().frame(width: kDisclosureW + kGutterW)
 
             ProgressView()
                 .progressViewStyle(.circular)
@@ -2391,7 +2470,7 @@ private struct AllControlsRow: View {
     var body: some View {
         HStack(spacing: 2) {
             // Align with object rows, which lead with a disclosure chevron.
-            Spacer().frame(width: 13)
+            Spacer().frame(width: kDisclosureW)
             // Enable/disable ALL objects at once (mirrors desktop PyMOL's "all" row).
             Button(action: { toggleAll() }) {
                 Image(systemName: allEnabled ? "checkmark.square.fill" : "square")
@@ -2641,6 +2720,10 @@ private struct ShowButton: View {
                     }
                 }
             }
+            Divider()
+            Button("Glycan cartoon") {
+                engine.runCommand("glycocartoon selection=\(name)", naming: name)
+            }
         } label: {
             Text("S")
                 .frame(width: kActBtnW, height: kActBtnH)
@@ -2685,6 +2768,10 @@ private struct HideButton: View {
                         engine.runCommand("hide \(rep), \(name)", naming: name)
                     }
                 }
+            }
+            Divider()
+            Button("Glycan cartoon") {
+                engine.runCommand("glycocartoon_hide selection=\(name)", naming: name)
             }
         } label: {
             Text("H")
@@ -2806,6 +2893,10 @@ private struct ColorMenuButton: View {
                         swatchLabel(row.title, swatch: row.swatch)
                     }
                 }
+            }
+            Divider()
+            Button("SNFG glycan palette") {
+                engine.runCommand("glycocolor selection=\(name)", naming: name)
             }
             Divider()
             // A ColorPicker can't live inside a Menu (it renders disabled), so
@@ -3185,7 +3276,7 @@ private struct LabeledSlider: View {
         HStack(spacing: 6) {
             // Continuous (no `step`): a stepped Slider draws busy tick marks on
             // macOS. Values are rounded for display (fmt) and when applied
-            // (fmtScene / the mm/zoom mappings), so dropping the step only removes
+            // (SceneCatalog.format / the mm/zoom mappings), so dropping the step only removes
             // the ticks, not the effective granularity.
             Slider(value: $local, in: prop.min...prop.max,
                    onEditingChanged: { began in
@@ -3570,13 +3661,29 @@ private struct ObjectRowContent: View {
             .help(entry.displayName)
 
         // Model / state count, right of the name (the structure's "frame count").
+        // A morph (#morph) prefixes the count with a `repeat` glyph: its states
+        // are frames of a loop, not models. A morph this app run built is named by
+        // the registry; one a relaunch brought back, by the `<source>_morph`
+        // convention, as its card's sheet resolves it (spec §5.9).
         if entry.stateCount > 1 {
-            Text("\(entry.stateCount)")
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundColor(PanelTheme.headerColor)
-                .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(Capsule().fill(PanelTheme.buttonBackground))
-                .help("\(entry.stateCount) models / states")
+            let morphOf = MorphSettings.badgeSource(registry: entry.morphSource, name: entry.name,
+                                                    existing: engine.objects.map(\.name))
+            HStack(spacing: 2) {
+                if morphOf != nil {
+                    Image(systemName: "repeat").font(.system(size: 8, weight: .semibold))
+                }
+                Text("\(entry.stateCount)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+            }
+            .foregroundColor(PanelTheme.headerColor)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(Capsule().fill(PanelTheme.buttonBackground))
+            // A morph's count runs to four digits ("⟳ 1,200"); squeezed by the name
+            // column, the badge wrapped onto two lines. The name truncates instead
+            // (its tooltip carries the full name, #350).
+            .fixedSize()
+            .help(morphOf.map { "Morph of \($0) · \(entry.stateCount) frames" }
+                  ?? "\(entry.stateCount) models / states")
         }
 
         // Discoverability badge: this object has per-atom transparency overrides,
@@ -3606,6 +3713,45 @@ private struct ObjectRowContent: View {
 
 // MARK: - Expandable object card
 
+/// The State row's slider: one position per state, applied on integer changes.
+///
+/// A stepped SwiftUI Slider becomes an NSSlider with one tick mark per step on
+/// macOS, and AppKit rebuilds the tick-mark cache (O(states)) several times in
+/// every layout pass. For a 1200-frame morph that was ~1.8 s of main thread when
+/// its card expanded on completion, and ~0.5 s again on each later relayout.
+/// Past `maxTickMarks` states, where ticks would be under ~2 pt apart anyway,
+/// the slider is continuous and the binding rounds, so it still lands on whole
+/// states. iOS draws no tick marks either way.
+struct StateSlider: View {
+    let current: Int
+    let total: Int
+    let onChange: (Int) -> Void
+    let onEditingChanged: (Bool) -> Void
+
+    static let maxTickMarks = 100
+
+    /// The Slider's step: 1 (a tick mark per state) up to `maxTickMarks` states,
+    /// none beyond.
+    static func step(forStates total: Int) -> Double? {
+        total <= maxTickMarks ? 1 : nil
+    }
+
+    var body: some View {
+        let value = Binding<Double>(
+            get: { Double(current) },
+            set: { v in
+                let n = min(max(Int(v.rounded()), 1), max(total, 1))
+                if n != current { onChange(n) }   // apply only on integer change
+            })
+        let range = 1...Double(max(total, 2))
+        if let step = Self.step(forStates: total) {
+            Slider(value: value, in: range, step: step, onEditingChanged: onEditingChanged)
+        } else {
+            Slider(value: value, in: range, onEditingChanged: onEditingChanged)
+        }
+    }
+}
+
 private struct ObjectCard: View {
     let entry: ObjectEntry
     let isAlt: Bool
@@ -3621,6 +3767,8 @@ private struct ObjectCard: View {
     // Live state-slider value while dragging (nil = follow the object poll). Keeps
     // the thumb from snapping back to the last-polled state mid-drag.
     @State private var scrubState: Int? = nil
+    // The State row's "Morph…" sheet (#morph).
+    @State private var showMorphSheet = false
 
     private var expanded: Bool { engine.expandedDetail == entry.name }
     private var reps: [RepState] { engine.objectDetails[entry.name] ?? [] }
@@ -3663,9 +3811,19 @@ private struct ObjectCard: View {
                           : (expanded ? "chevron.down" : "chevron.right"))
                         .font(.system(size: entry.isGroup ? 10 : 9))
                         .foregroundColor(PanelTheme.headerColor)
-                        .frame(width: 13)
+                        // Fill the row height, then pad sideways so the label
+                        // (= the plain button's hit area) is wider than the
+                        // column; the negative padding below hands the extra
+                        // width back to layout. A `contentShape` inset past the
+                        // bounds was NOT hit-testable on macOS 15, so the hit
+                        // area has to be real frame (#751).
+                        .frame(width: kDisclosureW)
+                        .frame(maxHeight: .infinity)
+                        .padding(.horizontal, kDisclosureHitSlop)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .padding(.horizontal, -kDisclosureHitSlop)
                 .accessibilityLabel(entry.isGroup
                     ? "\(isOpen ? "Collapse" : "Expand") group \(entry.name)"
                     : "\(expanded ? "Collapse" : "Expand") \(entry.name)")
@@ -3756,6 +3914,9 @@ private struct ObjectCard: View {
                 .background(PanelTheme.rowAltBackground.opacity(0.6))
             }
         }
+        // On the card, not inside `if expanded`, so a re-render of the detail
+        // block cannot take the sheet down with it.
+        .sheet(isPresented: $showMorphSheet) { morphSheet() }
     }
 
     private func toggleExpand() {
@@ -3785,13 +3946,9 @@ private struct ObjectCard: View {
                     Image(systemName: "minus.circle").font(.system(size: 14))
                 }
                 .buttonStyle(.plain).foregroundColor(TimelineTheme.accent)
-                Slider(value: Binding(get: { Double(cur) },
-                                      set: { v in
-                                          let n = min(max(Int(v.rounded()), 1), total)
-                                          if n != cur { scrubState = n; setState(n) }  // apply only on integer change
-                                      }),
-                       in: 1...Double(max(total, 2)), step: 1,
-                       onEditingChanged: { editing in if !editing { scrubState = nil } })
+                StateSlider(current: cur, total: total,
+                            onChange: { n in scrubState = n; setState(n) },
+                            onEditingChanged: { editing in if !editing { scrubState = nil } })
                     .tint(TimelineTheme.accent)
                 Button { scrubState = nil; setState(min(cur + 1, total)) } label: {
                     Image(systemName: "plus.circle").font(.system(size: 14))
@@ -3800,7 +3957,11 @@ private struct ObjectCard: View {
                 Text("\(cur)/\(total)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(PanelTheme.textColor)
-                    .frame(width: 42, alignment: .trailing)
+                    // Grows past 42 pt for four-digit counts (a morph's "656/1,200"
+                    // wrapped in the fixed width); the slider gives up the room.
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: 42, alignment: .trailing)
             }
             // Compound name for this state, when present (e.g. a multi-record
             // SDF's per-record title), so docking-pose / library sets can be
@@ -3881,8 +4042,100 @@ private struct ObjectCard: View {
                 stateActionButton("Fit") { engine.runCommand("intra_fit \(entry.name)", naming: entry.name) }
                 stateActionButton("Split") { engine.runCommand("split_states \(entry.name)", naming: entry.name) }
                 stateActionButton("Sync") { engine.runCommand("unset state, \(entry.name)", naming: entry.name) }
+                // Hidden while a morph of this object is being built: Python refuses a
+                // second job on the same target, so the UI must not offer one. Only a
+                // molecule morphs: an alignment (or another type whose name selects
+                // atoms) can report states too, and Python refuses it.
+                if !entry.isPending && !morphBuilding
+                    && engine.morphBytesPerFrame[entry.name] != nil {
+                    stateActionButton("Morph…") { showMorphSheet = true }
+                        .help("Build a smooth, looping version of this object's models")
+                        .accessibilityIdentifier("stateRow.morph.\(entry.name)")
+                }
             }
         }
+    }
+
+    // MARK: Morph (#morph)
+
+    /// What this card morphs FROM: itself for a plain ensemble; for a morph, the
+    /// source the panel payload names or, after a session reload, the one the
+    /// `<source>_morph` convention points at. Only a source that is still loaded
+    /// counts, so a morph whose source was deleted is treated as an ensemble.
+    private var morphSourceName: String {
+        let names = engine.objects.map(\.name)
+        if let s = entry.morphSource, names.contains(s) { return s }
+        return MorphSettings.conventionalSource(of: entry.name, existing: names) ?? entry.name
+    }
+
+    /// The object this card's Morph… writes, and whether it is named to Python
+    /// (MorphSettings.morphTarget). A morph of this source still being built
+    /// counts as its morph from the first poll, while it has one state: the
+    /// capsule's watch then finds that job and stays hidden, and the sheet names
+    /// `<source>_morph`, not `<source>_morph2` (a morph's own card is the card).
+    private func morphTarget(source: String) -> (name: String, explicit: Bool) {
+        let loaded = engine.objects.filter { !$0.isSelection }
+        return MorphSettings.morphTarget(
+            card: entry.name, source: source,
+            objects: Dictionary(loaded.map { ($0.name, $0.stateCount) },
+                                uniquingKeysWith: { a, _ in a }),
+            groups: Set(loaded.filter { $0.isGroup }.map { $0.name }),
+            molecules: Set(engine.morphBytesPerFrame.keys),
+            morphSources: engine.morphSources,
+            building: Set(engine.morphJobs.filter { !$0.isError }.map { $0.id }))
+    }
+
+    /// A morph job writing the object this card's Morph… would write is running.
+    private var morphBuilding: Bool {
+        let target = morphTarget(source: morphSourceName).name
+        return engine.morphJobs.contains { $0.id == target && !$0.isError }
+    }
+
+    private func morphSheet() -> some View {
+        let source = morphSourceName
+        let isMorph = source != entry.name
+        let resolved = morphTarget(source: source)
+        let target = resolved.name
+        let models = isMorph
+            ? (engine.objects.first { $0.name == source }?.stateCount ?? entry.stateCount)
+            : entry.stateCount
+        // Only the expanded card's reps are polled, so this is known for a plain
+        // ensemble (the card IS the source) and absent for a morph's source.
+        let surfaceOrMesh = (engine.objectDetails[source] ?? [])
+            .contains { $0.visible && ($0.rep == "surface" || $0.rep == "mesh") }
+        return MorphSheet(
+            source: source, target: target, models: models,
+            // The atoms one morph frame holds (Python's, from every poll);
+            // the card's own count only without it, which for a discrete
+            // object is every state's atoms. buildAtoms picks; pass the maps.
+            atoms: MorphSheet.buildAtoms(source: source, card: entry.name,
+                                         atomsPerFrame: engine.morphAtomsPerFrame,
+                                         objectMeta: engine.objectMeta),
+            // morph_estimate's figure is the SOURCE's (its reps), also from a
+            // morph's own card; published for every multi-state molecule.
+            bytesPerFrame: engine.morphBytesPerFrame[source],
+            fps: engine.playback.movieFPS,
+            existingSettings: engine.morphSpecs[entry.name],
+            isMorphObject: isMorph,
+            targetExists: engine.objects.contains { !$0.isSelection && $0.name == target },
+            sourceShowsSurfaceOrMesh: surfaceOrMesh,
+            onMorph: { settings in
+                showMorphSheet = false
+                // Named for a re-morph (same name, so clips and scenes naming the
+                // morph keep working) and for a morph a session reload brought
+                // back; otherwise Python's registry picks, as `target` mirrors.
+                engine.morph(source: source, settings: settings, autoPlay: true,
+                             name: resolved.explicit ? target : nil, target: target)
+            },
+            onDelete: isMorph ? {
+                showMorphSheet = false
+                // A morph auto-plays; its per-object timer would keep sending
+                // `set state` to the deleted name 30 times a second.
+                engine.stopObjectStates(entry.name)
+                engine.runCommand("delete \(entry.name); enable \(source)",
+                                  naming: entry.name, source)
+            } : nil,
+            onCancel: { showMorphSheet = false })
     }
 
     private func setState(_ n: Int) {
@@ -4531,10 +4784,14 @@ struct SceneCard: View {
             }
             .buttonStyle(.plain)
             if isOpen {
-                ForEach(SceneCatalog.params.filter { $0.group == group }) { p in
-                    SceneParamRow(param: p, engine: engine)
+                if group == "Lighting" {
+                    LightingGroupRows(engine: engine, lights: engine.lightsController)
+                } else {
+                    ForEach(SceneCatalog.params.filter { $0.group == group }) { p in
+                        SceneParamRow(param: p, engine: engine)
+                    }
+                    if group == "Effects" { resetEffectsButton }
                 }
-                if group == "Effects" { resetEffectsButton }
             }
         }
     }
@@ -4565,6 +4822,75 @@ struct SceneCard: View {
 
 }
 
+private struct LightingGroupRows: View {
+    @ObservedObject var engine: PyMOLEngine
+    @ObservedObject var lights: LightsController
+
+    private var isOpenLightsDisabled: Bool {
+        if engine.interactionMode == .lights { return true }
+        #if RAYMOL_MPNN
+        if engine.isDesignCalculating { return true }
+        #endif
+        return false
+    }
+
+    var body: some View {
+        let params = SceneCatalog.params.filter { $0.group == "Lighting" }
+        let firstDisabled = params.first {
+            SceneCatalog.rigDisabledReason($0, rigOn: lights.rigIsOn) != nil
+        }?.setting
+        VStack(spacing: 3) {
+            HStack(spacing: 6) {
+                Text(SceneCatalog.studioLightsLabel)
+                    .font(.system(size: 10))
+                    .foregroundColor(PanelTheme.textColor)
+                    .frame(width: 110, alignment: .leading)
+                ToggleSetting(value: lights.rigIsOn ? 1 : 0) { on in
+                    lights.setStudioLights(on)
+                }
+                // The switch's own label is hidden (ToggleSetting), so name it
+                // for VoiceOver; the Text beside it is a separate element.
+                .accessibilityLabel(SceneCatalog.studioLightsLabel)
+                Spacer(minLength: 0)
+                HelpButton(text: SceneCatalog.studioLightsHelp)
+            }
+            .disabled(lights.isBusy)
+
+            Button { SceneCatalog.openLightsTool(engine) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "lightbulb.2")
+                    Text(SceneCatalog.openLightsToolLabel)
+                    Spacer()
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(PanelTheme.selectionTextColor)
+                .padding(.leading, 10).padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isOpenLightsDisabled)
+
+            ForEach(params) { p in
+                if p.setting == firstDisabled {
+                    Text(SceneCatalog.rigOverrideReason)
+                        .font(.system(size: 9.5))
+                        .foregroundColor(PanelTheme.disabledColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                SceneParamRow(param: p, engine: engine,
+                              disabledReason: SceneCatalog.rigDisabledReason(p, rigOn: lights.rigIsOn))
+            }
+        }
+        .onAppear {
+            if engine.interactionMode != .lights { lights.refresh() }
+        }
+        .onReceive(engine.panelPolled) {
+            if engine.interactionMode != .lights { lights.refresh() }
+        }
+    }
+}
+
 // MARK: - Shared scene-setting row + Camera dock
 
 // One scene-setting row (label + control + help), shared by the inspector's
@@ -4581,18 +4907,21 @@ struct SceneParamRow: View {
     // Spacer, so the slider fills the row instead of splitting the space with a
     // Spacer (the dock card bounds the overall width). Inspector uses the default.
     var compact: Bool = false
+    var disabledReason: String? = nil
 
     var body: some View {
         if let dep = param.dependsOn, (engine.sceneState.values[dep] ?? 0) <= 0.5 {
             EmptyView()
         } else {
             let rtUnavailable = param.setting == "metal_raytrace" && !engine.rayTracingSupported
+            let isDisabled = rtUnavailable || disabledReason != nil
             sceneRow(rtUnavailable ? "\(param.label) (unavailable)" : param.label, help: param.help) {
                 sceneControl(param)
             }
             .padding(.leading, param.dependsOn != nil ? 12 : 0)
-            .disabled(rtUnavailable)
-            .opacity(rtUnavailable ? 0.45 : 1)
+            .disabled(isDisabled)
+            .opacity(isDisabled ? 0.45 : 1)
+            .help(disabledReason ?? "")
         }
     }
 
@@ -4682,24 +5011,22 @@ struct SceneParamRow: View {
                     LabeledSlider(prop: RepProperty(setting: p.setting, label: p.label, kind: .slider,
                                                     min: p.min, max: p.max, step: p.step, decimals: p.decimals),
                                   value: v,
-                                  onLive: { engine.runCommand("set \(p.setting), \(fmtScene($0, p))") },
-                                  onCommit: { engine.runCommand("set \(p.setting), \(fmtScene($0, p))") })
+                                  onLive: { engine.runCommand(SceneCatalog.setCommand(p, $0)) },
+                                  onCommit: { engine.runCommand(SceneCatalog.setCommand(p, $0)) })
                         .disabled(dofAuto)
                         .opacity(dofAuto ? 0.4 : 1.0)
                 }
             case .color:
                 EmptyView()  // scene colors use p.isColor above, not the .color kind
             case .menu:
-                // Scene-level named choices. Only the material-valued ones are
+                // Scene-level named choices. Only the material-valued ones
+                // (`SceneCatalog.materialSettings`, e.g. `material_default`) are
                 // served from the material table -- SceneParam has no
                 // optionSource field, so mapping engine.materialNames
                 // unconditionally would hand the material list to the first
                 // non-material scene menu anyone adds, silently, while it wrote
                 // to an unrelated setting. Anything else falls back to the
-                // param's own options. #498 added both of them, and they are
-                // the case in point: `material_default` IS a material id and
-                // `material_env` is an enum over environments that happens to
-                // sit next to it, so exactly one of the two is in the set.
+                // param's own options.
                 MenuSetting(options: SceneCatalog.materialSettings.contains(p.setting)
                                 ? engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
                                 : p.options.map { (label: $0.label, value: $0.value) },
@@ -4707,10 +5034,6 @@ struct SceneParamRow: View {
                             onSelect: { engine.runCommand("set \(p.setting), \(Int($0))") })
             }
         }
-    }
-
-    private func fmtScene(_ v: Double, _ p: SceneParam) -> String {
-        p.decimals == 0 ? String(Int(v.rounded())) : String(format: "%.4f", v)
     }
 
     // Lens control: map PyMOL's vertical field_of_view (degrees) to a 35mm-
@@ -5694,6 +6017,30 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     }
 }
 
+// MARK: - Morph payload wire types
+
+/// The `spec` sub-object inside a `morph` payload record.
+///
+/// Field names are snake_case to match the JSON keys published by
+/// `appkit_inspector.poll_panel` directly, so the default `JSONDecoder`
+/// (no `keyDecodingStrategy`) picks them up without a `CodingKeys` enum.
+struct MorphSpecWire: Decodable, Equatable {
+    let frames_per_model: Int
+    let loop: Int               // 0 or 1 — Python booleans arrive as ints
+    let method: String
+    let refinement: Int
+    let rate: String
+}
+
+/// One entry in the `morph` payload dict: a completed morph that still exists.
+struct MorphInfoWire: Decodable, Equatable {
+    let source: String
+    let spec: MorphSpecWire
+    /// The build's number (`morph_jobs` `MorphJob.build`): a new one is a morph
+    /// built since the last poll. Optional, like every field added to the payload.
+    let build: Int?
+}
+
 // MARK: - Object panel JSON payload
 
 /// Decoded shape of the tempfile written by `appkit_inspector.poll_panel`.
@@ -5749,6 +6096,38 @@ struct PanelPayload: Decodable {
     ///
     /// Optional, like every field above, and for the same single-`guard let` reason.
     let design_jobs: [String: PredictionJobState]?
+    /// Running and recently-settled MORPH jobs, keyed by morph-object name.
+    ///
+    /// Same record type as `pending_jobs`/`design_jobs` — morph_jobs.pending_info
+    /// publishes the same keys, so one decoder serves all three — but a separate
+    /// key, because the cancel/dismiss commands differ.
+    ///
+    /// A successful job leaves NO record; cancelled/error records stay until dismissed.
+    /// Optional for the same single-`guard let` reason as every field above.
+    let morph_jobs: [String: PredictionJobState]?
+    /// Completed morphs that still exist as PyMOL objects, keyed by morph name.
+    ///
+    /// Only morphs that SUCCEEDED appear here (the Python side writes the record
+    /// on delivery and removes it when the object is deleted). In-flight and
+    /// error/cancelled jobs appear ONLY in `morph_jobs`, not here.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph: [String: MorphInfoWire]?
+    /// Bytes one morph frame of each multi-state molecule would hold
+    /// (`morph_jobs.bytes_per_frame`: its coordinates plus the reps it shows,
+    /// overhead included), keyed by object name. The Morph sheet and the
+    /// Play-models sheet multiply it by their frames, so their estimate is
+    /// `morph_object`'s own. Not listed: other objects, morphs being built.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph_bytes_per_frame: [String: Int]?
+    /// Atoms one morph frame of each of those molecules would hold
+    /// (`morph_estimate`'s `atoms`: state 1, alt '' and A), from the same pass,
+    /// keyed by object name. The Morph sheet's build-time hint: the object's own
+    /// atom count is every state's atoms for a discrete object.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph_atoms_per_frame: [String: Int]?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -5824,7 +6203,8 @@ extension PyMOLEngine {
                 isGroup: groupSet.contains(name),
                 parent: parentMap[name],
                 isPending: payload.pending?[name] != nil,
-                pendingDetail: payload.pending?[name]
+                pendingDetail: payload.pending?[name],
+                morphSource: payload.morph?[name]?.source
             ))
         }
 
@@ -5846,6 +6226,31 @@ extension PyMOLEngine {
         let designs = (payload.design_jobs ?? [:])
             .map { $0.value.withID($0.key) }
             .sorted { $0.id < $1.id }
+        // Morph jobs (#morph), same record type again, same reasoning: separate job
+        // table, separate cancel/dismiss commands.
+        let morphJobList = (payload.morph_jobs ?? [:])
+            .map { $0.value.withID($0.key) }
+            .sorted { $0.id < $1.id }
+        // "Running" = not terminal. Used by the completion detector below.
+        let nowRunningMorphs = Set(
+            morphJobList.filter { !$0.isError }.map { $0.id }
+        )
+        // Completed morphs: morph name → source name (for morphSources).
+        let morphPayload = payload.morph ?? [:]
+        let newMorphSources = Dictionary(uniqueKeysWithValues: morphPayload.map { ($0.key, $0.value.source) })
+        let newMorphBuilds = morphPayload.compactMapValues { $0.build }
+        // Convert wire specs to MorphSettings, leaving movieSmooth at its default.
+        var newMorphSpecs: [String: MorphSettings] = [:]
+        for (name, info) in morphPayload {
+            var s = MorphSettings()
+            s.framesPerModel = info.spec.frames_per_model
+            s.loop = info.spec.loop != 0
+            s.method = info.spec.method
+            s.refinement = info.spec.refinement
+            s.rate = info.spec.rate
+            newMorphSpecs[name] = s
+        }
+
         // Sorted by name so the order is stable: the payload is a JSON object, and
         // Foundation's dictionary decode does not preserve the store's load order.
         let alignments = (payload.alignments ?? [:]).sorted { $0.key < $1.key }.map {
@@ -5870,8 +6275,22 @@ extension PyMOLEngine {
             // re-assigning an equal array still fires @Published and re-renders
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
+            for name in Self.timersToStop(playing: self.playingObjects,
+                                          objects: Set(payload.objects)) {
+                self.stopObjectStates(name)
+            }
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
             if self.designJobs != designs { self.designJobs = designs }
+
+            let bytesPerFrame = payload.morph_bytes_per_frame ?? [:]
+            if self.morphBytesPerFrame != bytesPerFrame { self.morphBytesPerFrame = bytesPerFrame }
+            let atomsPerFrame = payload.morph_atoms_per_frame ?? [:]
+            if self.morphAtomsPerFrame != atomsPerFrame { self.morphAtomsPerFrame = atomsPerFrame }
+            self.applyMorphPoll(jobs: morphJobList, running: nowRunningMorphs,
+                                sources: newMorphSources, specs: newMorphSpecs,
+                                builds: newMorphBuilds)
+            self.applyClipObjectPoll(loaded: Set(payload.objects))
+
             if self.alignments != alignments { self.alignments = alignments }
             // Same guard, and it carries the weight here: with no search running this
             // is empty every tick and must not repaint the panel twice a second.

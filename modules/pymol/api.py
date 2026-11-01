@@ -231,6 +231,7 @@ from . import exporting
 from .exporting import \
       copy_image,         \
       cache,              \
+      fasta,              \
       get_str,            \
       get_bytes,          \
       get_pdbstr,         \
@@ -384,6 +385,12 @@ from .looks import apply_look
 #--------------------------------------------------------------------
 from .morphing import \
     morph
+
+#--------------------------------------------------------------------
+from .morph_jobs import \
+    morph_object,        \
+    morph_cancel,        \
+    morph_dismiss
 
 #--------------------------------------------------------------------
 from . import moving

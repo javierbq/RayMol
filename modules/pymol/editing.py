@@ -478,6 +478,15 @@ PYMOL API
         except Exception as _mt_e:
             print(" metrics: could not follow %s -> %s (%s)"
                   % (old_name, new_name, _mt_e))
+        # An Objects-panel player keeps ticking at the old name until the
+        # panel poll stops it, so the pin it left on the renamed object goes
+        # here (morph close-out B). Same rule: never fatal.
+        try:
+            from pymol import appkit_movie as _am
+            _am.object_renamed(str(old_name), str(new_name), _self)
+        except Exception as _am_e:
+            print(" players: could not follow %s -> %s (%s)"
+                  % (old_name, new_name, _am_e))
         return r
 
 

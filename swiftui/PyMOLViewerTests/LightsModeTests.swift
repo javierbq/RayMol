@@ -57,6 +57,69 @@ final class LightsActionInvocationTests: XCTestCase {
             XCTAssertNil(LightsAction.preset(name).invocation, "preset \(name)")
             XCTAssertNil(LightsAction.restoreLight(name: name, json: "null").invocation,
                          "restoreLight \(name)")
+            XCTAssertNil(LightsAction.aimAtCentre(name).invocation, "aimAtCentre \(name)")
+        }
+    }
+
+    /// #699's double-click or double-tap on the aim dot. lighting_gizmo.py
+    /// TestAimCentreCommand runs this string through the core.
+    func testAimAtCentreStrings() {
+        XCTAssertEqual(LightsAction.aimAtCentre("key").invocation, .command("lights key, aim=centre"))
+        XCTAssertEqual(LightsAction.aimAtCentre("Light4").invocation, .command("lights Light4, aim=centre"))
+    }
+
+    /// #797's Rename. lighting_mode.py TestBarCommands runs this string
+    /// through the core.
+    func testRenameStrings() {
+        XCTAssertEqual(LightsAction.rename(old: "fill", new: "rim_light").invocation,
+                       .command("lights fill, name=rim_light"))
+        XCTAssertEqual(LightsAction.rename(old: "Light4", new: "KEY2").invocation,
+                       .command("lights Light4, name=KEY2"))
+        for (old, new) in [("", "a"), ("a", ""), ("a b", "c"), ("a", "9"), ("a", "b,c"),
+                           ("a", "x=1"), ("a", String(repeating: "a", count: 33))] {
+            XCTAssertNil(LightsAction.rename(old: old, new: new).invocation, "\(old) -> \(new)")
+        }
+    }
+
+    private func check(_ text: String, current: String = "key",
+                       names: [String] = ["key", "fill", "rim"],
+                       presets: [String] = ["three_point", "neon"]) -> LightsAction.NameCheck {
+        LightsAction.nameCheck(text, renaming: current, among: names, presets: presets)
+    }
+
+    /// #797: the core's rules, checked before anything is sent.
+    func testNameCheck() {
+        XCTAssertEqual(check("main"), .ok)
+        XCTAssertEqual(check("  main\n"), .ok, "trimmed, as the command trims it")
+        XCTAssertEqual(check("_x9"), .ok)
+        XCTAssertEqual(check(String(repeating: "a", count: 32)), .ok)
+        XCTAssertEqual(check("key"), .unchanged)
+        XCTAssertEqual(check("KEY"), .ok, "a light may change the case of its own name")
+        XCTAssertEqual(check("", current: "key"), .refused("Enter a name"))
+        XCTAssertEqual(check("   "), .refused("Enter a name"))
+        XCTAssertEqual(check(String(repeating: "a", count: 33)), .refused("At most 32 characters"))
+        XCTAssertEqual(check("9lives"), .refused("A name can't start with a digit"))
+        XCTAssertEqual(check("a b"), .refused("Use letters, digits and _ only"))
+        XCTAssertEqual(check("a-b"), .refused("Use letters, digits and _ only"))
+        XCTAssertEqual(check(String(repeating: "é", count: 17)), .refused("Use letters, digits and _ only"),
+                       "34 bytes, 17 characters: the character set is what is wrong")
+        XCTAssertEqual(check("naïve"), .refused("Use letters, digits and _ only"))
+        XCTAssertEqual(check("Fill"), .refused("A light named \"fill\" already exists"))
+        XCTAssertEqual(check("rim", current: "fill"), .refused("A light named \"rim\" already exists"))
+        XCTAssertEqual(check("Neon"), .refused("\"Neon\" is a preset name"))
+        XCTAssertEqual(check("three_point"), .refused("\"three_point\" is a preset name"))
+        for word in LightsAction.reservedNames {
+            XCTAssertEqual(check(word.uppercased()), .refused("\"\(word.uppercased())\" is a command word"))
+        }
+    }
+
+    /// Whatever the check accepts, the action sends; nothing refused is sent.
+    func testNameCheckAgreesWithTheAction() {
+        for text in ["main", "a", "A_b", "x9", "9x", "", "a b", "fill", "off", "naïve",
+                     String(repeating: "a", count: 33)] {
+            if check(text) == .ok {
+                XCTAssertNotNil(LightsAction.rename(old: "key", new: text).invocation, text)
+            }
         }
     }
 
@@ -382,6 +445,118 @@ final class LightsModeEngineTests: XCTestCase {
         engine.noteCommandForLightsMode("reinitialize")
         XCTAssertEqual(engine.interactionMode, .move, "only Lights mode is ended by the hook")
     }
+
+    func testDocumentGenerationChangeEndsLightsMode() {
+        var generation: UInt32 = 10
+        let originalReader = engine.documentGenerationReader
+        defer { engine.documentGenerationReader = originalReader }
+        engine.documentGenerationReader = { generation }
+
+        engine.setInteractionMode(.lights)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(controller.isActive)
+
+        // Generation unchanged -> the mode stays .lights.
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(controller.isActive)
+
+        // Generation changes while in Lights mode -> ends the mode.
+        generation = 11
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertNil(controller.entryJSON, "the old document's snapshot must go")
+
+        // Outside Lights mode (e.g. .move), a changed generation does nothing.
+        engine.setInteractionMode(.move)
+        generation = 12
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .move, "only Lights mode is ended by the generation hook")
+
+        // Re-entering after an ended mode takes a fresh baseline, so a stale counter
+        // does not immediately end the new session.
+        engine.setInteractionMode(.lights)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(controller.isActive)
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .lights, "stale counter does not end new session")
+
+        generation = 13
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+    }
+
+    func testRevertActionRejectsStaleDocumentGeneration() {
+        var generation: UInt32 = 20
+        let originalReader = engine.documentGenerationReader
+        defer { engine.documentGenerationReader = originalReader }
+        engine.documentGenerationReader = { generation }
+
+        engine.setInteractionMode(.lights)
+        generation = 21
+        engine.performLightsAction(.restore("{}"))
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+
+        engine.setInteractionMode(.lights)
+        generation = 22
+        engine.performLightsAction(.restoreLight(name: "key", json: "{}"))
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+    }
+
+    func testOpenLightsToolEntersLightsMode() throws {
+        try LightsLive.requireEngine()
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+        SceneCatalog.openLightsTool(engine)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(controller.isActive)
+    }
+
+    func testStudioLightsSwitchRoundTripKeepsTheClassicValues() async throws {
+        try LightsLive.requireEngine()
+        LightsLive.addPeptide()
+        engine.runPython(
+            "from pymol import cmd as _lmt_cmd\n"
+            + "_lmt_classic_saved = {_n: _lmt_cmd.get_setting_float(_n) "
+            + "for _n in ('ambient', 'direct', 'reflect', 'specular')}\n")
+        defer {
+            engine.runPython(
+                "from pymol import cmd as _lmt_cmd\n"
+                + "for _n, _v in globals().pop('_lmt_classic_saved', {}).items():\n"
+                + "    _lmt_cmd.set(_n, _v)\n")
+            engine.refreshExpandedDetail()
+            engine.parseObjectDetailFeedback("OBJDETAIL:ready")
+        }
+
+        engine.runCommand("set ambient, 0.3")
+        engine.runCommand("set direct, 0.4")
+        engine.runCommand("set reflect, 0.2")
+        engine.runCommand("set specular, 0.6")
+
+        let ambientParam = try XCTUnwrap(SceneCatalog.param(for: "ambient"))
+        controller.setStudioLights(true)
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertNotNil(engine.lightRigJSON())
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertEqual(SceneCatalog.rigDisabledReason(ambientParam, rigOn: controller.rigIsOn),
+                       SceneCatalog.rigOverrideReason)
+
+        controller.setStudioLights(false)
+        XCTAssertFalse(controller.rigIsOn)
+        XCTAssertNil(SceneCatalog.rigDisabledReason(ambientParam, rigOn: controller.rigIsOn))
+
+        engine.refreshExpandedDetail()
+        engine.parseObjectDetailFeedback("OBJDETAIL:ready")
+        await Task.yield()
+        XCTAssertEqual(engine.sceneState.values["ambient"] ?? -1, 0.3, accuracy: 1e-4)
+        XCTAssertEqual(engine.sceneState.values["direct"] ?? -1, 0.4, accuracy: 1e-4)
+        XCTAssertEqual(engine.sceneState.values["reflect"] ?? -1, 0.2, accuracy: 1e-4)
+        XCTAssertEqual(engine.sceneState.values["specular"] ?? -1, 0.6, accuracy: 1e-4)
+    }
 }
 
 // MARK: - Revert against the live engine
@@ -621,5 +796,276 @@ final class LightsRevertBridgeTests: XCTestCase {
         let pairs = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String]])
         XCTAssertEqual(controller.presets.map(\.name), pairs.map { $0[0] })
         XCTAssertEqual(controller.presets.map(\.description), pairs.map { $0[1] })
+    }
+}
+
+// MARK: - Timeline Scene Rename Tests (#655)
+
+final class SceneRenameTimelineTests: XCTestCase {
+
+    func testEmptyListStaysEmpty() {
+        let result = PyMOLEngine.renamingScene(in: [], from: "A", to: "B")
+        XCTAssertTrue(result.isEmpty)
+    }
+
+    func testRenamesOnlyMatchingSceneItemsAndLeavesOthersAlone() {
+        let idA1 = UUID()
+        let transA1 = PyMOLEngine.Transition(seconds: 3.5, linear: true)
+        let itemA1 = PyMOLEngine.TimelineItem(
+            id: idA1,
+            kind: .scene(name: "A"),
+            transition: transA1,
+            pinnedState: 2,
+            atFrame: 10
+        )
+
+        let idCam = UUID()
+        let transCam = PyMOLEngine.Transition(seconds: 1.0, linear: false)
+        let itemCam = PyMOLEngine.TimelineItem(id: idCam, kind: .camera, transition: transCam)
+
+        let idB = UUID()
+        let itemB = PyMOLEngine.TimelineItem(id: idB, kind: .scene(name: "B"))
+
+        let idStates = UUID()
+        let spec = PyMOLEngine.StatesSpec(objects: ["obj1"], mode: .sweep, firstModel: 1, lastModel: 5, durationSeconds: 2.0)
+        let itemStates = PyMOLEngine.TimelineItem(id: idStates, kind: .states(spec))
+
+        let idA2 = UUID()
+        let itemA2 = PyMOLEngine.TimelineItem(id: idA2, kind: .scene(name: "A"))
+
+        let items = [itemA1, itemCam, itemB, itemStates, itemA2]
+        let result = PyMOLEngine.renamingScene(in: items, from: "A", to: "C")
+
+        XCTAssertEqual(result.count, 5)
+
+        // itemA1 was renamed to C, keeping id, transition, pinnedState, atFrame
+        XCTAssertEqual(result[0].id, idA1)
+        XCTAssertEqual(result[0].kind, .scene(name: "C"))
+        XCTAssertEqual(result[0].transition, transA1)
+        XCTAssertEqual(result[0].pinnedState, 2)
+        XCTAssertEqual(result[0].atFrame, 10)
+
+        // itemCam is untouched
+        XCTAssertEqual(result[1], itemCam)
+
+        // itemB is untouched
+        XCTAssertEqual(result[2], itemB)
+
+        // itemStates is untouched
+        XCTAssertEqual(result[3], itemStates)
+
+        // itemA2 was renamed to C, keeping id and other fields
+        XCTAssertEqual(result[4].id, idA2)
+        XCTAssertEqual(result[4].kind, .scene(name: "C"))
+        XCTAssertEqual(result[4].transition, itemA2.transition)
+        XCTAssertNil(result[4].pinnedState)
+        XCTAssertNil(result[4].atFrame)
+    }
+
+    func testUnmatchedSceneNameLeavesItemsUnchanged() {
+        let itemA = PyMOLEngine.TimelineItem(kind: .scene(name: "A"))
+        let itemB = PyMOLEngine.TimelineItem(kind: .scene(name: "B"))
+        let items = [itemA, itemB]
+        let result = PyMOLEngine.renamingScene(in: items, from: "Nonexistent", to: "C")
+        XCTAssertEqual(result, items)
+    }
+
+    func testSceneRenameEventParsesTheFeedbackLine() {
+        // raymol_scenes._emit_rename: SCENERENAME:<b64 old>:<b64 new>
+        let old = Data("A: one".utf8).base64EncodedString()
+        let new = Data("Café".utf8).base64EncodedString()
+        let parsed = PyMOLEngine.sceneRenameEvent("SCENERENAME:\(old):\(new)")
+        XCTAssertEqual(parsed?.0, "A: one")
+        XCTAssertEqual(parsed?.1, "Café")
+        XCTAssertNil(PyMOLEngine.sceneRenameEvent("MOVIEEXPORT:{}"))
+        XCTAssertNil(PyMOLEngine.sceneRenameEvent("SCENERENAME:not base64!:x"))
+        XCTAssertNil(PyMOLEngine.sceneRenameEvent("SCENERENAME:\(old)"))
+    }
+}
+
+// MARK: - Timeline in the session (#901)
+
+/// The lane's JSON records (staged in appkit_movie, written to the .pse) and
+/// the `pymol_timeline` channel payload a session load writes. The Python half is
+/// testing/tests/raymol/timeline_session.py, whose ITEMS use these keys.
+final class TimelineSessionTests: XCTestCase {
+
+    private func lane() -> [PyMOLEngine.TimelineItem] {
+        [
+            .init(kind: .camera),
+            .init(kind: .scene(name: "Café: intro"),
+                  transition: .init(seconds: 3.5, linear: true), pinnedState: 2),
+            .init(kind: .camera, transition: .init(seconds: 1.5, linear: false), atFrame: 40),
+            .init(kind: .states(.init(objects: ["nmr"], mode: .loop, firstModel: 2,
+                                      lastModel: 9, durationSeconds: 6))),
+            .init(kind: .states(.init())),
+        ]
+    }
+
+    private func payload(_ records: [PyMOLEngine.TimelineRecord], untracked: Bool) throws -> Data {
+        struct Payload: Encodable { var items: [PyMOLEngine.TimelineRecord]; var untrackedMovie: Bool }
+        return try JSONEncoder().encode(Payload(items: records, untrackedMovie: untracked))
+    }
+
+    func testRecordsRoundTripEveryKind() {
+        let items = lane()
+        let back = PyMOLEngine.timelineItems(from: PyMOLEngine.timelineRecords(items))
+        XCTAssertEqual(back, items)
+    }
+
+    func testRestoreEventCarriesTheLane() throws {
+        let items = lane()
+        let parsed = PyMOLEngine.timelineRestorePayload(
+            try payload(PyMOLEngine.timelineRecords(items), untracked: false))
+        XCTAssertEqual(parsed?.items, items)
+        XCTAssertEqual(parsed?.untrackedMovie, false)
+    }
+
+    func testRestoreEventOfAnOldSessionReportsItsMovie() throws {
+        let parsed = PyMOLEngine.timelineRestorePayload(try payload([], untracked: true))
+        XCTAssertEqual(parsed?.items, [])
+        XCTAssertEqual(parsed?.untrackedMovie, true)
+    }
+
+    func testUnreadableRecordsAreDropped() throws {
+        let items = lane()
+        var records = PyMOLEngine.timelineRecords(items)
+        records[0].id = "not-a-uuid"
+        records[1].kind = "hologram"
+        let parsed = PyMOLEngine.timelineRestorePayload(try payload(records, untracked: false))
+        XCTAssertEqual(parsed?.items, Array(items.dropFirst(2)))
+    }
+
+    func testMalformedPayloadsAreRejected() {
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data()))
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data("not json".utf8)))
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data("{\"items\":7}".utf8)))
+    }
+
+    // The shape appkit_movie._emit_timeline writes (json.dump of the Python
+    // dict): a long lane, nil keys absent, `objects` null.
+    func testDecodesWhatPythonWrites() {
+        let cams = (0..<200).map { _ in
+            "{\"id\": \"\(UUID().uuidString)\", \"kind\": \"camera\", \"seconds\": 2.0, \"linear\": false}"
+        }
+        let states = "{\"id\": \"\(UUID().uuidString)\", \"kind\": \"states\", \"seconds\": 2.0, "
+            + "\"linear\": false, \"states\": {\"objects\": null, \"mode\": \"loop\", "
+            + "\"first\": 1, \"last\": 0, \"seconds\": 4.0}}"
+        let json = "{\"items\": [" + (cams + [states]).joined(separator: ", ")
+            + "], \"untrackedMovie\": false}"
+        let parsed = PyMOLEngine.timelineRestorePayload(Data(json.utf8))
+        XCTAssertEqual(parsed?.items.count, 201)
+        XCTAssertEqual(parsed?.items.last?.kind,
+                       .states(.init(objects: nil, mode: .loop, firstModel: 1, lastModel: 0,
+                                     durationSeconds: 4)))
+    }
+
+    // MARK: Morph clips (morph spec §5.7)
+    //
+    // A morph clip's Start/End are MODEL indices that each rebuild maps to the
+    // morph's states with its stride. Without the stride a reloaded clip would
+    // read them as absolute states and play the wrong frames.
+
+    private func morphClip(stride: Int?) -> PyMOLEngine.TimelineItem {
+        var spec = PyMOLEngine.StatesSpec(objects: ["2kpo_morph"], mode: .sweep,
+                                          firstModel: 3, lastModel: 8, durationSeconds: 10)
+        spec.morphStride = stride
+        return .init(kind: .states(spec), transition: .init(seconds: 1, linear: true))
+    }
+
+    /// The `states` object of each encoded record, as Python's json.loads sees it.
+    private func encodedStates(_ items: [PyMOLEngine.TimelineItem]) throws -> [[String: Any]] {
+        let data = try JSONEncoder().encode(PyMOLEngine.timelineRecords(items))
+        let records = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        return records.compactMap { $0["states"] as? [String: Any] }
+    }
+
+    private func restoredStates(_ statesJSON: String) -> PyMOLEngine.StatesSpec? {
+        let json = "{\"items\": [{\"id\": \"\(UUID().uuidString)\", \"kind\": \"states\", "
+            + "\"seconds\": 2.0, \"linear\": false, \"states\": \(statesJSON)}], "
+            + "\"untrackedMovie\": false}"
+        guard case .states(let spec)? = PyMOLEngine.timelineRestorePayload(Data(json.utf8))?
+            .items.first?.kind else { return nil }
+        return spec
+    }
+
+    func testMorphClipRoundTripsWithItsStride() throws {
+        let items = lane() + [morphClip(stride: 15)]
+        XCTAssertEqual(PyMOLEngine.timelineItems(from: PyMOLEngine.timelineRecords(items)), items)
+        let parsed = PyMOLEngine.timelineRestorePayload(
+            try payload(PyMOLEngine.timelineRecords(items), untracked: false))
+        XCTAssertEqual(parsed?.items, items)
+    }
+
+    func testMorphStrideIsWrittenUnderItsOwnKey() throws {
+        let states = try encodedStates([morphClip(stride: 15)])
+        XCTAssertEqual(states.first?["morphStride"] as? Int, 15)
+    }
+
+    // A record from a session saved before morph clips existed, or by this
+    // build for a plain clip, has no key and reads as a plain clip.
+    func testRecordWithoutStrideReadsAsAPlainClip() throws {
+        let spec = try XCTUnwrap(restoredStates(
+            "{\"objects\": [\"2kpo_morph\"], \"mode\": \"sweep\", \"first\": 3, \"last\": 8, "
+            + "\"seconds\": 10.0}"))
+        XCTAssertNil(spec.morphStride)
+        XCTAssertEqual(spec.firstModel, 3)
+        XCTAssertEqual(spec.lastModel, 8)
+    }
+
+    func testRecordWithStrideReadsAsAMorphClip() throws {
+        let spec = try XCTUnwrap(restoredStates(
+            "{\"objects\": [\"2kpo_morph\"], \"mode\": \"sweep\", \"first\": 3, \"last\": 8, "
+            + "\"seconds\": 10.0, \"morphStride\": 15}"))
+        XCTAssertEqual(spec.morphStride, 15)
+    }
+
+    // Plain clips encode exactly what they did before: nil is omitted, not null.
+    func testPlainClipsEncodeNoStrideKey() throws {
+        for states in try encodedStates(lane()) {
+            XCTAssertNil(states["morphStride"])
+        }
+        let data = try JSONEncoder().encode(PyMOLEngine.timelineRecords(lane()))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("morphStride"))
+    }
+
+    // A stride below 1 cannot map models to states: read and written as none.
+    func testNonPositiveStrideIsNone() throws {
+        for bad in ["0", "-4", "null"] {
+            let spec = try XCTUnwrap(restoredStates(
+                "{\"objects\": [\"2kpo_morph\"], \"mode\": \"sweep\", \"first\": 3, "
+                + "\"last\": 8, \"seconds\": 10.0, \"morphStride\": \(bad)}"), bad)
+            XCTAssertNil(spec.morphStride, bad)
+        }
+        for bad in [0, -4] {
+            XCTAssertNil(try encodedStates([morphClip(stride: bad)]).first?["morphStride"], "\(bad)")
+        }
+    }
+}
+
+// MARK: - Mouse legend in Lights mode (#677)
+
+final class MouseLegendPresentationTests: XCTestCase {
+    func testLightsHidesTheLegendWhateverThePreference() {
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: false, interactionMode: .lights), .hidden)
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: true, interactionMode: .lights), .hidden)
+    }
+
+    func testOtherModesFollowThePreference() {
+        let modes: [InteractionMode] = [.viewing, .move, .boxSelect]
+        for mode in modes {
+            XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: false, interactionMode: mode), .expanded, "for mode \(mode)")
+            XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: true, interactionMode: mode), .collapsed, "for mode \(mode)")
+        }
+    }
+
+    func testLeavingLightsRestoresThePreviousPresentation() {
+        // Expanded preference: hidden while in lights, expanded again when back to viewing.
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: false, interactionMode: .lights), .hidden)
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: false, interactionMode: .viewing), .expanded)
+
+        // Collapsed preference: hidden while in lights, collapsed again when back to viewing.
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: true, interactionMode: .lights), .hidden)
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: true, interactionMode: .viewing), .collapsed)
     }
 }

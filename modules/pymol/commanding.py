@@ -403,6 +403,40 @@ USAGE
                 _metric_store.clear()
             except Exception:
                 pass
+            # The core drops the scenes and the movie with everything else, but
+            # the per-scene extras (#617's rigs, the object snapshots) and the
+            # scene-movie animation authored into that movie (#657) are Python-side
+            # too. Left behind they reach the next .pse, and the next author()
+            # blanks frames of a movie that is gone (one Movie-Error per frame).
+            # No mdo here: the movie no longer exists.
+            try:
+                from pymol import raymol_scenes as _raymol_scenes
+                _raymol_scenes.clear_all(_self)
+            except Exception:
+                pass
+            try:
+                from pymol import raymol_scene_anim as _raymol_scene_anim
+                _raymol_scene_anim.reset()
+            except Exception:
+                pass
+            # The Timeline lane (#901) and its camera views describe that movie;
+            # left behind, the next save writes the discarded lane into the new
+            # .pse.
+            try:
+                from pymol import appkit_movie as _appkit_movie
+                _appkit_movie.reset()
+            except Exception:
+                pass
+            # Morph jobs build into objects the C reinitialize just deleted: one
+            # left running would land frames into, then delete, an object of the
+            # same name the next session brings. And the registry would vouch
+            # for morphs that are gone. A new session leaves no morph card
+            # behind either (dismiss).
+            try:
+                from pymol import morph_jobs as _morph_jobs
+                _morph_jobs.reset(dismiss=True, _self=_self)
+            except Exception:
+                pass
         if _self._raising(r,_self): raise pymol.CmdException
         return r
 

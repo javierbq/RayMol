@@ -6,7 +6,9 @@
 // and Delete. Under the header it says why a Shadow press did nothing (a 4th
 // shadowed light) and when the selected light's shadow cannot show because
 // the scene's Shadows switch is off (#616: studio shadows render only while
-// it is on), with a Turn On button the owner (ContentView) wires.
+// it is on), with a Turn On button the owner (ContentView) wires; and, in a
+// muted line, when the switch is on but this frame's shadow plan gave the
+// light no map because no caster is in its beam (#673, LightsFacingState).
 // It sits in the Lights side column (LightsSideColumn.swift): under the bar on
 // macOS, at the viewport's top-trailing corner on iOS (ContentView places it).
 // The iPhone sheet and the side panel (#623, LightsSheet.swift) draw its
@@ -85,7 +87,7 @@ enum LightInspectorFormat {
         case .pitch: return angle(value, plus: true)
         case .radius: return radius(value, frameSize: frameSize)
         case .warmth: return kelvin(value)
-        case .intensity, .softness: return fraction(value)
+        case .intensity, .softness, .size: return fraction(value)
         }
     }
 
@@ -95,7 +97,7 @@ enum LightInspectorFormat {
         case .orbit, .pitch, .beam: return spokenAngle(value)
         case .radius: return spokenRadius(value, frameSize: frameSize)
         case .warmth: return spokenKelvin(value)
-        case .intensity, .softness: return fraction(value)
+        case .intensity, .softness, .size: return fraction(value)
         }
     }
 
@@ -167,8 +169,19 @@ struct LightsInspectorState: Equatable {
     /// The notice after a refused Shadow press (a 4th shadowed light).
     static let shadowCapNotice = "At most \(LightsController.maxShadowed) lights cast shadows. "
         + "Turn one off first."
+    /// What VoiceOver announces after a refused Shadow press (#672): the notice.
+    static let shadowCapAnnouncement = shadowCapNotice
+    /// Posts a VoiceOver announcement (macOS and iOS). Tests replace it to
+    /// record what would be spoken.
+    @MainActor static var announce: (String) -> Void = { text in
+        AccessibilityNotification.Announcement(text).post()
+    }
     /// The hint while the selected light casts a shadow the scene does not show.
     static let shadowsOffHint = "Shadows are off for this scene"
+    /// The muted line under the header while the selected light's shadow has no map (#673).
+    static let noCastersHint = "No casters in this light's beam"
+    static let sizeHelp = "Size: how big the light is. Bigger lights cast softer shadows in ray-traced renders on a Mac"
+    static let sizeMobileNote = "Size softens shadows only in ray-traced renders on a Mac. On iPhone and iPad shadows stay sharp."
     static let turnOnTitle = "Turn On"
     static let turnOnLabel = "Turn on scene shadows"
     static let turnOnHelp = "Turn on the scene's Shadows switch, so lights with Shadow cast them"
@@ -176,6 +189,8 @@ struct LightsInspectorState: Equatable {
     static let rigOffText = "Lights off"
     static let revertTitle = "Revert this light"
     static let deleteTitle = "Delete"
+    static let renameTitle = "Rename\u{2026}"
+    static let renameHelp = "Rename this light"
 
     /// An Orbit or Pitch stepper press, in degrees (Up/Down arrows: 1°).
     static let stepperStep = 5.0
@@ -189,6 +204,12 @@ struct LightsInspectorState: Equatable {
     /// The VoiceOver label of the collapse chevron.
     static func collapseLabel(collapsed: Bool) -> String {
         collapsed ? "Expand inspector" : "Collapse inspector"
+    }
+
+    /// The id of an Orbit or Pitch row (LightPlacementRows), the target the
+    /// inspector scrolls into view while that row's field is focused (#870).
+    static func placementRowID(_ parameter: LightParameter, light: String?) -> String {
+        "\(parameter.field).\(light ?? "")"
     }
 
     /// The slider's range for `parameter`: the core's, except warmth, whose
@@ -210,9 +231,19 @@ struct LightsInspectorState: Equatable {
         return parameter.rounded(raw)
     }
 
+    /// #673: show `noCastersHint` only when every fact is known: the light has Shadow on,
+    /// the rig is on, the scene's Shadows switch is on and this frame's plan gave the light
+    /// no map (slot -1). nil (unknown) shows nothing.
+    static func showsNoCastersHint(isShadowed: Bool, rigOn: Bool, sceneShadowsOn: Bool?,
+                                   shadowSlot: Int?) -> Bool {
+        isShadowed && rigOn && sceneShadowsOn == true && shadowSlot == -1
+    }
+
     var name: String
     var index: Int
     var slot: Int
+    /// What the header dot is drawn in: the light's own colour (#798).
+    var marker: LightMarkerColour
     var menu: [MenuItem]
     var isPinned: Bool
     var isShadowed: Bool
@@ -221,12 +252,17 @@ struct LightsInspectorState: Equatable {
     /// The selected light casts a shadow and the scene's Shadows switch is off
     /// (known to be off: nil, not yet read, shows no hint).
     var showsShadowsHint: Bool
+    /// The selected light casts a shadow but has no shadow map because no
+    /// casters sit in front of it (#673).
+    var showsNoCastersHint: Bool
     var isOn: Bool
     /// The muted header status (`Lights off`), nil while the rig is on.
     var status: String?
     var canEdit: Bool
     var canRevertLight: Bool
     var canDelete: Bool
+    /// Rename can be used (the light can be edited).
+    var canRename: Bool
     var color: SIMD3<Double>
     var swatches: [Swatch]
     var swatchIndex: Int?
@@ -243,6 +279,7 @@ struct LightsInspectorState: Equatable {
         name = light.name
         self.index = index
         slot = controller.identitySlot(for: light.name)
+        marker = LightMarkerColour(light)
         menu = lights.enumerated().map { i, l in
             MenuItem(name: l.name, index: i, slot: controller.identitySlot(for: l.name),
                      isSelected: i == index)
@@ -251,11 +288,17 @@ struct LightsInspectorState: Equatable {
         isShadowed = light.shadow
         notice = controller.shadowRefused ? Self.shadowCapNotice : nil
         showsShadowsHint = light.shadow && sceneShadowsOn == false
+        showsNoCastersHint = Self.showsNoCastersHint(
+            isShadowed: light.shadow,
+            rigOn: controller.isOn,
+            sceneShadowsOn: sceneShadowsOn,
+            shadowSlot: controller.facing.shadowSlot(of: light.name))
         isOn = controller.isOn
         status = controller.isOn ? nil : Self.rigOffText
         canEdit = controller.canEdit
         canRevertLight = controller.canRevertLight
         canDelete = controller.canRemove
+        canRename = controller.canEdit
         color = light.color
         let selectedSwatch = LightColour.swatchIndex(of: light.color)
         swatchIndex = selectedSwatch
@@ -298,9 +341,10 @@ struct LightsInspectorState: Equatable {
         return "\(name) slot=\(slot) pin=\(isPinned ? 1 : 0) shadow=\(isShadowed ? 1 : 0) on=\(isOn ? 1 : 0)"
             + " orbit=\(v(.orbit, "%.1f")) pitch=\(v(.pitch, "%.1f")) radius=\(v(.radius, "%.2f"))"
             + " intensity=\(v(.intensity, "%.2f")) warmth=\(v(.warmth, "%.0f"))"
-            + " beam=\(v(.beam, "%.1f")) softness=\(v(.softness, "%.2f"))"
+            + " beam=\(v(.beam, "%.1f")) softness=\(v(.softness, "%.2f")) size=\(v(.size, "%.2f"))"
             + " color=\(rgb) swatch=\(swatch) edit=\(canEdit ? 1 : 0) revert=\(canRevertLight ? 1 : 0)"
             + (notice == nil ? "" : " notice=shadow_cap") + (showsShadowsHint ? " hint=shadows_off" : "")
+            + (showsNoCastersHint ? " hint=no_casters" : "")
     }
 }
 
@@ -473,6 +517,116 @@ struct LightAngleDial: View {
     }
 }
 
+// MARK: - Exposure (rig level, #733)
+
+/// The scene's Exposure as the inspector's rig-level row edits it: the same
+/// setting as Effects > Exposure. The app builds it (`.scene(values:run:)`,
+/// in ObjectPanel.swift, beside the Effects entry) so this file names no
+/// setting or command; the environment holds nil where there is none.
+struct LightsExposureControl {
+    var value: Double
+    var range: ClosedRange<Double>
+    var decimals: Int
+    /// Write the value (the row calls it on release, not per drag tick).
+    var set: (Double) -> Void
+
+    static let title = "Exposure"
+    static let caption = "Scales the lit scene and air under the rig."
+    static let identifier = "lights.inspector.exposure"
+
+    func text(_ v: Double) -> String { String(format: "%.\(decimals)f", v) }
+}
+
+private struct LightsExposureKey: EnvironmentKey {
+    static let defaultValue: LightsExposureControl? = nil
+}
+
+extension EnvironmentValues {
+    var lightsExposure: LightsExposureControl? {
+        get { self[LightsExposureKey.self] }
+        set { self[LightsExposureKey.self] = newValue }
+    }
+}
+
+/// The Exposure slider's edit state, apart from the view so it is testable:
+/// nothing is written during a drag, the release writes once, a step outside
+/// a drag (VoiceOver) writes at once, and the written value stays shown until
+/// the scene poll reports a changed one.
+struct LightsExposureEdit: Equatable {
+    private(set) var pending: Double?
+    private(set) var dragging = false
+
+    func shown(_ polled: Double) -> Double { pending ?? polled }
+
+    /// The slider moved to `v`; the value to write now, if any.
+    mutating func set(_ v: Double) -> Double? {
+        pending = v
+        return dragging ? nil : v
+    }
+
+    /// A drag began or ended; the value to write (on release), if any.
+    mutating func editing(_ began: Bool) -> Double? {
+        dragging = began
+        return began ? nil : pending
+    }
+
+    /// The polled value changed (ours caught up, or an outside edit).
+    mutating func polledChanged() {
+        if !dragging { pending = nil }
+    }
+}
+
+/// The rig-level Exposure row: label, slider (committed on release; a
+/// VoiceOver step commits at once), value, and a caption. The committed value
+/// stays shown until the scene poll reports a new one (it lags ~500 ms), as
+/// the Effects slider's local state does, so the thumb does not snap back.
+struct LightExposureRow: View {
+    var control: LightsExposureControl
+    var style: LightsBarStyle
+    /// The value being dragged or just committed, until the poll catches up.
+    @State private var edit = LightsExposureEdit()
+
+    var body: some View {
+        let shown = edit.shown(control.value)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: InspectorMetrics.rowSpacing) {
+                Text(LightsExposureControl.title)
+                    .font(InspectorMetrics.font)
+                    .foregroundColor(style.text.opacity(0.8))
+                    .frame(width: InspectorMetrics.labelWidth, alignment: .leading)
+                    .accessibilityHidden(true)
+                Slider(value: Binding(get: { shown },
+                                      set: { v in
+                                          if let w = edit.set(v) { control.set(w) }
+                                      }),
+                       in: control.range,
+                       onEditingChanged: { began in
+                           if let w = edit.editing(began) { control.set(w) }
+                       })
+                    .controlSize(.small)
+                    .accessibilityLabel(LightsExposureControl.title)
+                    .accessibilityValue(control.text(shown))
+                    .accessibilityHint(LightsExposureControl.caption)
+                    .accessibilityIdentifier(LightsExposureControl.identifier)
+                Text(verbatim: control.text(shown))
+                    .font(InspectorMetrics.valueFont)
+                    .foregroundColor(style.text)
+                    .lineLimit(1)
+                    .frame(width: InspectorMetrics.valueWidth, alignment: .trailing)
+                    .accessibilityHidden(true)
+            }
+            Text(LightsExposureControl.caption)
+                .font(.system(size: 10))
+                .foregroundColor(style.text.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(true)
+        }
+        // A changed polled value (ours caught up, or an outside edit) wins;
+        // never while dragging.
+        .onChange(of: control.value) { _ in edit.polledChanged() }
+    }
+}
+
 // MARK: - Rows
 
 /// The inspector's row metrics, shared with the Atmosphere card (#726).
@@ -482,6 +636,22 @@ enum InspectorMetrics {
     static let fieldWidth: CGFloat = 60
     static let font = Font.system(size: 12)
     static let valueFont = Font.system(size: 11).monospacedDigit()
+
+    /// The HStack spacing of an inspector row.
+    static let rowSpacing: CGFloat = 6
+
+    /// The width of the Orbit and Pitch steppers' touch buttons (minus and
+    /// plus, each a `minimum` pt square) on iOS (#720); 0 when `minimum` is 0
+    /// (macOS draws the system stepper).
+    static func touchStepperWidth(minimum: CGFloat) -> CGFloat { 2 * minimum }
+
+    /// The narrowest an Orbit or Pitch row can be with touch buttons: label,
+    /// dial, field, the two buttons, and the gaps between the five children
+    /// (the spacer included).
+    static func angleRowMinimumWidth(minimum: CGFloat) -> CGFloat {
+        labelWidth + LightAngleDial.side + fieldWidth + touchStepperWidth(minimum: minimum)
+            + 4 * rowSpacing
+    }
 }
 
 /// A slider row: label, continuous slider (no ticks), value label. The
@@ -545,7 +715,7 @@ struct LightAngleFieldRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: InspectorMetrics.rowSpacing) {
             Text(parameter.label)
                 .font(InspectorMetrics.font)
                 .foregroundColor(style.text.opacity(0.8))
@@ -568,14 +738,9 @@ struct LightAngleFieldRow: View {
                 .accessibilityLabel(LightsInspectorState.fieldLabel(parameter))
                 .accessibilityIdentifier("lights.inspector.\(parameter.field).field")
             Spacer(minLength: 0)
-            Stepper(parameter.label,
-                    onIncrement: { controller.step(parameter, by: LightsInspectorState.stepperStep) },
-                    onDecrement: { controller.step(parameter, by: -LightsInspectorState.stepperStep) })
-                .labelsHidden()
-                .controlSize(.small)
-                .accessibilityLabel(parameter.label)
-                .accessibilityValue(row?.spoken ?? "")
-                .accessibilityIdentifier("lights.inspector.\(parameter.field).stepper")
+            LightAngleStepper(parameter: parameter, spoken: row?.spoken ?? "", style: style) { step in
+                controller.step(parameter, by: step)
+            }
         }
         .onAppear { editor.show(row?.value, light: lightName) }
         .onChange(of: row?.value) { editor.show(row?.value, light: lightName) }
@@ -592,9 +757,11 @@ struct LightAngleFieldRow: View {
         .onChange(of: focused) { _, now in
             if now { editor.begin(light: lightName) } else { commit() }
         }
-        // The iPhone sheet and the side panel keep the scene's size while a
-        // field has the keyboard (#623): they read this.
+        // The iPhone sheet, the side panel and the iPad float keep the scene's
+        // size while a field has the keyboard (#623, #725): they read this.
         .preference(key: LightsFieldFocusKey.self, value: focused)
+        .preference(key: LightsInspectorScrollTargetKey.self,
+                    value: focused ? LightsInspectorState.placementRowID(parameter, light: lightName) : nil)
     }
 
     private var textBinding: Binding<String> {
@@ -625,6 +792,62 @@ struct LightAngleFieldRow: View {
     }
 }
 
+/// An Orbit or Pitch stepper: two 44 pt touch buttons on iOS (#720), or the
+/// system stepper on macOS.
+struct LightAngleStepper: View {
+    let parameter: LightParameter
+    let spoken: String
+    let style: LightsBarStyle
+    let onStep: (Double) -> Void
+
+    @Environment(\.lightsTouchMinimum) private var touchMinimum
+
+    var body: some View {
+        if touchMinimum > 0 {
+            HStack(spacing: 0) {
+                button("minus", by: -LightsInspectorState.stepperStep)
+                Rectangle().fill(style.text.opacity(0.25)).frame(width: 1, height: 18)
+                button("plus", by: LightsInspectorState.stepperStep)
+            }
+            .background(Capsule().fill(style.text.opacity(0.12)).frame(height: 32))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(parameter.label)
+            .accessibilityValue(spoken)
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: onStep(LightsInspectorState.stepperStep)
+                case .decrement: onStep(-LightsInspectorState.stepperStep)
+                @unknown default: break
+                }
+            }
+            .accessibilityIdentifier("lights.inspector.\(parameter.field).stepper")
+        } else {
+            Stepper(parameter.label,
+                    onIncrement: { onStep(LightsInspectorState.stepperStep) },
+                    onDecrement: { onStep(-LightsInspectorState.stepperStep) })
+                .labelsHidden()
+                .controlSize(.small)
+                .accessibilityLabel(parameter.label)
+                .accessibilityValue(spoken)
+                .accessibilityIdentifier("lights.inspector.\(parameter.field).stepper")
+        }
+    }
+
+    private func button(_ name: String, by step: Double) -> some View {
+        Button {
+            onStep(step)
+        } label: {
+            Image(systemName: name)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(style.text)
+                .frame(width: touchMinimum, height: touchMinimum)
+                .contentShape(Rectangle())
+                .lightsTouchTarget()
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Orbit, Pitch and Radius: the rows that show where the light is. The only
 /// part of the card observing `LightsController.eye`, so a pinned light's
 /// per-frame placement re-renders these three rows and nothing else.
@@ -640,12 +863,12 @@ struct LightPlacementRows: View {
                                row: LightsInspectorState.row(.orbit, of: controller),
                                lightName: name, style: style,
                                gestureGeneration: controller.gestureGeneration)
-                .id("orbit.\(name ?? "")")
+                .id(LightsInspectorState.placementRowID(.orbit, light: name))
             LightAngleFieldRow(controller: controller, parameter: .pitch,
                                row: LightsInspectorState.row(.pitch, of: controller),
                                lightName: name, style: style,
                                gestureGeneration: controller.gestureGeneration)
-                .id("pitch.\(name ?? "")")
+                .id(LightsInspectorState.placementRowID(.pitch, light: name))
             if let radius = LightsInspectorState.row(.radius, of: controller) {
                 LightSliderRow(row: radius, style: style) { value in
                     controller.setIfChanged(.radius, value)
@@ -706,13 +929,31 @@ struct LightsChip: View {
 // MARK: - The card
 
 /// True while an Orbit or Pitch field has the keyboard focus. The iPhone
-/// sheet and the side panel (#623) forward it, so the viewport does not
-/// resize for the keyboard while a Lights field is edited.
+/// sheet, the side panel (#623) and the iPad float (#725) forward it, so the
+/// viewport does not resize for the keyboard while a Lights field is edited.
 struct LightsFieldFocusKey: PreferenceKey {
     static var defaultValue = false
     static func reduce(value: inout Bool, nextValue: () -> Bool) {
         value = value || nextValue()
     }
+}
+
+/// The focused Orbit/Pitch row's id (LightsInspectorState.placementRowID),
+/// nil while no inspector field has the keyboard (#870). The inspector
+/// card scrolls that row into view, and the iPad float gives the
+/// inspector the column's room first while it is set. First non-nil wins.
+struct LightsInspectorScrollTargetKey: PreferenceKey {
+    static var defaultValue: String? = nil
+    static func reduce(value: inout String?, nextValue: () -> String?) {
+        if value == nil { value = nextValue() }
+    }
+}
+
+/// The card's width as a plain constant: `LightsInspector` is a main-actor View,
+/// so nonisolated readers (the snapshot test's `Shot` default) cannot read its
+/// statics.
+enum LightsInspectorMetrics {
+    static let width: CGFloat = 284
 }
 
 /// What part of the inspector a view draws:
@@ -737,6 +978,9 @@ private struct LightsInspectorHeightKey: PreferenceKey {
 /// selected light (LightsInspectorState is nil otherwise).
 struct LightsInspector: View {
     @ObservedObject var controller: LightsController
+    /// The controller's `facing`, observed for the shadow slots (#673's
+    /// "No casters" line); it publishes only when a value changes.
+    @ObservedObject var facing: LightsFacingState
     var style: LightsBarStyle
     /// The scene's Shadows switch (metal_shadows) as last read; nil when
     /// unknown (no Shadows hint then).
@@ -756,16 +1000,23 @@ struct LightsInspector: View {
     /// The colour row's measured width: how many columns of 44 pt swatches
     /// it lays out on iOS (`LightsTouch.swatchColumns`).
     @State private var colourWidth: CGFloat = LightsInspector.width - 24
+    /// The Rename popover (#797) is open.
+    @State private var renaming = false
+    /// The light Rename was tapped on: frozen when the popover opens, so a
+    /// selection change while it is open never retargets it.
+    @State private var renameTarget = ""
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
+    @Environment(\.lightsExposure) private var exposure
 
-    static let width: CGFloat = 284
+    static let width: CGFloat = LightsInspectorMetrics.width
     static let estimatedHeight: CGFloat = 480
 
     init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false,
          sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {},
          presentation: LightsInspectorPresentation = .card) {
         self.controller = controller
+        _facing = ObservedObject(wrappedValue: controller.facing)
         self.style = style
         self.sceneShadowsOn = sceneShadowsOn
         self.onEnableSceneShadows = onEnableSceneShadows
@@ -777,15 +1028,23 @@ struct LightsInspector: View {
         if let state = LightsInspectorState(controller, sceneShadowsOn: sceneShadowsOn) {
             switch presentation {
             case .card:
-                card(state)
+                announcingShadowCap(card(state))
             case .header:
-                headerBlock(state)
+                announcingShadowCap(headerBlock(state))
             case .rows:
                 content(state)
                     .tint(style.accent)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("lights.inspector.rows")
             }
+        }
+    }
+
+    /// Announces shadow-cap refusals to VoiceOver (#672). Attached only to
+    /// presentations that can show the refusal notice (`.card`, `.header`).
+    private func announcingShadowCap<Content: View>(_ content: Content) -> some View {
+        content.onReceive(controller.shadowRefusalEvents) {
+            LightsInspectorState.announce(LightsInspectorState.shadowCapAnnouncement)
         }
     }
 
@@ -800,6 +1059,9 @@ struct LightsInspector: View {
             }
             if state.showsShadowsHint {
                 shadowsHintRow(state).padding(.bottom, 8)
+            }
+            if state.showsNoCastersHint {
+                noCastersHintRow().padding(.bottom, 8)
             }
         }
         .tint(style.accent)
@@ -822,17 +1084,24 @@ struct LightsInspector: View {
                 shadowsHintRow(state)
                     .padding(.horizontal, 12).padding(.bottom, 8)
             }
+            if state.showsNoCastersHint {
+                noCastersHintRow()
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+            }
             if !collapsed {
                 Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
-                ScrollView(.vertical) {
-                    content(state)
-                        .padding(.horizontal, 12).padding(.vertical, 10)
-                        .background(GeometryReader { g in
-                            Color.clear.preference(key: LightsInspectorHeightKey.self,
-                                                   value: g.size.height)
-                        })
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        content(state)
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                            .background(GeometryReader { g in
+                                Color.clear.preference(key: LightsInspectorHeightKey.self,
+                                                       value: g.size.height)
+                            })
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .modifier(LightsCardFocusScroll<LightsInspectorScrollTargetKey>(proxy: proxy))
                 }
-                .scrollBounceBehavior(.basedOnSize)
                 .frame(maxHeight: contentHeight)
                 .onPreferenceChange(LightsInspectorHeightKey.self) { height in
                     if height > 0, abs(height - contentHeight) > 0.5 { contentHeight = height }
@@ -857,9 +1126,7 @@ struct LightsInspector: View {
             // leave room for any light name and `Lights off`.
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(LightPalette.color(state.slot))
-                        .frame(width: 10, height: 10)
+                    LightMarkerDot(marker: state.marker, size: 10)
                         .opacity(state.isOn ? 1 : 0.45)
                         .accessibilityHidden(true)
                     lightMenu(state)
@@ -961,6 +1228,40 @@ struct LightsInspector: View {
         }
     }
 
+    private func noCastersHintRow() -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+                .foregroundColor(style.text.opacity(0.55))
+                .accessibilityHidden(true)
+            Text(LightsInspectorState.noCastersHint)
+                .font(.system(size: 11))
+                .foregroundColor(style.text.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("lights.inspector.no_casters_hint")
+    }
+
+#if os(iOS)
+    private func sizeNoteRow() -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+                .foregroundColor(style.text.opacity(0.55))
+                .accessibilityHidden(true)
+            Text(LightsInspectorState.sizeMobileNote)
+                .font(.system(size: 11))
+                .foregroundColor(style.text.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("lights.inspector.size_note")
+    }
+#endif
+
     // Text items with a checkmark on the selected one: macOS menus draw only
     // text and template images, so the identity dot lives in the header.
     private func lightMenu(_ state: LightsInspectorState) -> some View {
@@ -974,6 +1275,19 @@ struct LightsInspector: View {
                     }
                 }
             }
+            Divider()
+            Button(LightsInspectorState.renameTitle) {
+                let target = state.name
+                // After the menu has closed: a popover opened while the menu is
+                // still dismissing is dropped.
+                DispatchQueue.main.async {
+                    renameTarget = target
+                    renaming = true
+                }
+            }
+            .disabled(!state.canRename)
+            .help(LightsInspectorState.renameHelp)
+            .accessibilityIdentifier("lights.inspector.rename")
         } label: {
             HStack(spacing: 3) {
                 Text(verbatim: state.name)
@@ -996,11 +1310,28 @@ struct LightsInspector: View {
         .accessibilityValue(state.name)
         .accessibilityHint(LightsInspectorState.menuHint)
         .accessibilityIdentifier("lights.inspector.menu")
+        .popover(isPresented: $renaming, arrowEdge: .bottom) {
+            LightRenameForm(controller: controller, style: style, current: renameTarget) {
+                renaming = false
+            }
+            .presentationCompactAdaptation(.popover)
+        }
     }
 
     // MARK: content
 
     private func content(_ state: LightsInspectorState) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            lightRows(state)
+            // Rig level, not the selected light's: stays editable.
+            if let exposure {
+                Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
+                LightExposureRow(control: exposure, style: style)
+            }
+        }
+    }
+
+    private func lightRows(_ state: LightsInspectorState) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             LightPlacementRows(controller: controller, eye: controller.eye, style: style)
             slider(.intensity, state)
@@ -1009,6 +1340,11 @@ struct LightsInspector: View {
             Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
             slider(.beam, state)
             slider(.softness, state)
+            slider(.size, state)
+                .help(LightsInspectorState.sizeHelp)
+#if os(iOS)
+            sizeNoteRow()
+#endif
             footer(state)
         }
         .disabled(!state.canEdit)
@@ -1151,6 +1487,94 @@ struct LightsInspector: View {
                 .accessibilityIdentifier("lights.inspector.delete")
         }
         .padding(.top, 2)
+    }
+}
+
+// MARK: - Rename (#797)
+
+/// The Rename popover: a text field with the light's current name. The name
+/// is checked on every keystroke with the core's rules (`LightsAction.nameCheck`)
+/// and the reason shows under the field; a refused name is never sent.
+struct LightRenameForm: View {
+    @ObservedObject var controller: LightsController
+    var style: LightsBarStyle
+    /// The selected light's name when the popover opened.
+    let current: String
+    var onDone: () -> Void
+
+    @State private var text: String
+    /// The core refused a name the check accepted (it changed under us).
+    @State private var coreRefused = false
+    @FocusState private var focused: Bool
+
+    static let title = "Rename light"
+    static let fieldLabel = "Light name"
+    static let coreRefusedReason = "That name was not accepted"
+
+    init(controller: LightsController, style: LightsBarStyle, current: String,
+         onDone: @escaping () -> Void) {
+        self.controller = controller
+        self.style = style
+        self.current = current
+        self.onDone = onDone
+        _text = State(initialValue: current)
+    }
+
+    private var check: LightsAction.NameCheck { controller.renameCheck(text, of: current) }
+
+    /// The reason to show: nothing while the text is the light's own name.
+    private var reason: String? {
+        if coreRefused { return Self.coreRefusedReason }
+        if case .refused(let why) = check { return why }
+        return nil
+    }
+
+    private func commit() {
+        guard case .ok = check else { return }
+        if controller.renameSelected(to: text, of: current) { onDone() } else { coreRefused = true }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(Self.title).font(.system(size: 13, weight: .semibold))
+            TextField(Self.fieldLabel, text: $text)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .onSubmit(commit)
+                .onChange(of: text) { _, _ in coreRefused = false }
+                .accessibilityLabel(Self.fieldLabel)
+                .accessibilityIdentifier("lights.rename.field")
+            Text(verbatim: reason ?? " ")
+                .font(.system(size: 11))
+                .foregroundColor(reason == nil ? .clear : .red)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(reason == nil)
+                .accessibilityIdentifier("lights.rename.reason")
+            HStack {
+                Spacer()
+                Button("Cancel", action: onDone)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("lights.rename.cancel")
+                Button("Rename", action: commit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled({ if case .ok = check { return false } else { return true } }())
+                    .accessibilityIdentifier("lights.rename.confirm")
+            }
+        }
+        .padding(12)
+        .frame(width: 260)
+        .tint(style.accent)
+        .onAppear { focused = true }
+        // The light this popover was opened on went away or is no longer the
+        // selected one (a console or MCP change, another chip): close it.
+        .onChange(of: controller.selectedLight?.name.lowercased()) { _, now in
+            if now != current.lowercased() { onDone() }
+        }
     }
 }
 

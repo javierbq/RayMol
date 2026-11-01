@@ -65,6 +65,7 @@ Z* -------------------------------------------------------------------
 #include "Renderer.h"
 #include "GFXManager.h"
 #include "Util2.h"
+#include "SceneLights.h"
 
 #ifdef _PYMOL_OPENVR
 #include"OpenVRMode.h"
@@ -328,6 +329,7 @@ void SceneAbortAnimation(PyMOLGlobals * G)
   if(I->cur_ani_elem < I->n_ani_elem) { /* allow user to override animation */
     I->cur_ani_elem = I->n_ani_elem;
   }
+  SceneLightsRecallFinish(G);
 }
 
 void ScenePrimeAnimation(PyMOLGlobals * G)
@@ -405,6 +407,7 @@ void SceneLoadAnimation(PyMOLGlobals * G, double duration, int hand)
     double now;
     int target = (int) (duration * 30);
     CScene *I = G->Scene;
+    ++I->AnimationSerial;
     if(target < 1)
       target = 1;
     if(target > MAX_ANI_ELEM)
@@ -2235,7 +2238,7 @@ void SceneSetFrame(PyMOLGlobals * G, int mode, int frame)
 
 
 /*========================================================================*/
-void SceneDirty(PyMOLGlobals * G)
+static void SceneDirtyView(PyMOLGlobals * G)
 
 /* This means that the current image on the screen (and/or in the buffer)
 
@@ -2254,6 +2257,13 @@ void SceneDirty(PyMOLGlobals * G)
     }
   }
 
+}
+
+void SceneDirty(PyMOLGlobals * G)
+{
+  if (G->Scene)
+    ++G->Scene->ContentGeneration;
+  SceneDirtyView(G);
 }
 
 void SceneRovingPostpone(PyMOLGlobals * G)
@@ -2284,6 +2294,7 @@ void SceneInvalidateExtentCache(PyMOLGlobals * G)
 {
   CScene *I = G->Scene;
   if(I) {
+    ++I->ContentGeneration;
     I->ShadowExtentValid = false;
     I->LightShadowExtentValid = false;
     I->DofExtentValid = false;
@@ -4122,12 +4133,32 @@ static void SceneImage(PyMOLGlobals* G, const Extent2D& extent, int antialias,
 }
 
 bool SceneDeferImage(PyMOLGlobals* G, const Extent2D& extent,
-    const char* filename, int antialias, float dpi, int format, int quiet,
-    pymol::Image* out_img)
+    const char* filename, int antialias, float dpi, int format, int quiet)
 {
   std::string filenameStr = filename ? filename : "";
   std::function<void()> deferred = [=]() {
-    SceneImage(G, extent, antialias, dpi, format, quiet, out_img, filenameStr);
+    SceneImage(G, extent, antialias, dpi, format, quiet, nullptr, filenameStr);
+  };
+
+  if (G->ValidContext) {
+    deferred();
+    return false;
+  }
+
+  OrthoDefer(G, std::move(deferred));
+  return true;
+}
+
+bool SceneDeferImageTo(PyMOLGlobals* G, const Extent2D& extent, int antialias,
+    float dpi, int format, int quiet,
+    std::function<void(pymol::Image&&)> receive)
+{
+  // The image lives in the job, not in the caller's storage: the job may
+  // outlive whatever asked for it.
+  std::function<void()> deferred = [=]() {
+    pymol::Image image;
+    SceneImage(G, extent, antialias, dpi, format, quiet, &image, {});
+    receive(std::move(image));
   };
 
   if (G->ValidContext) {
@@ -4239,15 +4270,28 @@ void SceneSetDefaultView(PyMOLGlobals * G)
 
 }
 
+unsigned SceneGetDocumentGeneration(PyMOLGlobals * G)
+{
+  return G && G->Scene ? G->Scene->DocumentGeneration : 0;
+}
+
+void SceneBumpDocumentGeneration(PyMOLGlobals * G)
+{
+  if (G && G->Scene)
+    ++G->Scene->DocumentGeneration;
+}
+
 int SceneReinitialize(PyMOLGlobals * G)
 {
   int ok = true;
+  SceneBumpDocumentGeneration(G); // document replaced (#649)
   SceneSetDefaultView(G);
   SceneCountFrames(G);
   SceneSetFrame(G, 0, 0);
   SceneInvalidate(G);
   G->Scene->SceneVec.clear();
   G->Scene->lightRig.reset(); // `reinitialize` clears the rig (#611)
+  G->Scene->lightRecall.reset();
   return (ok);
 }
 
@@ -4323,7 +4367,9 @@ void CScene::reshape(int width, int height)
     I->Height = height;
     I->rect.bottom = I->rect.top - I->Height;
   }
-  SceneDirty(G);
+  // A reshape changes only the viewport, which the studio shadow-map key holds
+  // itself (#666).
+  SceneDirtyView(G);
 
   if(I->CopyType && (!I->CopyForced)) {
     SceneInvalidateCopy(G, false);
@@ -4564,6 +4610,7 @@ void SceneUpdateAnimation(PyMOLGlobals * G)
   if(rockFlag && (I->RenderTime != 0.0)) {
     SceneUpdateCameraRock(G, dirty);
   }
+  SceneLightsRecallStep(G);
 }
 
 int SceneGetDrawFlag(GridInfo * grid, int *slot_vla, int slot)
@@ -4715,6 +4762,9 @@ void SceneUpdate(PyMOLGlobals * G, int force)
 
   if(force || I->ChangedFlag || ((cur_state != I->LastStateBuilt) &&
                                  (defer_builds_mode > 0))) {
+
+    // A rebuild changes what the scene draws (#666).
+    ++I->ContentGeneration;
 
     SceneCountFrames(G);
 

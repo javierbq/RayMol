@@ -18,6 +18,8 @@
 #include "os_std.h"
 #include "os_gl.h"
 
+#include <atomic>
+
 #include <clocale>
 
 #include "MemoryDebug.h"
@@ -108,6 +110,8 @@ struct CPyMOL {
   PyMOLGlobals *G = nullptr;
   int FakeDragFlag{};
   int RedisplayFlag{};
+  // #685: bumped on every redisplay request, consumed or not
+  std::atomic<unsigned long> RedisplayGeneration{};
   int PassiveFlag{};
   int SwapFlag{};
   int BusyFlag{};
@@ -129,6 +133,7 @@ struct CPyMOL {
   bool done_ConfigureShaders{};
 
   PyMOLModalDrawFn *ModalDraw = nullptr;
+  PyMOLHiResPNGFn *HiResPNG = nullptr;
 
   PyMOLSwapBuffersFn *SwapFn = nullptr;
 
@@ -1975,6 +1980,7 @@ void PyMOL_Start(CPyMOL * I)
 
   I->DrawnFlag = false;
   I->RedisplayFlag = true;
+  I->RedisplayGeneration++;
   G->Ready = true;
 }
 
@@ -2532,6 +2538,7 @@ void PyMOL_NeedFakeDrag(CPyMOL * I)
 void PyMOL_NeedRedisplay(CPyMOL * I)
 {
   I->RedisplayFlag = true;
+  I->RedisplayGeneration++;
 }
 
 void PyMOL_NeedSwap(CPyMOL * I)
@@ -2852,6 +2859,11 @@ int PyMOL_GetRedisplay(CPyMOL * I, int reset)
   PYMOL_API_UNLOCK_NO_FLUSH return (result || I->ModalDraw);    /* always true when ModalDraw is set */
 }
 
+unsigned long PyMOL_GetRedisplayGeneration(CPyMOL * I)
+{
+  return I ? I->RedisplayGeneration.load() : 0UL;
+}
+
 int PyMOL_GetPassive(CPyMOL * I, int reset)
 {                               /* lock intentionally omitted */
   int result = I->PassiveFlag;
@@ -2870,6 +2882,20 @@ int PyMOL_GetModalDraw(CPyMOL * I)
 void PyMOL_SetModalDraw(CPyMOL * I, PyMOLModalDrawFn * fn)
 {
   I->ModalDraw = fn;
+}
+
+void PyMOL_SetHiResPNGRenderer(CPyMOL * I, PyMOLHiResPNGFn * fn)
+{
+  if(I)
+    I->HiResPNG = fn;
+}
+
+int PyMOL_RenderHiResPNG(CPyMOL * I, const char *path, int width,
+                         int height, int rayTraced)
+{
+  if(!I || !I->HiResPNG || !path || !path[0] || width < 1 || height < 1)
+    return 0;
+  return I->HiResPNG(I, path, width, height, rayTraced) ? 1 : 0;
 }
 
 int PyMOL_GetSwap(CPyMOL * I, int reset)

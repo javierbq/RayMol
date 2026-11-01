@@ -2,6 +2,7 @@
 // Uses NSViewRepresentable on macOS, UIViewRepresentable on iPadOS.
 
 import SwiftUI
+import Combine
 import MetalKit
 import QuartzCore   // CACurrentMediaTime (the air redraw policy, #618)
 #if canImport(UIKit)
@@ -269,6 +270,11 @@ struct MetalViewport: NSViewRepresentable {
         view.isPaused = false
         context.coordinator.engine = engine
         context.coordinator.mtkView = view
+        // Leaving Lights mode (Esc, Done) restores the normal cursor even
+        // when the pointer never moves (#701).
+        context.coordinator.modeCursorSink = engine.$interactionMode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak coordinator = context.coordinator] _ in coordinator?.updateGizmoCursor() }
         // Back-reference so the view's NSEvent overrides can reach the
         // coordinator's input handlers. Without this, mouseDown/Dragged/etc.
         // call `coordinator?.handle...` on a nil coordinator and silently
@@ -442,6 +448,29 @@ class PyMOLMTKView: MTKView {
         hoverTrackingArea = area
     }
 
+    // Light gizmo cursor (#701). A cursor rect over the whole view, so AppKit
+    // owns the cursor and nothing is pushed (it cannot stick): the open hand
+    // over a target, the closed hand while dragging, nothing otherwise.
+    var gizmoCursorKind: LightGizmoCursorKind = .normal {
+        didSet {
+            guard gizmoCursorKind != oldValue else { return }
+            window?.invalidateCursorRects(for: self)
+            switch gizmoCursorKind {
+            case .openHand: NSCursor.openHand.set()
+            case .closedHand: NSCursor.closedHand.set()
+            case .normal: NSCursor.arrow.set()
+            }
+        }
+    }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        switch gizmoCursorKind {
+        case .openHand: addCursorRect(visibleRect, cursor: .openHand)
+        case .closedHand: addCursorRect(visibleRect, cursor: .closedHand)
+        case .normal: break
+        }
+    }
+
     override func mouseMoved(with event: NSEvent) {
         coordinator?.handleMouseMoved(event, in: self)
     }
@@ -568,6 +597,15 @@ struct MetalViewport: UIViewRepresentable {
         view.addGestureRecognizer(rotation)
         view.addGestureRecognizer(longPress)
 
+        // iPhone chrome fade (#391): every viewport gesture also reports its
+        // begin / end, so the camera button and panel tongue get out of the way
+        // while the molecule is being moved and come back afterwards.
+        // Only the drags (not the tap / long-press) count as "in progress".
+        context.coordinator.fadeDragRecognizers = [pan, twoPan, clipPan, pinch, rotation]
+        for recognizer in [tap, pan, twoPan, clipPan, pinch, rotation, longPress] as [UIGestureRecognizer] {
+            recognizer.addTarget(context.coordinator, action: #selector(Coordinator.noteViewportActivity(_:)))
+        }
+
         // iPad hover pre-selection preview (issue #165): a UIHoverGestureRecognizer
         // fires ONLY for an indirect pointer hover — trackpad (Magic Keyboard),
         // mouse, or Apple Pencil hover — with no button/touch held, mirroring the
@@ -593,6 +631,16 @@ extension MetalViewport {
     class Coordinator: NSObject, MTKViewDelegate {
         weak var engine: PyMOLEngine?
         weak var mtkView: MTKView?
+        #if os(macOS)
+        var modeCursorSink: AnyCancellable?
+        #endif
+        #if os(iOS)
+        // iPhone chrome fade (#391): the viewport's own drag recognizers (set in
+        // makeUIView) and the last "in progress" state posted, so a two-finger
+        // gesture's pan + pinch + rotation report one begin and one end.
+        var fadeDragRecognizers: [UIGestureRecognizer] = []
+        private var fadeLastPostedActive = false
+        #endif
         private var viewportSize: CGSize = .zero
         // Set when the app/display wakes (unlock, system wake, re-activate). The
         // next draw(in:) then renders unconditionally, bypassing the on-demand
@@ -642,11 +690,9 @@ extension MetalViewport {
         private let kZoomGain: CGFloat = 1.0
 
         // Trackpad two-finger twist → Z-roll (Trackpad mode only). NSRotationGesture
-        // .rotation is cumulative radians; feed the per-callback delta as `turn z`.
-        // Negated so a clockwise twist rolls the molecule clockwise on screen, to
-        // match the iOS handleRotation sign.
+        // .rotation is cumulative radians; feed the per-callback delta to
+        // rollCamera(byRadians:) (sign: Coordinator.rollSign, shared with iOS).
         private var lastRoll: CGFloat = 0
-        private let kRollSign: Float = -1
 
         // Trackpad two-finger drag (delivered as precise scrollWheel events) →
         // translate. Synthesized as a PyMOL middle-button drag: a MIDDLE-DOWN at
@@ -688,11 +734,9 @@ extension MetalViewport {
         private var pinchLastScale: CGFloat = 1.0
         private let kZoomGain: CGFloat = 1.0
         // Two-finger rotation → Z-axis roll. UIRotationGestureRecognizer.rotation
-        // is cumulative radians; feed the per-callback delta as a `turn z` (deg).
-        // Negated so a clockwise twist rolls the molecule clockwise on screen;
-        // flip kRollSign if it feels inverted.
+        // is cumulative radians; feed the per-callback delta to
+        // rollCamera(byRadians:) (sign: Coordinator.rollSign, shared with macOS).
         private var lastRotation: CGFloat = 0
-        private let kRollSign: Float = -1
         // Last position fed to a multi-finger drag (translate / clip). On release
         // the touches lift unevenly and the pan recognizer's centroid jumps to the
         // remaining finger; replaying that jumped location as the button-UP would
@@ -908,7 +952,8 @@ extension MetalViewport {
             let size = view.drawableSize
             let presented = engine.renderMetalFrame(view: view,
                                                     width: Int(size.width),
-                                                    height: Int(size.height))
+                                                    height: Int(size.height),
+                                                    airTick: airDue)
             hasRenderedOnce = hasRenderedOnce || presented
             forceRedraw = RenderGate.forceRedrawAfterRender(presented: presented)
             lastFrameTime = CACurrentMediaTime()
@@ -1063,8 +1108,33 @@ extension MetalViewport {
             #endif
         }
 
+        /// Grid mode (#697): the gizmo moves to the cell under `p` (top-left points), unless a gizmo
+        /// press, scroll or pinch is under way, which stays in the cell it began in, or `p` is on the
+        /// gizmo as drawn (rings, handles and labels may reach over the cell's edge). True when it
+        /// moved: it was not drawn under `p`, so the press, tap or gesture there must not hit it (a
+        /// touch with no hover first only brings the gizmo to its cell, and goes to the camera).
+        @discardableResult
+        private func lightGizmoFollow(_ p: CGPoint, in view: MTKView) -> Bool {
+            guard let engine, engine.interactionMode == .lights else { return false }
+            #if os(iOS)
+            let held = engine.lightGizmoPointer.ownsPress || lightScroll != nil || lightPinch != nil
+                || lightTwoFinger.isActive
+            #else
+            let held = engine.lightGizmoPointer.ownsPress || lightScroll != nil || lightPinch != nil
+            #endif
+            guard !held else { return false }
+            // A press on the gizmo as drawn keeps its cell, so a ring, handle
+            // or label reaching over the cell's edge can still be grabbed.
+            if let layout = lightGizmoLayout(in: view), LightGizmoHitTest.target(at: p, layout: layout) != nil {
+                return false
+            }
+            return MainActor.assumeIsolated {
+                engine.lightGizmoUI.follow(engine.lightGizmoGridCell(at: p, viewSize: view.bounds.size), held: false)
+            }
+        }
+
         /// The gizmo as drawn now over `view`, or nil when it is hidden (not
-        /// Lights mode, no lights or eye data, grid mode, an export).
+        /// Lights mode, no lights or eye data, grid mode without a cell, an export).
         private func lightGizmoLayout(in view: MTKView) -> LightGizmoLayout? {
             guard let engine, engine.interactionMode == .lights else { return nil }
             let size = view.bounds.size
@@ -1084,11 +1154,12 @@ extension MetalViewport {
         }
 
         /// The overlay shows the pointer's drag (none once it ended), with
-        /// the readout of the layout after the tick's write.
-        private func showLightGizmoDrag(_ engine: PyMOLEngine, in view: MTKView) {
+        /// the readout of the layout after the tick's write beside `pointer`
+        /// (top-left points; nil: beside the target) (#703).
+        private func showLightGizmoDrag(_ engine: PyMOLEngine, in view: MTKView, at pointer: CGPoint?) {
             let layout = engine.lightGizmoPointer.session == nil ? nil : lightGizmoLayout(in: view)
             MainActor.assumeIsolated {
-                engine.lightGizmoUI.track(engine.lightGizmoPointer.session, layout: layout)
+                engine.lightGizmoUI.track(engine.lightGizmoPointer.session, layout: layout, pointer: pointer)
             }
         }
 
@@ -1105,29 +1176,63 @@ extension MetalViewport {
         /// pointer left). Lights mode only.
         private func lightGizmoHover(at p: CGPoint?, in view: MTKView) {
             guard let engine, engine.interactionMode == .lights else { return }
+            if let p { lightGizmoFollow(p, in: view) }
             let target = p.flatMap { point in
                 lightGizmoLayout(in: view).flatMap { LightGizmoHitTest.target(at: point, layout: $0) }
             }
             MainActor.assumeIsolated { engine.lightGizmoUI.hovered = target }
         }
 
+        /// The twist's roll sign on both platforms: negated so a clockwise
+        /// twist rolls the molecule clockwise on screen. Flip it if that feels
+        /// inverted.
+        static let rollSign: Float = -1
+
+        /// One tick of the two-finger twist (#719), shared by the iOS rotation
+        /// recognizer and the macOS trackpad twist: `radians` is the change in the
+        /// recognizer's cumulative rotation since the last tick. Rolls the camera
+        /// about z through the bridge (engine.turnZ), never runPython.
+        func rollCamera(byRadians radians: CGFloat) {
+            let deg = Self.rollSign * Float(radians) * 180.0 / .pi
+            engine?.turnZ(deg)
+        }
+
+        #if os(macOS)
+        /// The viewport's cursor for the gizmo state (#701). The pointer is
+        /// outside the view (`inside` false) or the mode is not Lights: normal.
+        func updateGizmoCursor(inside: Bool = true) {
+            guard let engine, let view = mtkView as? PyMOLMTKView else { return }
+            let kind: LightGizmoCursorKind = MainActor.assumeIsolated {
+                LightGizmoCursorKind.cursor(
+                    mode: engine.interactionMode,
+                    hovered: inside ? engine.lightGizmoUI.hovered : nil,
+                    isDragging: engine.lightGizmoPointer.ownsPress)
+            }
+            view.gizmoCursorKind = kind
+        }
+        #endif
+
         /// A press at `p` (top-left points): true when the gizmo took it (a
         /// target was hit and its session opened, or an option-press off
-        /// every target waits to be a click). Outside Lights mode it only
-        /// forgets a press the gizmo still held (its release never came).
-        private func lightGizmoPress(at p: CGPoint, option: Bool, in view: MTKView) -> Bool {
+        /// every target waits to be a click). `clickCount` is the event's: a
+        /// double-click's second press on the aim dot re-aims the light at the
+        /// centre on its release (#699). Outside Lights mode it only forgets a
+        /// press the gizmo still held (its release never came).
+        private func lightGizmoPress(at p: CGPoint, option: Bool, clickCount: Int, in view: MTKView) -> Bool {
             guard let engine else { return false }
             guard engine.interactionMode == .lights else {
                 let pointer = engine.lightGizmoPointer
                 if pointer.ownsPress || pointer.candidate != nil { engine.lightGizmoPointer.cancel() }
                 return false
             }
-            let layout = lightGizmoLayout(in: view)
+            let moved = lightGizmoFollow(p, in: view)
+            let layout = moved ? nil : lightGizmoLayout(in: view)
             let interaction = lightGizmoInteraction(engine)
             let route = MainActor.assumeIsolated {
-                engine.lightGizmoPointer.press(at: p, option: option, layout: layout, interaction: interaction)
+                engine.lightGizmoPointer.press(at: p, option: option, layout: layout, interaction: interaction,
+                                               clickCount: clickCount)
             }
-            if route == .gizmo { showLightGizmoDrag(engine, in: view) }
+            if route == .gizmo { showLightGizmoDrag(engine, in: view, at: p) }
             return route != .camera
         }
 
@@ -1143,7 +1248,7 @@ extension MetalViewport {
             let route = MainActor.assumeIsolated {
                 engine.lightGizmoPointer.drag(to: p, interaction: interaction)
             }
-            if route == .gizmo { showLightGizmoDrag(engine, in: view) }
+            if route == .gizmo { showLightGizmoDrag(engine, in: view, at: p) }
             return route != .camera
         }
 
@@ -1158,7 +1263,7 @@ extension MetalViewport {
             let route = MainActor.assumeIsolated {
                 engine.lightGizmoPointer.release(at: p, interaction: interaction)
             }
-            showLightGizmoDrag(engine, in: view)
+            showLightGizmoDrag(engine, in: view, at: nil)
             return route != .camera
         }
 
@@ -1166,6 +1271,7 @@ extension MetalViewport {
 
         #if os(macOS)
         func handleMouseDown(_ event: NSEvent, in view: MTKView) {
+            defer { updateGizmoCursor() }
             // Don't send PyMOL a button-down yet: a left-click in PyMOL's
             // viewing mode runs SceneClick/Release, whose GL pick is dead on
             // Metal and ends up CLEARING the active selection. We only want
@@ -1187,7 +1293,8 @@ extension MetalViewport {
             // Lights mode (#622): a press on a light gizmo target is the
             // gizmo's to its release; no PyMOL button event is ever sent.
             if lightGizmoPress(at: lightGizmoPoint(mouseDownLoc, in: view),
-                               option: event.modifierFlags.contains(.option), in: view) {
+                               option: event.modifierFlags.contains(.option),
+                               clickCount: event.clickCount, in: view) {
                 return
             }
             // Move mode: remember whether the press landed on a gizmo handle, so
@@ -1214,6 +1321,7 @@ extension MetalViewport {
         // re-pick when the pointer barely moved; the engine additionally
         // debounces the actual Python pick.
         func handleMouseMoved(_ event: NSEvent, in view: MTKView) {
+            defer { updateGizmoCursor() }
             guard !didDrag else { return }
             // No hover picking while the box tool is on: the box is already
             // driving the selection, and a hover pick would fight it.
@@ -1284,9 +1392,17 @@ extension MetalViewport {
             if engine?.moveShiftHeld == true { engine?.moveShiftHeld = false }
             // Lights mode (#622): no light gizmo hover once the pointer left.
             lightGizmoHover(at: nil, in: view)
+            updateGizmoCursor(inside: false)
         }
 
         func handleMouseUp(_ event: NSEvent, in view: MTKView) {
+            // The drag never re-ran the hover hit test: do it at the release
+            // point so the cursor is not chosen from the pre-drag hover (#701).
+            defer {
+                let p = view.convert(event.locationInWindow, from: nil)
+                lightGizmoHover(at: lightGizmoPoint(p, in: view), in: view)
+                updateGizmoCursor()
+            }
             // Clear the drag flag on exit so passive hover (which is gated on
             // !didDrag) resumes immediately after a drag, not only after the next
             // mouse-down.
@@ -1346,7 +1462,11 @@ extension MetalViewport {
             // Pure click (no drag, no PyMOL button events sent) → CPU pick.
             // NDC in view-point space, bottom-left origin (macOS views aren't
             // flipped, matching PyMOL's NDC) so no Y flip.
-            if moved < 4 {
+            // Lights mode (#696): a plain click off the gizmo runs no pick.
+            let mode = engine?.interactionMode ?? .viewing
+            if moved < 4,
+               LightClickPick.shouldPick(mode: mode, onGizmo: false,
+                                         option: event.modifierFlags.contains(.option), wasDrag: false) {
                 let w = view.bounds.width, h = view.bounds.height
                 if w > 0, h > 0 {
                     let ndcX = Float(loc.x / w) * 2 - 1
@@ -1697,7 +1817,8 @@ extension MetalViewport {
             }
             guard engine.interactionMode == .lights else { return false }
             if isWheel {
-                guard let layout = lightGizmoLayout(in: view),
+                let moved = lightGizmoFollow(p, in: view)
+                guard !moved, let layout = lightGizmoLayout(in: view),
                       let name = LightGizmoHitTest.knob(at: p, layout: layout) else { return false }
                 let wheel = event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.deltaY
                 guard wheel != 0 else { return true }
@@ -1713,7 +1834,9 @@ extension MetalViewport {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: clear)
                 return true
             }
-            guard phase == .began, !panActive, let layout = lightGizmoLayout(in: view) else { return false }
+            guard phase == .began, !panActive else { return false }
+            let moved = lightGizmoFollow(p, in: view)
+            guard !moved, let layout = lightGizmoLayout(in: view) else { return false }
             let interaction = lightGizmoInteraction(engine)
             guard var session = MainActor.assumeIsolated({ interaction.beginScroll(at: p, layout: layout) }) else {
                 return false
@@ -1734,8 +1857,10 @@ extension MetalViewport {
             switch gesture.state {
             case .began:
                 lightPinch = nil
-                guard engine.interactionMode == .lights, let layout = lightGizmoLayout(in: view) else { return false }
+                guard engine.interactionMode == .lights else { return false }
                 let p = lightGizmoPoint(gesture.location(in: view), in: view)
+                let moved = lightGizmoFollow(p, in: view)
+                guard !moved, let layout = lightGizmoLayout(in: view) else { return false }
                 let interaction = lightGizmoInteraction(engine)
                 guard let session = MainActor.assumeIsolated({ interaction.beginPinch(at: p, layout: layout) }) else {
                     return false
@@ -1790,8 +1915,8 @@ extension MetalViewport {
 
         // Trackpad two-finger twist → Z-axis roll, mirroring the iOS handleRotation
         // gesture. Gated on engine.trackpadMode so it never disturbs the classic
-        // per-button mouse modes. runPython (not runCommand) to avoid echoing
-        // `turn z` into the feedback log every frame.
+        // per-button mouse modes. The tick rolls through rollCamera(byRadians:)
+        // (a bridge call, no Python, nothing echoed in the log).
         @objc func handleRotationGesture(_ gesture: NSRotationGestureRecognizer) {
             guard engine?.trackpadMode == true, !boxSelectActive else { return }
             switch gesture.state {
@@ -1800,8 +1925,7 @@ extension MetalViewport {
             case .changed:
                 let delta = gesture.rotation - lastRoll
                 lastRoll = gesture.rotation
-                let deg = kRollSign * Float(delta) * 180.0 / .pi
-                engine?.runPython("from pymol import cmd as _c; _c.turn('z', \(deg))")
+                rollCamera(byRadians: delta)
             case .ended, .cancelled:
                 lastRoll = 0
             default:
@@ -1814,25 +1938,59 @@ extension MetalViewport {
         // MARK: - iPadOS gesture handling
 
         #if os(iOS)
+        /// iPhone chrome fade (#391): reports a viewport gesture's begin and end
+        /// (and a tap or long-press, which are touches but not drags). "Active"
+        /// means a continuous drag / pinch / rotation is still in progress on this
+        /// view, so a pinch that ends while its rotation continues stays active.
+        /// Only the iPhone fades, so nothing is posted elsewhere; a drag edge is
+        /// posted only when the in-progress state flips, while a tap or
+        /// long-press always posts (it is a touch that brings the controls back).
+        @objc func noteViewportActivity(_ gesture: UIGestureRecognizer) {
+            guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+            switch gesture.state {
+            case .began, .ended, .cancelled: break
+            default: return   // .changed would post every frame
+            }
+            let active = fadeDragRecognizers.contains { $0.state == .began || $0.state == .changed }
+            let isDrag = fadeDragRecognizers.contains { $0 === gesture }
+            guard !isDrag || active != fadeLastPostedActive else { return }
+            fadeLastPostedActive = active
+            NotificationCenter.default.post(name: .raymolViewportActivity, object: nil,
+                                            userInfo: ["gestureActive": active])
+        }
+
         /// A tap at `p` in Lights mode (#622): true when it landed on a light
         /// gizmo target. A knob selects its light (the bar and the inspector
         /// follow); any other target takes the tap with no atom pick. An
         /// option-tap off every target (an iPad hardware keyboard, #623)
-        /// places a highlight for the selected light, as a long-press does.
+        /// places a highlight for the selected light, as a long-press does. A
+        /// double-tap on the selected light's aim dot aims it back at the rig
+        /// centre (#699).
         private func lightGizmoTap(at p: CGPoint, option: Bool, in view: MTKView) -> Bool {
-            guard let engine, engine.interactionMode == .lights,
-                  let layout = lightGizmoLayout(in: view) else { return false }
+            guard let engine, engine.interactionMode == .lights else { return false }
+            let moved = lightGizmoFollow(p, in: view)
+            guard !moved, let layout = lightGizmoLayout(in: view) else { return false }
             guard let target = LightGizmoHitTest.target(at: p, layout: layout) else {
+                lightAimTaps = LightAimDoubleTap()
                 guard option, LightTouchRouter.optionTap(at: p, layout: layout) else { return false }
                 let interaction = lightGizmoInteraction(engine)
                 _ = MainActor.assumeIsolated { interaction.placeHighlight(at: p, layout: layout) }
                 return true
+            }
+            let selected = MainActor.assumeIsolated { engine.lightsController.selection.name }
+            if lightAimTaps.tap(on: target, light: selected, at: p, time: ProcessInfo.processInfo.systemUptime),
+               let name = selected {
+                let interaction = lightGizmoInteraction(engine)
+                _ = MainActor.assumeIsolated { interaction.aimAtCentre(name: name) }
             }
             if case .knob(let name) = target {
                 MainActor.assumeIsolated { engine.lightsController.select(name: name) }
             }
             return true
         }
+
+        /// The aim dot's first tap, waiting for a second (#699).
+        private var lightAimTaps = LightAimDoubleTap()
 
         /// A one-finger pan (#622): true when the light gizmo owns it.
         /// UIKit reports `.began` after its own slop, so the press is hit-
@@ -1851,7 +2009,8 @@ extension MetalViewport {
                 }
                 let start = LightTouchGeometry.pressPoint(location: location,
                                                           translation: gesture.translation(in: view))
-                let layout = lightGizmoLayout(in: view)
+                let moved = lightGizmoFollow(start, in: view)
+                let layout = moved ? nil : lightGizmoLayout(in: view)
                 let interaction = lightGizmoInteraction(engine)
                 let route = MainActor.assumeIsolated {
                     // A new pan is a new touch sequence.
@@ -1860,7 +2019,7 @@ extension MetalViewport {
                                                                  interaction: interaction)
                 }
                 guard route == .gizmo else { return false }
-                showLightGizmoDrag(engine, in: view)
+                showLightGizmoDrag(engine, in: view, at: location)
                 return true
             case .changed:
                 guard engine.lightGizmoPointer.ownsPress else { return false }
@@ -1872,7 +2031,7 @@ extension MetalViewport {
                 MainActor.assumeIsolated {
                     _ = engine.lightGizmoPointer.touchEnded(at: location, interaction: interaction)
                 }
-                showLightGizmoDrag(engine, in: view)
+                showLightGizmoDrag(engine, in: view, at: nil)
                 return true
             default:
                 return engine.lightGizmoPointer.ownsPress
@@ -1899,7 +2058,8 @@ extension MetalViewport {
             switch gesture.state {
             case .began:
                 guard engine.interactionMode == .lights || lightTwoFinger.isActive else { return false }
-                let layout = lightGizmoLayout(in: view)
+                let moved = lightGizmoFollow(centroid, in: view)
+                let layout = moved ? nil : lightGizmoLayout(in: view)
                 let owner = lightTwoFinger.began(kind, centroid: centroid,
                                                  span: lightGizmoSpan(gesture, in: view)) { p in
                     layout.flatMap { LightGizmoHitTest.knob(at: p, layout: $0) }
@@ -1959,7 +2119,8 @@ extension MetalViewport {
         /// outside Lights mode, yes.
         private func lightGizmoLongPressMayBegin(at p: CGPoint, in view: MTKView) -> Bool {
             guard let engine, engine.interactionMode == .lights else { return true }
-            return LightTouchRouter.shouldBeginLongPress(at: p, layout: lightGizmoLayout(in: view))
+            let moved = lightGizmoFollow(p, in: view)
+            return LightTouchRouter.shouldBeginLongPress(at: p, layout: moved ? nil : lightGizmoLayout(in: view))
         }
 
         /// A long-press at `p` in Lights mode (#623): true when the gizmo took
@@ -1969,7 +2130,8 @@ extension MetalViewport {
         /// through to today's atom context menu.
         private func lightGizmoLongPress(at p: CGPoint, in view: MTKView) -> Bool {
             guard let engine, engine.interactionMode == .lights else { return false }
-            let layout = lightGizmoLayout(in: view)
+            let moved = lightGizmoFollow(p, in: view)
+            let layout = moved ? nil : lightGizmoLayout(in: view)
             let hasSelection = MainActor.assumeIsolated { engine.lightsController.selectedLight != nil }
             switch LightTouchRouter.longPress(at: p, layout: layout, hasSelection: hasSelection) {
             case .contextMenu:
@@ -2015,6 +2177,11 @@ extension MetalViewport {
                 engine.moveSetActiveAt(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
                 return
             }
+            // Lights mode (#696): a tap off the gizmo runs no pick and leaves the
+            // selection unchanged.
+            guard LightClickPick.shouldPick(mode: engine.interactionMode, onGizmo: false,
+                                            option: gesture.modifierFlags.contains(.alternate),
+                                            wasDrag: false) else { return }
             #if RAYMOL_MPNN
             if engine.designMode {
                 // In Design mode a viewport tap targets a residue, mirroring the
@@ -2263,17 +2430,17 @@ extension MetalViewport {
             if let view = mtkView, lightGizmoTwoFinger(.rotation, gesture, at: gesture.location(in: view), in: view) {
                 return
             }
-            // Two-finger rotation → Z-axis roll (`turn z`). Per-callback delta of
-            // the cumulative gesture.rotation, in degrees. runPython (not run-
-            // Command) to avoid echoing into the log every frame.
+            // Two-finger rotation → Z-axis roll. Per-callback delta of the
+            // cumulative gesture.rotation (radians); the tick rolls through
+            // rollCamera(byRadians:) (a bridge call, no Python, nothing echoed in
+            // the log).
             switch gesture.state {
             case .began:
                 lastRotation = 0
             case .changed:
                 let delta = gesture.rotation - lastRotation
                 lastRotation = gesture.rotation
-                let deg = kRollSign * Float(delta) * 180.0 / .pi
-                engine?.runPython("from pymol import cmd as _c; _c.turn('z', \(deg))")
+                rollCamera(byRadians: delta)
             case .ended, .cancelled:
                 lastRotation = 0
             default:

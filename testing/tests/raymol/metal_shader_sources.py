@@ -418,7 +418,8 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         self.assertEqual(cyl.count('mat_glass_refraction('), 2)
         sph = _function_body(msl['kSphereImpostorSrc'],
                              'fragment SphereOITOut sphere_impostor_fragment_oit(')
-        self.assertEqual(sph.count('mat_glass_refraction('), 1)
+        # glass, jelly (#635: split as on the cylinder)
+        self.assertEqual(sph.count('mat_glass_refraction('), 2)
         self.assertIn('out.refr = refr', sph)
         # ...and the glass family's sphere OIT pipeline writes the target
         src = _strip_comments(self.source())

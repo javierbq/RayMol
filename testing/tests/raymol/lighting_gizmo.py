@@ -25,6 +25,10 @@ This file pins what the gizmo relies on in the core:
   together) aim at the surface_at hit, put the light in front of it (the
   mirror rule) or behind it (rim=145), keep a pinned light pinned with pin=1,
   and change nothing on a miss;
+- TestAimCentreCommand: the string LightsAction.aimAtCentre sends (#699's
+  double-click or double-tap on the aim dot; LightsActionInvocationTests
+  pins it) aims the light back at the rig centre, clears the aim selection
+  and keeps the placement and the cone;
 - TestRingsAreTheBeamCone: the rings the gizmo draws (aim distance x
   tan(acos(cos_outer or cos_inner)), LightGizmoLayout) invert, through the
   setter, to the beam and softness that produce them (the band clamp near
@@ -358,6 +362,10 @@ CLICK_RIM_PIN = 'lights key, click=0.1250/-0.0625, rim=145, pin=1'
 CLICK_ZERO = 'lights key, click=0.0000/0.2500'
 CLICK_MISS = 'lights key, click=0.9000/0.9000'
 
+# What LightsAction.aimAtCentre(_:).invocation sends
+# (LightsActionInvocationTests.testAimAtCentreStrings).
+AIM_CENTRE = 'lights key, aim=centre'
+
 
 class TestHighlightCommand(testing.PyMOLTestCase):
     """A ball of radius 8 at the origin under the pinned camera: every click
@@ -425,6 +433,27 @@ class TestHighlightCommand(testing.PyMOLTestCase):
         text = do(CLICK_MISS)
         self.assertIn('lights', text)
         self.assertEqual(lighting._lights_json(), before)
+
+
+class TestAimCentreCommand(GizmoCase):
+    """#699: the double-click (double-tap) on the aim dot runs AIM_CENTRE
+    once, as a console command."""
+
+    def testAimsBackAtTheCentre(self):
+        self.turn()
+        self.rig([{'name': 'key', 'orbit': -30.0, 'pitch': 20.0,
+                   'radius': 2.5, 'aim': 'point', 'aim_point': [1.0, 2.0, 3.0],
+                   'aim_selection': 'resi 2'}])
+        before = lighting.get_lights()['lights'][0]
+        self.assertEqual(before['aim'], 'point')
+        text = do(AIM_CENTRE)
+        self.assertNotIn('Error', text)
+        after = lighting.get_lights()['lights'][0]
+        self.assertEqual(after['aim'], 'centre')
+        self.assertEqual(after['aim_selection'], '', 'the selection text is cleared')
+        for field in ('orbit', 'pitch', 'radius', 'beam', 'softness', 'anchor'):
+            self.assertEqual(after[field], before[field], field)
+        self.assertVec(eye_light()['target'], world_to_eye([1.0, -2.0, 3.0]), rel=1e-4)
 
 
 class TestRingsAreTheBeamCone(GizmoCase):
@@ -555,7 +584,8 @@ MODEL_READS = {'isActive', 'isBusy', 'isOn', 'rig', 'selection', 'selectedIndex'
                'selectedLight', 'identitySlot', 'eye', 'canEdit', 'placement',
                'value', 'freshValue', 'isBehind'}
 MODEL_GUARDED_WRITES = {'set', 'setPlacement', 'setAim'}
-MODEL_PRESSES = {'select', 'beginGesture', 'placeHighlight', 'setShadow'}
+MODEL_PRESSES = {'select', 'beginGesture', 'placeHighlight', 'setShadow',
+                 'aimAtCentre'}
 # What the overlay may touch on the controller: the observed state, the
 # chip's enablement and the VoiceOver Select action (the chip writes through
 # LightGizmoInteraction.toggleShadow, the inspector's setShadow).
@@ -585,7 +615,7 @@ ROUTING = (
     # long-press in Lights mode places a highlight before any context menu.
     ('func handlePinch(', 'lightGizmoPinch(', ('zoomBy(',)),
     ('func handleTwoFingerPan(', 'lightGizmoTwoFinger(', ('engine?.button(', 'engine?.drag(')),
-    ('func handleRotation(', 'lightGizmoTwoFinger(', ('runPython(',)),
+    ('func handleRotation(', 'lightGizmoTwoFinger(', ('rollCamera(',)),
     ('func handleLongPress(', 'lightGizmoLongPress(', ('longPressPick(',)),
 )
 # Nothing the gizmo's routing does may reach Python, the console, the
@@ -655,9 +685,12 @@ class TestGizmoSource(testing.PyMOLTestCase):
                 first = block[1:].lstrip()
                 self.assertTrue(first.startswith('guard ownsGesture(owner) else'),
                                 first[:60])
-        self.assertIn('edit("aim_point", point)', entries['setAim'])
-        self.assertIn('setPlacement(orbit: orbit, pitch: pitch, radius: radius)',
-                      entries['setPlacement'])
+        self.assertIn('edit("aim_point", point, editKey: gestureEditKey)',
+                      entries['setAim'])
+        self.assertIn('setPlacement(orbit: orbit, pitch: pitch, radius: radius, '
+                      'editKey: gestureEditKey)', entries['setPlacement'])
+        # A gesture counts as one edit for Revert's confirmation (#651).
+        self.assertIn('editKey: gestureEditKey', entries['set'])
 
     def testTheEngineDrivesTheEyeDemand(self):
         """setInteractionMode sets .everyFrame before begin() on entering
@@ -809,7 +842,7 @@ class TestGizmoSource(testing.PyMOLTestCase):
         """The overlay reads the controller's observed state and writes only
         through the Shadow chip (LightGizmoInteraction.toggleShadow, the
         inspector's setShadow) and the VoiceOver Select action; of the UI
-        state it sets only its own size."""
+        state it sets only its own size and the chrome insets (#693)."""
         text = self.read(OVERLAY)
         members = set(re.findall(r'\bcontroller\.(\w+)', text))
         self.assertEqual(members - OVERLAY_MEMBERS, set())
@@ -819,7 +852,7 @@ class TestGizmoSource(testing.PyMOLTestCase):
                      'beginGesture(', 'perform(', 'seams'):
             with self.subTest(name):
                 self.assertNotIn(name, text)
-        self.assertEqual(set(re.findall(r'\bui\.(\w+)\s*=(?!=)', text)), {'viewSize'})
+        self.assertEqual(set(re.findall(r'\bui\.(\w+)\s*=(?!=)', text)), {'viewSize', 'chromeInsets'})
 
     def testContentViewPlacesTheOverlay(self):
         """ContentView puts the overlay on MetalViewport in Lights mode on
@@ -873,8 +906,9 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIn('tools=', fields)
         self.assertIn('touch=', fields)
         # #726 adds airOnly: (sheet:air / side:air with no light).
+        # #885 adds editorOpen: (menu while the portrait editor is closed).
         self.assertIn('LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, '
-                      'corner: lightsOrbitCorner, airOnly: airOnly)', fields)
+                      'corner: lightsOrbitCorner, airOnly: airOnly, editorOpen: lightsEditorOpen)', fields)
         self.assertEqual(len(re.findall(r'LightGizmoState\(lights, sceneShadowsOn: '
                                         r'engine\.sceneShadowsOn\)\?\.summary', hook)), 2)
         self.assertIn('GizmoAutoContext(viewSize: engine.lightGizmoUI.viewSize', hook)

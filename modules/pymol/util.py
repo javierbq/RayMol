@@ -1197,7 +1197,7 @@ DESCRIPTION
 
     Zoom to the next organic molecule (by residue identifier)
 
-    Bound to CTRL-L key.
+    Bound to CTRL-G key (CTRL-L in stock PyMOL; RayMol uses CTRL-L for Lights mode, #873).
     '''
     global _current_ligand
 

@@ -43,6 +43,14 @@ jobs:
               --no-build-isolation --config-settings glut=true .
 
       - name: Run RayMol unit tests under embedded pymol
+        env:
+          # scene_thumbnail_defer.py's Guard Malloc subtests are the only ones
+          # that catch the freed-scene thumbnail write, and
+          # ortho_deferred_reentrant.py's makes a read of the freed
+          # deferred-job queue fault deterministically: fail, don't skip, if
+          # Guard Malloc cannot load here (e.g. a hardened-runtime Python that
+          # drops DYLD_INSERT_LIBRARIES). Drop this only knowingly.
+          RAYMOL_REQUIRE_GMALLOC: "1"
         run: |
           pymol -ckqy testing/testing.py --run \
               testing/tests/test_raymol_tmp.py \
@@ -68,6 +76,8 @@ jobs:
               testing/tests/test_mcp_events.py \
               testing/tests/test_mcp_server.py \
               testing/tests/test_mcp_tools.py \
+              testing/tests/test_mcp_native.py \
+              testing/tests/test_mcp_command_coverage.py \
               testing/tests/test_raymol_scene_anim.py \
               testing/tests/test_raymol_scene_ttt.py \
               testing/tests/test_raymol_keys.py \
@@ -76,8 +86,10 @@ jobs:
               testing/tests/raymol/design_enumerate.py \
               testing/tests/raymol/design_region.py \
               testing/tests/raymol/design_saverestore.py \
+              testing/tests/raymol/fasta_command.py \
               testing/tests/raymol/inspector_command_names.py \
               testing/tests/raymol/inspector_materials.py \
+              testing/tests/raymol/inspector_reps.py \
               testing/tests/raymol/lighting_air.py \
               testing/tests/raymol/lighting_air_check.py \
               testing/tests/raymol/lighting_air_msl.py \
@@ -87,6 +99,7 @@ jobs:
               testing/tests/raymol/lighting_commands.py \
               testing/tests/raymol/lighting_docs.py \
               testing/tests/raymol/lighting_eye.py \
+              testing/tests/raymol/lighting_finite_msl.py \
               testing/tests/raymol/lighting_gallery.py \
               testing/tests/raymol/lighting_gizmo.py \
               testing/tests/raymol/lighting_harness.py \
@@ -113,7 +126,6 @@ jobs:
               testing/tests/raymol/line_stick_helper.py \
               testing/tests/raymol/material_custom.py \
               testing/tests/raymol/material_docs.py \
-              testing/tests/raymol/material_draw_params_cache.py \
               testing/tests/raymol/material_env.py \
               testing/tests/raymol/material_follow.py \
               testing/tests/raymol/material_glass.py \
@@ -127,15 +139,23 @@ jobs:
               testing/tests/raymol/material_table.py \
               testing/tests/raymol/movie_object_settings.py \
               testing/tests/raymol/movie_hold_model.py \
+              testing/tests/raymol/notes_session.py \
+              testing/tests/raymol/timeline_session.py \
+              testing/tests/raymol/ortho_deferred_reentrant.py \
               testing/tests/jira/multistate_timeline.py \
               testing/tests/raymol/metal_frees_gpu_buffers.py \
               testing/tests/raymol/metal_pick.py \
               testing/tests/raymol/metal_rt_reflect.py \
               testing/tests/raymol/metal_rt_transparent.py \
               testing/tests/raymol/metal_shader_sources.py \
+              testing/tests/raymol/morph_engine.py \
+              testing/tests/raymol/morph_jobs.py \
+              testing/tests/raymol/morph_panel.py \
               testing/tests/raymol/scene_materials.py \
               testing/tests/raymol/scene_object_settings.py \
               testing/tests/raymol/scene_ttt.py \
+              testing/tests/raymol/scene_thumbnail_defer.py \
+              testing/tests/raymol/session_view_missing.py \
               testing/tests/raymol/shadow_extent.py \
               testing/tests/raymol/transparency_peel.py \
               testing/tests/predict \

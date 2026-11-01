@@ -64,14 +64,16 @@ struct AirField: Decodable, Equatable {
 /// body holds no number range: lighting_atmosphere.py checks it).
 private let unitTrack: ClosedRange<Double> = 0...1
 
-/// One slider of the card: an air field of kind float. Seed stays
-/// command-only (the orchestrator's Q5).
+/// One slider of the card: an air field of kind float. Seed has its own
+/// whole-number field, not a slider.
 enum AirParameter: String, CaseIterable {
     case haze
     case dust
     case dustSize = "dust_size"
     case dustSpeed = "dust_speed"
     case scatter
+    case dustGlow = "dust_glow"
+    case dustOpacity = "dust_opacity"
 
     /// The core field name.
     var field: String { rawValue }
@@ -84,6 +86,8 @@ enum AirParameter: String, CaseIterable {
         case .dustSize: return "Dust size"
         case .dustSpeed: return "Dust speed"
         case .scatter: return "Scatter (g)"
+        case .dustGlow: return "Dust glow"
+        case .dustOpacity: return "Dust opacity"
         }
     }
 
@@ -95,6 +99,8 @@ enum AirParameter: String, CaseIterable {
         case .dustSize: return air.dustSize
         case .dustSpeed: return air.dustSpeed
         case .scatter: return air.scatter
+        case .dustGlow: return air.dustGlow
+        case .dustOpacity: return air.dustOpacity
         }
     }
 
@@ -170,7 +176,7 @@ struct AirValue: Equatable {
 
     /// The fields the `atmosphere` command takes (the core's air field
     /// names; lighting_atmosphere.py checks them).
-    static let commandFields = ["haze", "dust", "dust_size", "dust_speed", "scatter", "seed"]
+    static let commandFields = ["haze", "dust", "dust_size", "dust_speed", "scatter", "seed", "dust_glow", "dust_opacity"]
 
     /// The value can go into the command: a known field, a finite number,
     /// and for seed a whole number >= 0.
@@ -217,6 +223,17 @@ enum AtmosphereFormat {
         guard !s.isEmpty, s.allSatisfy({ "+-.0123456789eE".contains($0) }),
               let value = Double(s), value.isFinite else { return nil }
         return value
+    }
+
+    /// A typed whole-number seed: whitespace is trimmed, an optional leading
+    /// `+` is accepted, followed by non-empty ASCII digits 0-9. Out-of-range
+    /// large values come back as typed (the core clamps); digits past
+    /// `Int.max` come back as `Int.max`, so they clamp too.
+    static func parseSeed(_ text: String) -> Int? {
+        var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("+") { s.removeFirst() }
+        guard !s.isEmpty, s.allSatisfy({ ("0"..."9").contains($0) }) else { return nil }
+        return Int(s) ?? Int.max
     }
 
     /// (negative, two-decimal magnitude); a value that rounds to 0 is never
@@ -298,6 +315,57 @@ struct AirFieldEditor: Equatable {
     }
 }
 
+/// The typed field for the dust pattern's whole-number seed: AirFieldEditor
+/// without the slider.
+struct AirSeedEditor: Equatable {
+    /// What the field shows.
+    private(set) var text = ""
+    /// The field has focus.
+    private(set) var isEditing = false
+    /// The user typed since editing began.
+    private(set) var typed = false
+    /// The model's text, put back when typing is dropped or does not parse.
+    private var modelText = ""
+
+    /// The model's value changed: it replaces the text unless the user typed.
+    mutating func show(_ value: Int?) {
+        modelText = value.map(String.init) ?? ""
+        if typed { return }
+        text = modelText
+    }
+
+    /// The field gained focus.
+    mutating func begin() {
+        if isEditing { return }
+        isEditing = true
+        typed = false
+    }
+
+    /// The user typed (the TextField binding's setter).
+    mutating func type(_ new: String) {
+        text = new
+        if isEditing { typed = true }
+    }
+
+    /// Return or focus loss: the value to write, or nil (nothing typed, or
+    /// the text does not parse; the model's text comes back then). Always
+    /// ends editing.
+    mutating func commit() -> Int? {
+        defer { endEditing() }
+        guard typed, let value = AtmosphereFormat.parseSeed(text) else {
+            text = modelText
+            return nil
+        }
+        text = String(value)
+        return value
+    }
+
+    private mutating func endEditing() {
+        isEditing = false
+        typed = false
+    }
+}
+
 // MARK: - The switch
 
 /// What the card's On/Off switch runs.
@@ -348,8 +416,11 @@ enum AtmosphereHint: String, Equatable {
     /// The rig has lights and is off while the air is on.
     case lightsOff = "lights_off"
     /// The rig is on, haze is above about 0.3, and a light that shines is
-    /// behind the molecule: the picture can wash out (#683; this hint stays
-    /// until that is fixed).
+    /// behind the molecule: the picture can wash out. #683's extinction
+    /// bounds the haze's light and dims the molecule behind it, but a backlit
+    /// haze at exposure 1 still lifts the background almost to the molecule's
+    /// level (scene haze683_e1: molecule 195, background 190), so the hint
+    /// stays.
     case backlitHaze = "backlit"
 
     /// Haze above this with a backlight shows the hint (#683's "above about
@@ -393,24 +464,6 @@ enum AtmosphereHint: String, Equatable {
     }
 }
 
-// MARK: - Start state
-
-/// How the card starts when Lights mode is entered (the orchestrator's Q4).
-enum LightsAtmosphereStart: Equatable {
-    case collapsed
-    case expanded
-    /// Expanded only when the air is on at entry (macOS).
-    case expandedIfOn
-
-    func startsExpanded(airIsOn: Bool) -> Bool {
-        switch self {
-        case .collapsed: return false
-        case .expanded: return true
-        case .expandedIfOn: return airIsOn
-        }
-    }
-}
-
 // MARK: - What the card shows
 
 /// Everything the card shows, worked out from the controller in one place so
@@ -431,10 +484,11 @@ struct AtmosphereCardState: Equatable {
         var spoken: String
     }
 
-    /// The glyph a collapsed header shows for the hint.
-    struct Glyph: Equatable {
-        var systemImage: String
-        var label: String
+    /// The dust pattern's whole-number seed row.
+    struct SeedRow: Equatable {
+        var value: Int
+        var range: ClosedRange<Double>
+        var text: String
     }
 
     // Names and fixed texts.
@@ -445,6 +499,10 @@ struct AtmosphereCardState: Equatable {
     static let unavailableText = "Atmosphere settings are unavailable"
     /// One line about scatter, from the `atmosphere` command's help.
     static let scatterNote = "Above 0, the air glows more where a beam points towards the camera."
+    static let glowNote = "Above 1, bright dust with haze and a light behind the molecule can wash the picture out."
+    static let opacityNote = "Above 0, motes hide what is behind them."
+    static let seedLabel = "Seed"
+    static let seedNote = "The dust pattern: each whole number gives a different one."
 
     /// The air draws: haze > 0 or dust > 0.
     var isOn: Bool
@@ -459,6 +517,8 @@ struct AtmosphereCardState: Equatable {
     /// One per AirParameter in declaration order; empty until the table has
     /// loaded.
     var rows: [Row]
+    /// The dust pattern seed row (nil until the table has loaded or when inactive).
+    var seed: SeedRow?
 
     /// `behind`: the lowercased names of the lights behind the molecule;
     /// nil reads the controller's `facing`.
@@ -478,6 +538,11 @@ struct AtmosphereCardState: Equatable {
                        text: AtmosphereFormat.text(parameter, value),
                        spoken: AtmosphereFormat.spoken(parameter, value))
         }
+        if let field = controller.airSeedField, let value = controller.airSeed {
+            seed = SeedRow(value: value, range: field.range, text: String(value))
+        } else {
+            seed = nil
+        }
     }
 
     func row(_ parameter: AirParameter) -> Row? {
@@ -491,11 +556,6 @@ struct AtmosphereCardState: Equatable {
     /// The rows are missing because the table could not be read.
     var isUnavailable: Bool { rows.isEmpty }
 
-    /// What a collapsed header shows for the hint (nil: no hint).
-    var collapsedGlyph: Glyph? {
-        hint.map { Glyph(systemImage: $0.glyph, label: $0.text) }
-    }
-
     /// One line for logs and the simulator evidence; stable field order and
     /// number formats.
     var summary: String {
@@ -503,7 +563,8 @@ struct AtmosphereCardState: Equatable {
             row(p).map { String(format: "%.2f", $0.value) } ?? "-"
         }
         return "on=\(isOn ? 1 : 0) haze=\(v(.haze)) dust=\(v(.dust)) dust_size=\(v(.dustSize))"
-            + " dust_speed=\(v(.dustSpeed)) scatter=\(v(.scatter)) rig=\(hasRig ? 1 : 0)"
+            + " dust_speed=\(v(.dustSpeed)) scatter=\(v(.scatter)) dust_glow=\(v(.dustGlow))"
+            + " dust_opacity=\(v(.dustOpacity)) rig=\(hasRig ? 1 : 0)"
             + " hint=\(hint?.identifier ?? "none") edit=\(canEdit ? 1 : 0) memory=\(hasMemory ? 1 : 0)"
     }
 }
@@ -539,6 +600,24 @@ extension LightsController {
     @discardableResult
     func setAir(_ parameter: AirParameter, _ value: Double) -> LightSetResult {
         writeRigNumbers([(parameter.field, value)])
+    }
+
+    /// The table row of the dust pattern seed (nil until the table has loaded).
+    var airSeedField: AirField? {
+        airFields.first { $0.name == "seed" }
+    }
+
+    /// The rig's seed, or the table default with no rig (nil with neither).
+    var airSeed: Int? {
+        air?.seed ?? airSeedField.map { Int($0.defaultValue) }
+    }
+
+    /// Set the seed of the rig's air (the core clamps into the table's
+    /// range). What the typed seed field calls: the bridge setter at index -1,
+    /// no Python. `.noRig` with no rig, `.badIndex` when inactive or busy.
+    @discardableResult
+    func setAirSeed(_ value: Int) -> LightSetResult {
+        writeRigNumbers([("seed", Double(value))])
     }
 
     /// `setAir` unless the rig already holds `value` (a slider echoing its

@@ -22,11 +22,15 @@ struct LightRigSnapshot: Decodable, Equatable {
         var dustSpeed: Double
         var scatter: Double
         var seed: Int
+        var dustGlow: Double
+        var dustOpacity: Double
 
         enum CodingKeys: String, CodingKey {
             case haze, dust, scatter, seed
             case dustSize = "dust_size"
             case dustSpeed = "dust_speed"
+            case dustGlow = "dust_glow"
+            case dustOpacity = "dust_opacity"
         }
     }
 
@@ -49,6 +53,8 @@ struct LightRigSnapshot: Decodable, Equatable {
         /// Full cone, degrees.
         var beam: Double
         var softness: Double
+        /// Light source radius in rig sizes; softens shadows in Mac ray-traced renders (#741).
+        var size: Double = 0
         /// sRGB, 0...1.
         var color: SIMD3<Double>
         /// Kelvin.
@@ -61,7 +67,7 @@ struct LightRigSnapshot: Decodable, Equatable {
 
         enum CodingKeys: String, CodingKey {
             case name, anchor, orbit, pitch, radius, position, aim
-            case beam, softness, color, warmth, intensity, highlight, falloff
+            case beam, softness, size, color, warmth, intensity, highlight, falloff
             case shadow, outline
             case aimPoint = "aim_point"
             case aimSelection = "aim_selection"
@@ -106,6 +112,8 @@ struct LightEyeSpace: Equatable {
         var aim: LightRigSnapshot.Aim
         var shadow: Bool
         var outline: Bool
+        /// This frame's shadow-map slot 0..2; -1 when it gets no map (#673).
+        var shadowSlot: Int = -1
     }
 
     var enabled: Bool
@@ -228,7 +236,8 @@ extension PyMOLEngine {
                     anchor: light.anchor != 0 ? .pinned : .camera,
                     aim: light.aim != 0 ? .point : .centre,
                     shadow: light.shadow != 0,
-                    outline: light.outline != 0)
+                    outline: light.outline != 0,
+                    shadowSlot: Int(light.shadowSlot))
             })
     }
 }

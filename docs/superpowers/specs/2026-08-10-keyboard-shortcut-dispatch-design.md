@@ -332,7 +332,16 @@ Upstream PyMOL met the same wall and papered over one symptom of it — `OrthoKe
 non-US keyboards, so simply ignore the modifier"*. Tier A is the general form of that patch.
 
 Whether to offer an explicit escape hatch (a modifier-passthrough toggle, or a "keyboard goes
-to the viewport" mode) is deliberately left as a follow-up rather than guessed at here.
+to the viewport" mode) was left as a follow-up; #261 resolved it as follows.
+
+**Resolution (#261): an opt-in, user-bound-only toggle.** View > *Send Key Bindings to Viewport
+While Typing* (persisted, default off). With it on, a Tier A combo is taken from the focused
+command line only when the user *defined* that exact `ALT-`/`CTSH-` token (its `key_mappings`
+entry differs from stock PyMOL's table; `raymol_keys.is_user_bound`). Stock defaults still yield,
+so the toggle cannot make a German `@` (⌥L) spawn a `leu` object, and Tier B (⌥←/→, ⌃A/E/K…) is
+untouched. A startup audit line (`raymol_keys.audit_viewport_keys`) tells a user whose
+`~/.raymolrc` binds such keys, with the toggle off, that they only fire while the command line is
+unfocused and how to turn the toggle on.
 
 ## Non-goals
 

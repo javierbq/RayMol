@@ -2,8 +2,8 @@
 
 SceneLightsFrame (layer1/SceneLights.cpp) copies the rig's air and frame in
 eye space (airSource) from its one rig read, only while the rig is on with
-haze or dust. SceneLightsAir then applies the gates (no air in grid mode, no
-air without geometry), reads the dust clock (LightAirClock: a pin, movie time
+haze or dust. SceneLightsAir then applies the gates (no air without geometry),
+reads the dust clock (LightAirClock: a pin, movie time
 in exports, 0 for an offscreen still, the live clock) and the settings
 metal_light_air_resolution, metal_light_air_time and
 metal_light_air_shadow_filter, and packs the 80-byte block
@@ -39,17 +39,18 @@ CELL_SIZES, MIN_CELL = 0.15, 0.5
 HAZE_DENSITY, MOTE_CELLS, DEFOCUS, OCCUPANCY = 0.73, 0.18, 0.3, 0.35
 TIME_WRAP, DEFAULT_FPS = 20000.0, 30.0
 GOLDEN = 0.6180339887498949
-BLOCK_FLOATS = 20
+BLOCK_FLOATS = 24
 
 SETTINGS = ((884, 'metal_light_air_resolution', 'i', 0),
             (885, 'metal_light_air_time', 'f', -1.0),
-            (886, 'metal_light_air_shadow_filter', 'i', 0))
+            (886, 'metal_light_air_shadow_filter', 'i', 0),
+            (888, 'metal_light_air_alpha', 'i', 0))
 
 # Decoded fields at their block offsets (LightAirBlock.h).
 OFFSETS = {'haze_density': 0, 'dust_occupancy': 1, 'scatter': 2,
            'seed_offset': 3, 'near': 4, 'far': 5, 'focus': 6, 'cell': 7,
            'time': 8, 'mote_radius': 9, 'defocus': 10, 'shadow_filter': 11,
-           'scale': 12}
+           'scale': 12, 'dust_glow': 20, 'dust_opacity': 21}
 
 
 def f32(x):
@@ -167,6 +168,8 @@ def expected(centre_eye, size_eye, air, time=0.0, scale=0.5, shadow_filter=1):
         'defocus': f32(DEFOCUS / s),
         'shadow_filter': shadow_filter,
         'scale': scale,
+        'dust_glow': f32(min(max(air.get('dust_glow', 1.0), 0.0), 4.0)),
+        'dust_opacity': f32(min(max(air.get('dust_opacity', 0.0), 0.0), 1.0)),
     }
 
 
@@ -218,6 +221,17 @@ class TestSettings(AirCase):
         from pymol import raymol_scenes
         for _, name, _, _ in SETTINGS:
             self.assertNotIn(name, raymol_scenes.CAPTURE)
+
+    def testPhaseSetting(self):
+        from pymol import setting, raymol_scenes
+        self.assertEqual(setting._get_index('metal_light_air_phase'), 889)
+        text = strip_comments(read_source(self, os.path.join('layer1',
+                                                             'SettingInfo.h')))
+        pattern = r'REC_f\(\s*889,\s*metal_light_air_phase\s*,\s*global\s*,\s*0\.0F\s*\)'
+        self.assertRegex(text, pattern)
+        self.assertEqual(len(re.findall(r'\bmetal_light_air_phase\b', text)), 1)
+        self.assertEqual(cmd.get_setting_float('metal_light_air_phase'), 0.0)
+        self.assertNotIn('metal_light_air_phase', raymol_scenes.CAPTURE)
 
 
 class TestResolution(testing.PyMOLTestCase):
@@ -297,6 +311,11 @@ class TestClock(testing.PyMOLTestCase):
         self.assertEqual(time(3.0, 0.0), 0.0)
         self.assertEqual(time(-3.0, 2.0), 0.0)
         self.assertEqual(time(3.0, -2.0), 0.0)
+        self.assertEqual(time(3.0, 2.0, 1.5), 7.5)
+        self.assertEqual(time(3.0, 0.0, 2.0), 2.0)
+        self.assertEqual(time(1.0, 1.0, -5.0), 0.0)
+        self.assertEqual(time(1.0, 1.0, float('nan')), 1.0)
+        self.assertAlmostEqual(time(TIME_WRAP, 1.0, 1.5), 1.5)
         self.assertAlmostEqual(time(TIME_WRAP + 1.5, 1.0), 1.5)
         self.assertAlmostEqual(time(15000.0, 2.0), 10000.0)
         self.assertGreaterEqual(time(1e300, 1e300), 0.0)
@@ -362,9 +381,13 @@ class TestGate(AirCase):
 
     def testGrid(self):
         self.rig()
-        self.assertIsNotNone(self.frame())
-        self.assertIsNone(self.frame(grid=(2, 1, 1)))
-        self.assertIsNone(self.frame(grid=(1, 1, 1)))
+        base = self.frame()
+        self.assertIsNotNone(base)
+        # #686: the grid no longer suppresses the air; same block
+        for grid in ((2, 1, 1), (1, 1, 1)):
+            got = self.frame(grid=grid)
+            self.assertIsNotNone(got)
+            self.assertEqual(got, base)
 
     def testReinitialize(self):
         self.rig()
@@ -509,11 +532,27 @@ class TestPack(AirCase):
             self.assertEqual(got['shadow_filter'], filt, value)
             self.assertIsInstance(got['shadow_filter'], int)
 
+    def testAirAlphaFlag(self):
+        # #684: view.z (block[14]) is 1 only for metal_light_air_alpha 1; off
+        # (the default) the block is what it was
+        self.rig()
+        self.assertEqual(cmd.get_setting_int('metal_light_air_alpha'), 0)
+        base = self.frame()['block']
+        self.assertEqual(base[14], 0.0)
+        for value, flag in ((1, 1.0), (0, 0.0), (2, 0.0), (-1, 0.0)):
+            cmd.set('metal_light_air_alpha', value)
+            block = self.frame()['block']
+            self.assertEqual(block[14], flag, value)
+            # nothing else moves with it
+            self.assertEqual(block[:14] + block[15:],
+                             base[:14] + base[15:], value)
+
     def testRendererFieldsAreZero(self):
         self.rig()
         block = self.frame()['block']
         self.assertEqual(block[13:16], [0.0, 0.0, 0.0])
         self.assertEqual(block[16:20], [0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(block[22:24], [0.0, 0.0])
 
     def testBlockLayout(self):
         self.rig(air=dict(AIR, seed=3))
@@ -576,6 +615,42 @@ class TestMovieTime(AirCase):
         self.rig(air=dict(AIR, dust_speed=2.0))
         cmd.frame(16)
         self.assertEqual(self.time(offscreen=False, wall=50.0), 100.0)
+
+    def testPhase(self):
+        # In TestMovieTime, rig dust_speed 2, cmd.frame(16),
+        # cmd.set('metal_light_air_phase', 0.25): offscreen time ==
+        # f32(0.5 * 2.0 + 0.25); live not playing
+        # (self.time(offscreen=False, wall=50.0)) == 100.0 (phase ignored);
+        # pinned (metal_light_air_time 2.0) == 4.0 (ignored); cmd.mset() (no
+        # movie) offscreen == 0.0 (ignored).
+        self.rig(air=dict(AIR, dust_speed=2.0))
+        cmd.frame(16)
+        cmd.set('metal_light_air_phase', 0.25)
+        self.assertEqual(self.time(), f32(0.5 * 2.0 + 0.25))
+        self.assertEqual(self.time(offscreen=False, wall=50.0), 100.0)
+        cmd.set('metal_light_air_time', 2.0)
+        self.assertEqual(self.time(), 4.0)
+        cmd.set('metal_light_air_time', -1.0)
+        cmd.mset()
+        self.assertEqual(self.time(), 0.0)
+
+    def testStatesWithoutMovieAreStill(self):
+        # #688: with no movie, a multi-state object's state never drives
+        # the dust; an offscreen still of state 3 has time 0, like state 1
+        cmd.mset()                      # clear the movie from setUp
+        cmd.create('ms', 'm', 1, 1)
+        cmd.create('ms', 'm', 1, 2)
+        cmd.create('ms', 'm', 1, 3)
+        self.assertEqual(cmd.count_states('ms'), 3)
+        self.rig(air=dict(AIR, dust_speed=2.0))
+        for state in (1, 3):
+            cmd.set('state', state)
+            self.assertEqual(cmd.get_state(), state)
+            self.assertEqual(self.time(), 0.0, state)
+        # a movie over the same states still drives the dust
+        cmd.mset('1 -3')
+        cmd.frame(3)
+        self.assertEqual(self.time(), f32(2 / 30.0 * 2.0))
 
 
 class TestAnimating(AirCase):
@@ -651,9 +726,10 @@ class TestSource(testing.PyMOLTestCase):
             self.assertIsNone(found, '%s uses %r' % (name, found and found.group(0)))
         block = self.read(os.path.join('layer1', 'LightAirBlock.h'))
         self.assertEqual(re.findall(r'#include\s+"', block), [])
-        self.assertRegex(block, r'static_assert\(sizeof\(LightAirBlock\)\s*==\s*80')
+        # #810: 96 bytes (six float4s)
+        self.assertRegex(block, r'static_assert\(sizeof\(LightAirBlock\)\s*==\s*96')
         for field, offset in (('medium', 0), ('range', 16), ('motion', 32),
-                              ('view', 48), ('proj', 64)):
+                              ('view', 48), ('proj', 64), ('mote', 80)):
             self.assertRegex(block, r'offsetof\(LightAirBlock,\s*%s\)\s*==\s*%d'
                              % (field, offset))
 
@@ -699,12 +775,14 @@ class TestSource(testing.PyMOLTestCase):
         first = re.search(r'\S', body)
         self.assertTrue(body[first.start():].startswith('if (!frame.airSource)'),
                         body[:80])
-        grid = body.index('grid')
+        # #686: grid mode no longer suppresses the air
+        self.assertNotIn('grid', body)
         extent = body.index('SceneGetLightShadowExtent(')
-        self.assertLess(grid, extent)
         for token in ('cSetting_metal_light_air_time',
+                      'cSetting_metal_light_air_phase',
                       'cSetting_metal_light_air_resolution',
                       'cSetting_metal_light_air_shadow_filter',
+                      'cSetting_metal_light_air_alpha',
                       'cSetting_movie_fps', 'SceneGetFrame(', 'SceneCountFrames(',
                       'MoviePlaying(', 'UtilGetSeconds(', 'offscreenFrame('):
             self.assertEqual(body.count(token), 1, token)
@@ -717,9 +795,11 @@ class TestSource(testing.PyMOLTestCase):
     def testAnimatingOrder(self):
         body = function_body(self.scene_lights(), 'SceneLightsAirAnimating')
         self.assertEqual(body.count('SceneGetLightShadowExtent('), 1)
+        # #686: grid mode no longer stops dust animation
+        self.assertNotIn('grid', body)
         extent = body.index('SceneGetLightShadowExtent(')
         for token in ('LightRigIsOn(', 'cSetting_metal_light_air_time',
-                      'MoviePlaying(', 'grid'):
+                      'MoviePlaying('):
             self.assertLess(body.index(token), extent, token)
 
     def testNoRedrawRequests(self):
@@ -753,3 +833,61 @@ class TestSource(testing.PyMOLTestCase):
         self.assertEqual(body.strip(), 'return _offscreen;')
         body = function_body(mm, 'RendererMetal::beginFrame')
         self.assertEqual(body.count('_lightAirOn = false;'), 1)
+
+
+class TestDustLook810(AirCase):
+    """Issue #810: dust_glow and dust_opacity."""
+
+    def setUp(self):
+        super().setUp()
+        self.load_m()
+
+    def testDefaults(self):
+        # defaults: a rig without the keys packs block[20:24] == [1.0, 0.0, 0.0, 0.0]
+        # and the same block as a rig with dust_glow=1.0, dust_opacity=0.0
+        self.rig(air=dict(AIR))
+        got = self.frame()
+        self.assertEqual(got['block'][20:24], [1.0, 0.0, 0.0, 0.0])
+        self.assertEqual(got['dust_glow'], 1.0)
+        self.assertEqual(got['dust_opacity'], 0.0)
+
+        self.rig(air=dict(AIR, dust_glow=1.0, dust_opacity=0.0))
+        explicit = self.frame()
+        self.assertEqual(got['block'], explicit['block'])
+
+    def testValues(self):
+        # values: dust_glow 2.5 / dust_opacity 0.4 pack as f32(2.5) / f32(0.4)
+        self.rig(air=dict(AIR, dust_glow=2.5, dust_opacity=0.4))
+        got = self.frame()
+        self.assertEqual(got['block'][20], f32(2.5))
+        self.assertEqual(got['block'][21], f32(0.4))
+        self.assertEqual(got['dust_glow'], f32(2.5))
+        self.assertEqual(got['dust_opacity'], f32(0.4))
+
+        # glow 0 and 4, opacity 0 and 1 (the ends) pack exactly
+        for glow, opacity in ((0.0, 0.0), (4.0, 1.0), (0.0, 1.0), (4.0, 0.0)):
+            self.rig(air=dict(AIR, dust_glow=glow, dust_opacity=opacity))
+            frame = self.frame()
+            self.assertEqual(frame['block'][20], f32(glow))
+            self.assertEqual(frame['block'][21], f32(opacity))
+
+        # set_lights with glow 9 and opacity -1 clamps to 4 and 0
+        self.rig(air=dict(AIR, dust_glow=9.0, dust_opacity=-1.0))
+        clamped = self.frame()
+        self.assertEqual(clamped['block'][20], f32(4.0))
+        self.assertEqual(clamped['block'][21], f32(0.0))
+        self.assertEqual(clamped['dust_glow'], f32(4.0))
+        self.assertEqual(clamped['dust_opacity'], f32(0.0))
+
+    def testOnlyMoteFloatsMove(self):
+        # only block[20:22] move when glow/opacity change (everything else equal)
+        self.rig(air=dict(AIR))
+        base_block = self.frame()['block']
+
+        self.rig(air=dict(AIR, dust_glow=3.0, dust_opacity=0.7))
+        moved_block = self.frame()['block']
+
+        self.assertEqual(base_block[:20], moved_block[:20])
+        self.assertNotEqual(base_block[20:22], moved_block[20:22])
+        self.assertEqual(base_block[22:24], moved_block[22:24])
+

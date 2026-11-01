@@ -68,6 +68,10 @@ struct Light {
   /// Full cone angle in degrees; never changed by a radius edit (decision 8).
   double beam = 45.0;
   double softness = 0.4;
+  /// Light source radius in rig sizes: 0 = a point (hard shadows); larger
+  /// lights cast softer shadows in ray-traced Mac renders (#741). No effect on
+  /// raster renders or on iOS.
+  double size = 0.0;
   glm::dvec3 color{1.0}; ///< sRGB, each 0..1
   double warmth = 6500.0;  ///< kelvin; 6500 is neutral
   double intensity = 1.0;
@@ -87,6 +91,8 @@ struct LightAir {
   double dustSpeed = 1.0;
   double scatter = 0.55;
   int seed = 0;
+  double dustGlow = 1.0;
+  double dustOpacity = 0.0;
 };
 
 /**
@@ -134,6 +140,8 @@ enum class LightFieldId {
   DustSpeed,
   Scatter,
   Seed,
+  DustGlow,
+  DustOpacity,
   // light
   Name,
   Anchor,
@@ -153,6 +161,7 @@ enum class LightFieldId {
   Falloff,
   Shadow,
   Outline,
+  LightSize,
 };
 
 struct LightField {
@@ -223,6 +232,11 @@ std::string LightRigNextName(const std::vector<std::string>& taken);
  * The message names the light and the field.
  */
 pymol::Result<> LightRigValidate(const LightRig& rig);
+
+/// Rigs `a` and `b` blended at eased position `e` (#617 semantics, #661
+/// port of raymol_scene_anim.blend_rigs). Pure; no validation; inputs are
+/// taken as given.
+LightRig LightRigBlend(const LightRig& a, const LightRig& b, double e);
 
 /* ---- placement helpers (spec §4.3) ------------------------------------- */
 

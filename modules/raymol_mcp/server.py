@@ -18,24 +18,26 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from raymol_mcp import events, tools
+from raymol_mcp import events, guide, tools
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "raymol", "version": "1.0.0"}
-INSTRUCTIONS = (
-    "RayMol is a molecular visualization app (a PyMOL fork). You drive it via "
-    "these tools. Use run_pymol_command for single PyMOL statements (fetch, show, "
-    "color, set; pass async=0 on fetch/load so it blocks), and run_python for "
-    "multi-step logic with the 'cmd' API (plus numpy as np and Bio when "
-    "available); state persists across run_python calls. Call get_session_state to "
-    "see loaded objects and the camera, and capture_viewport to see the current "
-    "view as an image. search_pdb finds PDB IDs to fetch. Prefer making one change "
-    "at a time and capturing the viewport to verify results."
-)
+# "version" is the app's marketing version when the host passes it to start().
+SERVER_INFO = {"name": "raymol", "title": "RayMol", "version": "1.0.0"}
+INSTRUCTIONS = guide.INSTRUCTIONS
 
 # A session is dropped after this many seconds with no request. Claude Code sends no keepalive when idle, so 300s avoids flapping the count during normal between-task idleness; the desktop bridge sends an explicit DELETE on quit for instant cleanup.
 SESSION_TTL = 300.0
+# A rejected request's body is drained (to keep the connection usable) only up
+# to this size and for this long; past either, the connection is closed.
+DRAIN_LIMIT = 64 * 1024
+DRAIN_TIMEOUT = 5.0
 SWEEP_INTERVAL = 20.0
+
+# What the server says on initialize and tools/list, cached beside the app's
+# mcp.json handoff so the --mcp-bridge (MCPBridge.swift) can answer with the
+# CURRENT tools and instructions while RayMol is not running.
+DISCOVERY_CACHE = os.path.expanduser(
+    "~/Library/Application Support/RayMol/mcp_tools.json")
 
 _lock = threading.Lock()            # guards server lifecycle (start/stop)
 _httpd = None
@@ -84,9 +86,24 @@ def _summary(name, args):
         return args.get("command", "command")
     if name == "search_pdb":
         return "search PDB: %s" % args.get("query", "")
+    if name == "set_lighting" and args.get("preset"):
+        return "lighting: %s" % args["preset"]
+    if name == "set_material" and args.get("material"):
+        return "material: %s" % args["material"]
+    if name == "predict_structure":
+        return "predict structure (%s)" % (args.get("predictor") or "boltz2")
     return {"run_python": "run_python",
             "get_session_state": "read session state",
-            "capture_viewport": "capture viewport"}.get(name, name)
+            "capture_viewport": "capture viewport",
+            "set_lighting": "set lighting",
+            "set_atmosphere": "set atmosphere",
+            "set_material": "set material",
+            "set_render_effects": "set render effects",
+            "export_image": "export image",
+            "export_movie": "export movie",
+            "job_status": "check jobs",
+            "raymol_help": "read RayMol help",
+            "design_binder": "design binder"}.get(name, name)
 
 
 def _ok(req_id, result):
@@ -116,7 +133,7 @@ def handle_jsonrpc(message, session_id):
     if method == "ping":
         return _ok(req_id, {})
     if method == "tools/list":
-        return _ok(req_id, {"tools": tools.TOOLS})
+        return _ok(req_id, {"tools": tools.list_tools()})
     if method == "tools/call":
         if not _trusted:
             return _ok(req_id, {"content": [{"type": "text",
@@ -151,13 +168,61 @@ class _Handler(BaseHTTPRequestHandler):
     def _authed(self):
         return self.headers.get("Authorization", "") == "Bearer %s" % _token
 
-    def _reject(self, code, text):
+    def _drain_body(self):
+        """Read and discard the request body. Every early reply must do this:
+        on a kept-alive HTTP/1.1 connection an unread JSON body is parsed as
+        the NEXT request line, and the client's following request fails with
+        "400 Bad request syntax ('{ json...')".
+
+        The caller may be unauthenticated, so the drain is bounded: a body
+        over DRAIN_LIMIT, or one that stalls for DRAIN_TIMEOUT, is not read;
+        the connection is closed instead of kept alive."""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            self.close_connection = True
+            return
+        if length <= 0:
+            return
+        if length > DRAIN_LIMIT:
+            self.close_connection = True
+            return
+        sock = self.connection
+        previous = sock.gettimeout()
+        sock.settimeout(DRAIN_TIMEOUT)
+        try:
+            while length > 0:
+                chunk = self.rfile.read(min(length, 8192))
+                if not chunk:
+                    self.close_connection = True
+                    return
+                length -= len(chunk)
+        except OSError:
+            self.close_connection = True
+        finally:
+            try:
+                sock.settimeout(previous)
+            except OSError:
+                pass
+
+    def _reject(self, code, text, allow=None, drain=True):
+        if drain:
+            self._drain_body()
         body = text.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
+        if allow:
+            self.send_header("Allow", allow)
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):
+        # Streamable HTTP: a server that offers no SSE stream answers GET with
+        # 405 (the default 501 reads to some clients as a broken server).
+        if self.path.rstrip("/") != "/mcp":
+            return self._reject(404, "not found")
+        return self._reject(405, "method not allowed", allow="POST, DELETE")
 
     def do_POST(self):
         if self.path.rstrip("/") != "/mcp":
@@ -165,12 +230,17 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._reject(401, "unauthorized")
 
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            # The body's extent is unknown, so the connection can't be reused.
+            self.close_connection = True
+            return self._reject(400, "bad content-length", drain=False)
+        raw = self.rfile.read(length) if length > 0 else b""
         try:
             message = json.loads(raw.decode("utf-8"))
         except Exception:
-            return self._reject(400, "invalid json")
+            return self._reject(400, "invalid json", drain=False)
 
         session_id = self.headers.get("Mcp-Session-Id")
         is_init = isinstance(message, dict) and message.get("method") == "initialize"
@@ -210,6 +280,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         if not self._authed():
             return self._reject(401, "unauthorized")
+        self._drain_body()
         session_id = self.headers.get("Mcp-Session-Id")
         # Atomic pop-once so a concurrent sweep can't also pop+emit for this sid
         # (double client_disconnected). Emit outside the lock (blocking I/O).
@@ -224,12 +295,30 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def start(port, token):
+def write_discovery_cache(path=None):
+    """Best effort: a failure here must never stop the server starting."""
+    path = path or DISCOVERY_CACHE
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"serverInfo": SERVER_INFO,
+                       "instructions": INSTRUCTIONS,
+                       "tools": tools.list_tools()}, f)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+def start(port, token, version=None):
     global _httpd, _thread, _port, _token, _trusted, _sweeper, _stop_sweeper
     with _lock:
         if _httpd is not None:
             return _port
         _token = token
+        if version:
+            SERVER_INFO["version"] = str(version)
         # Dev/testing auto-trust: when RAYMOL_MCP_AUTOTRUST=1 is present in the
         # process environment, skip the interactive "Allow" approval. This env var
         # is NEVER set in a shipped build (apps launched via Finder / `open` have
@@ -255,6 +344,7 @@ def start(port, token):
         _sweeper = threading.Thread(target=_sweep_loop,
                                     name="raymol-mcp-sweep", daemon=True)
         _sweeper.start()
+        write_discovery_cache()
         events.server_started(_port)
         return _port
 

@@ -135,6 +135,7 @@ file-static state and packed settings.
 | `falloff` | exponent, 0–2 | 2 | (aim distance / distance)^falloff: 2 = inverse square, 1 at the aim point; 0 = none. |
 | `shadow` | bool | false | At most 3 lights; the 4th is refused with a message. |
 | `outline` | bool | false | Beam outline on the geometry (the prototype's `cue`). |
+| `size` | scene sizes, 0–1 | 0 | Light source radius: 0 = point (hard); softens shadows in Mac RT renders (#741). |
 
 Limits: 6 lights and 3 shadowed lights. #616 revisits the shadow cap after
 measuring large assemblies.
@@ -267,10 +268,16 @@ the tickets carry permalinks.
   - the uniform is bound only when the rig is on.
 - **Materials (#615):** the response comes from `MaterialParams`. This
   replaces the prototype's hand-tuned table. `default` is unchanged.
-- **Shadows (#616):**
+- **Shadows (#616, #741):**
   - one perspective map per shadowed light, in a `depth2d_array`, applied only
     to its own light;
   - a 3×3 PCF with normal offset;
+  - soft shadows from light size are traced on RT-capable Macs (#741); iOS keeps
+    the maps (screen-space PCSS may follow as a separate issue); the haze keeps
+    #618's maps; the G-buffer route was rejected by the #625 spike (it conflicts
+    with forward MSAA, OIT, glass, labels and per-draw materials, and A16 has no
+    RT hardware), so scenes and movies can differ between platforms when size >
+    0; size 0 renders identically everywhere;
   - the whole-pixel shadow is off, raster and traced, while any studio shadow
     is on;
   - overlays never cast shadows (#433).
@@ -284,6 +291,11 @@ the tickets carry permalinks.
 - **HDR (#624):** scene-referred float light plus exposure and one
   hue-preserving white-point curve inside the rig shaders (the air adds light
   through its inverse), replacing the 8-bit soft knee; storage stays 8 bit.
+  - display-referred (never lit): the background, labels, lines and dots;
+  - measurement dashes (the DistSet dash representation) are lit geometry
+    like sticks, not overlays, by owner decision (#738): on Metal they are
+    cylinder impostors and take the rig. Only with `dash_as_cylinders` or
+    `render_as_cylinders` off are they lines, and unlit.
 
 ## 8. Performance budget
 
@@ -300,7 +312,9 @@ The target, on an iPhone with an A16 or newer and an M-series iPad, with a
 - **If a device still misses the target with the fallbacks:** #623 reports the
   numbers, and the cap on shadowed lights is revisited.
 - **Mac:** numbers for 0, 1 and 3 shadowed lights at three structure sizes go
-  on #616 (checklist L6).
+  on #616 (checklist L6). Traced soft shadows (#741) cost +9.7 to +18.7 ms per
+  exported frame at 16 rays per light (spike #625; the live view traces 8 at
+  `metal_rt_scale`), while size 0 costs nothing.
 
 ## 9. Controls (#619–#623)
 
@@ -328,8 +342,9 @@ The target, on an iPhone with an A16 or newer and an M-series iPad, with a
 - **Orbit mini viewer (#621):** a flat plan drawn from the camera, plus a
   pitch arc.
   - **Plan rings:** radius in scene sizes, 1× at the edge captured at centring.
-  - **Lamp:** dragging a lamp changes orbit only, snapping every 15°. Tapping
-    selects a light.
+  - **Lamp:** dragging a lamp changes orbit only, following the pointer to the
+    orbit quantum (1°, as pitch does; #800). VoiceOver and keyboard steps stay
+    15°. Tapping selects a light.
   - **Radius:** drag the square on the selected light's ring, or pinch;
     snapping every 0.5×, beam angle kept.
   - **Pitch arc:** −90° to +90°; orbit and radius are kept.

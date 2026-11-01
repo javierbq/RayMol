@@ -3,6 +3,8 @@
  */
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -32,6 +34,7 @@
 #include "pymol/utility.h"
 #include "ImmediateHelper.h"
 #include "Renderer.h"
+#include "PyMOL.h"
 
 // Bridge function for main_appkit.mm which cannot include GLEW headers.
 void ImmBatch_SetActiveRenderer(pymol::Renderer* r) {
@@ -731,6 +734,25 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
   if (!SceneGetDrawFlag(grid, slot_vla, obj->grid_slot))
     return;
 
+  // UI overlays (gadgets, gizmos, _move_gizmo) must never enter the ray
+  // tracing acceleration structure (#433). Inform the renderer so it suppresses
+  // rtNoteGeometry for this object's draw calls.
+  struct ScopedOverlayDraw {
+    PyMOLGlobals* G;
+    bool is_overlay;
+    ScopedOverlayDraw(PyMOLGlobals* g, const pymol::CObject* o)
+        : G(g), is_overlay(SceneObjectIsOverlay(o))
+    {
+      if (is_overlay && G->Renderer)
+        G->Renderer->setOverlayDraw(true);
+    }
+    ~ScopedOverlayDraw()
+    {
+      if (is_overlay && G->Renderer)
+        G->Renderer->setOverlayDraw(false);
+    }
+  } overlayDrawGuard(G, obj);
+
   auto use_shader = info->use_shaders;
 
 #ifndef _WEBGL
@@ -751,6 +773,19 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
       I->projectionMatrix =
           glm::ortho(context->unit_left, context->unit_right, context->unit_top,
               context->unit_bottom, context->unit_front, context->unit_back);
+
+      // Metal (#689): the renderer never sees I->projectionMatrix, so load
+      // the unit ortho into it, and mark the draws as a screen overlay: the
+      // renderer stashes them and draws them unlit after the post chain,
+      // above everything, as the GL ramp shader draws a gadget. Only the
+      // transparent pass, the one gadgets draw in.
+      const bool isMetalOverlay = G->Renderer &&
+          info->pass == RenderPass::Transparent && !info->pick && !info->ray;
+      if (isMetalOverlay) {
+        G->Renderer->matrixMode(0x1701);
+        G->Renderer->loadMatrixf(glm::value_ptr(I->projectionMatrix));
+        G->Renderer->setScreenOverlay(true);
+      }
 
 #ifndef PURE_OPENGL_ES_2
       if (!G->Renderer && ALWAYS_IMMEDIATE_OR(!use_shader)) {
@@ -775,6 +810,13 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
       obj->render(info);
 
       I->projectionMatrix = projSave;
+
+      if (isMetalOverlay) {
+        G->Renderer->setScreenOverlay(false);
+        G->Renderer->matrixMode(0x1701);
+        G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+        G->Renderer->matrixMode(0x1700);
+      }
 
 #ifndef PURE_OPENGL_ES_2
       if (!G->Renderer && ALWAYS_IMMEDIATE_OR(!use_shader)) {
@@ -1983,6 +2025,37 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
 }
 
 /**
+ * Does the object have any visible representation? Molecules: the OR of the
+ * atoms' visRep (cached by ObjectMolecule::repsShownByAtoms(), dropped by
+ * invalidate(cRepInvVisib)); a unit cell has no extent of its own. Other objects: only the reps
+ * their renderer honours (CObject starts with nearly every bit set, so
+ * `visRep != 0` alone would never be false for a CGO or a mesh).
+ */
+static bool SceneObjectShowsAnyRep(const pymol::CObject* obj)
+{
+  int drawn = 0;
+  switch (obj->type) {
+  case cObjectMolecule:
+    return static_cast<const ObjectMolecule*>(obj)->repsShownByAtoms() != 0;
+  case cObjectCGO:
+    drawn = cRepCGOBit;
+    break;
+  case cObjectMesh:
+    drawn = cRepMeshBit | cRepCellBit;
+    break;
+  case cObjectSurface:
+    drawn = cRepSurfaceBit | cRepCellBit;
+    break;
+  case cObjectMap:
+    drawn = cRepExtentBit | cRepDotBit;
+    break;
+  default:
+    return obj->visRep != 0;
+  }
+  return (obj->visRep & drawn) != 0;
+}
+
+/**
  * Model-space bounding box of the geometry that casts shadows: every object
  * enabled in the scene, with solvent atoms left out.
  *
@@ -2000,7 +2073,9 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
  * @param[out] mn,mx model-space min/max corners
  * @param skip_solvent exclude atoms flagged as solvent
  * @param skip_overlays exclude overlays (SceneObjectIsOverlay: gadgets,
- *        gizmos, the Move gizmo's CGO), which never cast studio shadows (#616)
+ *        gizmos, the Move gizmo's CGO), which never cast studio shadows (#616).
+ *        Also leaves out enabled objects with no visible representation: they
+ *        draw nothing, so they cast nothing (#690).
  * @return false if nothing contributed (mn/mx untouched)
  */
 static bool SceneComputeShadowExtent(PyMOLGlobals* G, float* mn, float* mx,
@@ -2022,6 +2097,8 @@ static bool SceneComputeShadowExtent(PyMOLGlobals* G, float* mn, float* mx,
 
   for (auto* obj : I->Obj) {
     if (skip_overlays && SceneObjectIsOverlay(obj))
+      continue;
+    if (skip_overlays && !SceneObjectShowsAnyRep(obj))
       continue;
     if (obj->type != cObjectMolecule) {
       // Maps, meshes, surfaces, CGOs: they already carry a cached extent.
@@ -2117,20 +2194,23 @@ bool SceneGetLightShadowExtent(PyMOLGlobals* G, float* mn, float* mx)
   return I->LightShadowExtentFlag;
 }
 
-// Build the directional key light's view*projection in EYE space, so the post
-// pass can reuse its existing eye-space position reconstruction (no camera
-// inverse needed). The light dir matches the shading key light (eye-space
-// normalize(0.4,0.4,1)). We look down -Ldir at the scene center (transformed to
-// eye space by the camera modelview), with an orthographic frustum sized to the
-// scene radius. Loaded as the renderer's PROJECTION while MODELVIEW stays the
-// camera modelview, so vbo_vertex's projection*(modelview*model) yields light
-// clip for model-space vertices.
-static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = nullptr)
+// Build the directional key light's view and its orthographic projection, both
+// in EYE space (the view maps camera eye space to the light's eye space), so
+// the post pass can reuse its existing eye-space position reconstruction (no
+// camera inverse needed) when sampling with lightProj * lightView. The light
+// dir matches the shading key light (eye-space normalize(0.4,0.4,1)). We look
+// down -Ldir at the scene center (transformed to eye space by the camera
+// modelview), with an orthographic frustum sized to the scene radius. The
+// classic pre-pass hands the view to beginShadowPass, which premultiplies it
+// onto every modelview, and loads the projection, so impostor casters face the
+// light (#665).
+static void SceneBuildLightViewProjEye(PyMOLGlobals* G, glm::mat4& lightView,
+    glm::mat4& lightProj, float* outRadius = nullptr)
 {
   float mn[3], mx[3];
   glm::vec3 centerEye(0.0f);
   float radius = 10.0f;
-  if (SceneGetShadowExtent(G, mn, mx)) {
+  if (SceneGetLightShadowExtent(G, mn, mx)) {
     glm::vec3 cw(
         (mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f);
     glm::vec3 dw(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]);
@@ -2149,16 +2229,110 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
   if (glm::length(Ldir) < 1e-6f)
     Ldir = glm::vec3(0.4f, 0.4f, 1.0f); // degenerate light: historical fallback
   Ldir = glm::normalize(Ldir);          // toward light
-  glm::vec3 up = (Ldir.z * Ldir.z < 0.81f) ? glm::vec3(0, 1, 0)
-                                           : glm::vec3(1, 0, 0);
+  // +y unless the light is near the view axis, or near the y axis itself,
+  // where lookAt's up would be parallel to the light and its view NaN (a
+  // light straight from above or below, `light [0, -1, 0]`; #665).
+  glm::vec3 up = (Ldir.z * Ldir.z < 0.81f && std::fabs(Ldir.y) < 0.95f)
+                     ? glm::vec3(0, 1, 0)
+                     : glm::vec3(1, 0, 0);
   glm::vec3 lightPos = centerEye + Ldir * (radius * 2.0f);
-  glm::mat4 lightView = glm::lookAt(lightPos, centerEye, up);
-  glm::mat4 lightProj =
+  lightView = glm::lookAt(lightPos, centerEye, up);
+  lightProj =
       glm::ortho(-radius, radius, -radius, radius, 0.05f, radius * 4.0f);
   if (outRadius)
     *outRadius = radius; // world half-extent of the ortho box; the renderer
                          // turns this into a scale-aware shadow bias (Angstroms)
-  return lightProj * lightView;
+}
+
+/*
+ * The key of everything a studio shadow pass draws (#666), as 32-bit words
+ * compared exactly: the scene's content counter, the state and frame, the
+ * camera (modelview, projection, clip, vertex scale, viewport), the grid
+ * layout, the plan (each map's light view and projection, size, tiles) and
+ * each object's identity, state, grid slot and TTT. Anything that can change
+ * a map but is not here must bump CScene::ContentGeneration.
+ */
+static std::vector<std::uint32_t> SceneLightShadowMapKey(PyMOLGlobals* G,
+    const pymol::LightShadowFrame& shadows, const float* mv)
+{
+  CScene* I = G->Scene;
+  std::vector<std::uint32_t> key;
+  key.reserve(64 + 40 * pymol::kLightRigBlockShadowSlots + 24 * I->Obj.size());
+  auto appendWord = [&key](std::uint32_t w) { key.push_back(w); };
+  auto appendFloat = [&key](float f) {
+    std::uint32_t u{};
+    std::memcpy(&u, &f, sizeof(u));
+    key.push_back(u);
+  };
+  auto appendFloats = [&appendFloat](const float* f, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+      appendFloat(f[i]);
+    }
+  };
+  auto appendPtr = [&key](const void* p) {
+    auto ptrVal = reinterpret_cast<std::uintptr_t>(p);
+    key.push_back(static_cast<std::uint32_t>(ptrVal));
+    key.push_back(
+        static_cast<std::uint32_t>(static_cast<std::uint64_t>(ptrVal) >> 32));
+  };
+
+  // 1. Content generation
+  appendWord(I->ContentGeneration);
+
+  // 2. State and frame
+  appendWord(static_cast<std::uint32_t>(SceneGetState(G)));
+  appendWord(static_cast<std::uint32_t>(SceneGetFrame(G)));
+
+  // 3. Camera
+  appendFloats(mv, 16);
+  appendFloats(SceneGetProjectionMatrixPtr(G), 16);
+  appendFloat(I->m_view.m_clipSafe().m_front);
+  appendFloat(I->m_view.m_clipSafe().m_back);
+  appendFloat(I->VertexScale);
+  appendWord(static_cast<std::uint32_t>(I->Width));
+  appendWord(static_cast<std::uint32_t>(I->Height));
+  appendWord(static_cast<std::uint32_t>(SettingGetGlobal_b(G, cSetting_ortho)));
+
+  // 4. Grid
+  appendWord(static_cast<std::uint32_t>(I->grid.active));
+  if (I->grid.active) {
+    appendWord(static_cast<std::uint32_t>((int)I->grid.mode));
+    appendWord(static_cast<std::uint32_t>(I->grid.first_slot));
+    appendWord(static_cast<std::uint32_t>(I->grid.last_slot));
+    appendWord(static_cast<std::uint32_t>(I->grid.n_col));
+    appendWord(static_cast<std::uint32_t>(I->grid.n_row));
+  }
+
+  // 5. The plan
+  appendWord(static_cast<std::uint32_t>(shadows.count));
+  appendWord(static_cast<std::uint32_t>(shadows.size));
+  appendWord(static_cast<std::uint32_t>(shadows.tiles));
+  appendWord(static_cast<std::uint32_t>(shadows.firstSlot));
+  for (int light : shadows.light)
+    appendWord(static_cast<std::uint32_t>(light));
+  for (int s = 0; s < shadows.count; ++s) {
+    appendFloats(glm::value_ptr(shadows.view[s].view), 16);
+    appendFloats(glm::value_ptr(shadows.view[s].proj), 16);
+    appendFloat(shadows.view[s].tanHalfFov);
+    appendFloat(shadows.view[s].nearZ);
+    appendFloat(shadows.view[s].farZ);
+    appendWord(static_cast<std::uint32_t>(shadows.view[s].beamFit));
+  }
+
+  // 6. Objects
+  appendWord(static_cast<std::uint32_t>(I->Obj.size()));
+  for (auto* obj : I->Obj) {
+    appendPtr(obj);
+    appendWord(static_cast<std::uint32_t>(obj->type));
+    appendWord(static_cast<std::uint32_t>(obj->grid_slot));
+    appendWord(static_cast<std::uint32_t>(ObjectGetCurrentState(obj, false)));
+    appendWord(static_cast<std::uint32_t>(obj->TTTFlag));
+    if (obj->TTTFlag) {
+      appendFloats(obj->TTT, 16);
+    }
+  }
+
+  return key;
 }
 
 /*
@@ -2172,6 +2346,10 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
  * overlays (#433: gadgets, gizmos and the Move gizmo never cast). One reopen
  * of the scene pass ends the maps (endLightShadowMaps), and the camera
  * matrices are restored.
+ *
+ * When nothing the maps depend on changed and the renderer still holds the
+ * previous pass's maps, the pass is skipped and the maps are reused (#666).
+ * Otherwise, the key is updated and the maps are re-rendered.
  *
  * grid_mode (decision D7 of #616): each map is a tile atlas, still one pass
  * per light. Every cell draws its own objects into its own tile (the encoder
@@ -2190,6 +2368,14 @@ static void SceneRenderLightShadowMaps(PyMOLGlobals* G,
   CScene* I = G->Scene;
   const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
   const float* mv = SceneGetModelViewMatrixPtr(G);
+  // #666: the maps depend only on what the key holds. When it equals the key
+  // of the last frame whose pass ran and the renderer still holds that pass's
+  // maps, this frame samples them instead of drawing them again.
+  std::vector<std::uint32_t> key = SceneLightShadowMapKey(G, shadows, mv);
+  if (key == I->LightShadowMapKey &&
+      G->Renderer->reuseLightShadowMaps(shadows.count))
+    return;
+  I->LightShadowMapKey.clear();
   for (int slot = 0; slot < shadows.count; ++slot) {
     if (!G->Renderer->beginLightShadowMap(
             slot, glm::value_ptr(shadows.view[slot].view)))
@@ -2219,6 +2405,7 @@ static void SceneRenderLightShadowMaps(PyMOLGlobals* G,
     }
   }
   G->Renderer->endLightShadowMaps();
+  I->LightShadowMapKey = std::move(key);
   // Restore the camera matrices for the normal scene pass.
   G->Renderer->matrixMode(0x1701);
   G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
@@ -2272,6 +2459,150 @@ static void SceneSetMetalGridCell(
   grid->slot = slot;
   grid->cur_viewport_size = Extent2D{
       static_cast<std::uint32_t>(cw), static_cast<std::uint32_t>(ch)};
+  // The cell's unit-window context, as GridSetViewport sets it on the GL path:
+  // a gadget in a grid cell draws with grid->context (SceneRenderAllObject),
+  // which the Metal path otherwise left zeroed, so the gadget vanished (#689).
+  grid->context = ScenePrepareUnitContext(grid->cur_viewport_size);
+}
+
+/**
+ * Whether this Metal frame draws the vertical background gradient (#689), and
+ * its two colours (copied, never held as pointers: see #540 below). Only
+ * BgGradient::Vertical; BgGradient::Grid stays a solid bg_rgb. A transparent
+ * offscreen export drops the gradient, as the CPU ray tracer does when
+ * opaque_back is off (Ray.cpp); the live view's layer is opaque, so it always
+ * draws it.
+ */
+static bool SceneMetalBgGradient(PyMOLGlobals* G, float* top, float* bottom)
+{
+  if (SettingGet<BgGradient>(G, cSetting_bg_gradient) != BgGradient::Vertical)
+    return false;
+  // A background image wins over the gradient in GL's bg_grad and in the CPU
+  // ray tracer. Metal draws no image, but it must not paint the gradient
+  // either.
+  const char* bg_image = SettingGetGlobal_s(G, cSetting_bg_image_filename);
+  if ((bg_image && bg_image[0]) || OrthoBackgroundDataIsSet(*G->Ortho))
+    return false;
+  if (G->Renderer->offscreenFrame() &&
+      !SettingGetGlobal_b(G, cSetting_ray_opaque_background))
+    return false;
+  copy3f(ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb_top)), top);
+  copy3f(
+      ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb_bottom)), bottom);
+  return true;
+}
+
+/**
+ * Draw the vertical background gradient (#689) into the Metal scene pass,
+ * before any geometry: a full-viewport quad in NDC through the renderer's
+ * immediate batch (whose pipeline already matches the scene pass's sample
+ * count and formats), with no depth test or write. Drawn first, MSAA edges and
+ * the OIT resolve blend against it, and the post passes leave it alone (they
+ * skip cleared depth). The GL path draws it in bg_grad (Ortho.cpp).
+ */
+static void SceneDrawMetalBgGradient(
+    PyMOLGlobals* G, const float* top, const float* bottom)
+{
+  G->Renderer->matrixMode(0x1701);
+  G->Renderer->loadIdentity();
+  G->Renderer->matrixMode(0x1700);
+  G->Renderer->loadIdentity();
+
+  G->Renderer->disable(pymol::Capability::DepthTest);
+  G->Renderer->depthMask(false);
+
+  // z = 0.5: the batch vertex shader does no GL -> Metal depth remap, so the
+  // NDC z has to lie in [0, 1] or the quad is clipped.
+  G->Renderer->beginBatch(pymol::PrimitiveType::TriangleStrip);
+  G->Renderer->batchColor4f(top[0], top[1], top[2], 1.0f);
+  G->Renderer->batchVertex3f(-1.0f, 1.0f, 0.5f);
+  G->Renderer->batchVertex3f(1.0f, 1.0f, 0.5f);
+  G->Renderer->batchColor4f(bottom[0], bottom[1], bottom[2], 1.0f);
+  G->Renderer->batchVertex3f(-1.0f, -1.0f, 0.5f);
+  G->Renderer->batchVertex3f(1.0f, -1.0f, 0.5f);
+  G->Renderer->endBatch();
+
+  G->Renderer->depthMask(true);
+  G->Renderer->enable(pymol::Capability::DepthTest);
+
+  // loadMatrixf, not a pop: it keeps the renderer's inverse modelview (ray
+  // tracing) in step with the camera.
+  G->Renderer->matrixMode(0x1701);
+  G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+  G->Renderer->matrixMode(0x1700);
+  G->Renderer->loadMatrixf(SceneGetModelViewMatrixPtr(G));
+}
+
+// #685: `key` from the frame being set up (call after ScenePrepareMatrix),
+// with the generations as they are now.
+static void SceneMetalAirFrameKeyNow(
+    PyMOLGlobals* G, CScene::MetalAirFrameKey& key)
+{
+  CScene* I = G->Scene;
+  key.generation = PyMOL_GetRedisplayGeneration(G->PyMOL);
+  key.contentGeneration = I->ContentGeneration;
+  copy44f(SceneGetProjectionMatrixPtr(G), key.projection);
+  copy44f(SceneGetModelViewMatrixPtr(G), key.modelview);
+  G->Renderer->getViewportRect(
+      key.viewport[0], key.viewport[1], key.viewport[2], key.viewport[3]);
+  key.width = I->Width;
+  key.height = I->Height;
+  key.valid = true;
+}
+
+static bool SceneMetalAirFrameKeyEqual(
+    const CScene::MetalAirFrameKey& a, const CScene::MetalAirFrameKey& b)
+{
+  if (!a.valid || !b.valid || a.generation != b.generation ||
+      a.contentGeneration != b.contentGeneration || a.width != b.width ||
+      a.height != b.height)
+    return false;
+  for (int i = 0; i < 4; ++i)
+    if (a.viewport[i] != b.viewport[i])
+      return false;
+  // == per element: a NaN never matches, so it renders in full.
+  for (int i = 0; i < 16; ++i)
+    if (a.projection[i] != b.projection[i] || a.modelview[i] != b.modelview[i])
+      return false;
+  return true;
+}
+
+bool SceneRenderMetalArmAirTick(PyMOLGlobals* G)
+{
+  if (!G || !G->Renderer || !G->Scene || !G->PyMOL)
+    return false;
+  // Checked before the update phase as well as after it (the key), so the
+  // update phase of an armed tick has nothing to do.
+  const CScene::MetalAirFrameKey& kept = G->Scene->MetalAirFrame;
+  if (!kept.valid ||
+      PyMOL_GetRedisplayGeneration(G->PyMOL) != kept.generation ||
+      G->Scene->ContentGeneration != kept.contentGeneration ||
+      OrthoDeferredWaiting(G))
+    return false;
+  return G->Renderer->armAirOnlyFrame();
+}
+
+// #685: the dust-only decision, after the update phase. `atStart` holds the
+// generations read when SceneRenderMetal began: a full frame stores those, so
+// a request raised during its own update phase or passes (after its scene was
+// read) makes the next tick render in full.
+static bool SceneRenderMetalAirOnly(
+    PyMOLGlobals* G, const CScene::MetalAirFrameKey& atStart)
+{
+  CScene* I = G->Scene;
+  CScene::MetalAirFrameKey key;
+  SceneMetalAirFrameKeyNow(G, key);
+  const bool armed = G->Renderer->airOnlyArmed();
+  if (armed && SceneMetalAirFrameKeyEqual(key, I->MetalAirFrame) &&
+      G->Renderer->beginAirOnlyFrame())
+    return true; // the setup still runs: it hands the renderer this tick's dust
+  if (armed)
+    G->Renderer->beginFrame(); // the full frame the bridge deferred
+  key.generation = atStart.generation;
+  key.contentGeneration = atStart.contentGeneration;
+  key.valid = !G->Renderer->offscreenFrame();
+  I->MetalAirFrame = key;
+  return false;
 }
 
 void SceneRenderMetal(PyMOLGlobals* G)
@@ -2280,6 +2611,9 @@ void SceneRenderMetal(PyMOLGlobals* G)
     return;
 
   CScene* I = G->Scene;
+  // #685: the generations before anything below can change the scene.
+  const CScene::MetalAirFrameKey airAtStart{
+      PyMOL_GetRedisplayGeneration(G->PyMOL), I->ContentGeneration};
 
   // Metal requires VBO-based CGO optimization, not immediate mode
   static bool metalConfigDone = false;
@@ -2357,6 +2691,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
   SceneProjectionMatrix(
       G, I->m_view.m_clipSafe().m_front, I->m_view.m_clipSafe().m_back, aspRat);
   ScenePrepareMatrix(G, 0);
+
+  // A dust-only tick (#685) stops after the setup below: the setup still runs
+  // to hand the renderer this tick's dust, but the scene passes are skipped.
+  const bool airOnly = SceneRenderMetalAirOnly(G, airAtStart);
 
   // This frame's lighting, read once in the block below (SceneLightsFrame).
   SceneLightFrame lights;
@@ -2537,13 +2875,14 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // Studio shadows (#616): whether they are on (the whole-pixel shadow is
     // then off) and each map's size. Two scalars; false and 0 with no rig.
     G->Renderer->setLightShadowFrame(lights.studioShadows, lights.shadowMapSize);
+    G->Renderer->setLightSoftShadows(lights.softRadius.data());
     // GPU frame times (#616, metal_gpu_timing; with or without a rig, so
     // #623 can time the frame without one too). At 0, the default, the
     // renderer adds nothing to the frame.
     G->Renderer->setGpuTiming(SettingGetGlobal_i(G, cSetting_metal_gpu_timing));
     // The air (#618): this frame's haze and dust block, or none (no rig that
-    // is on with air, no geometry, grid mode). Nothing is read without the
-    // rig's air; the renderer keeps a value copy.
+    // is on with air, no geometry; a grid draws it per cell, #686). Nothing
+    // is read without the rig's air; the renderer keeps a value copy.
     const auto air = SceneLightsAir(G, lights);
     G->Renderer->setLightAir(air ? &*air : nullptr);
     // Key-light direction: feed cSetting_light so shading AND shadows follow it
@@ -2557,6 +2896,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->setDesiredSampleCount(
         SettingGetGlobal_b(G, cSetting_metal_msaa) ? 4 : 1);
   }
+
+  // A dust-only tick (#685) stops here: the post chain re-runs from the kept
+  // pre-air image.
+  if (airOnly)
+    return;
 
   // --- Scene state needed by RenderInfo ---
   I->VertexScale = SceneGetScreenVertexScale(G, nullptr);
@@ -2590,8 +2934,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
 
   // --- Shadow map pre-pass: render the opaque geometry from the light's POV
   // into the depth map, so the post pass can PCF-sample real cast shadows. The
-  // light VP is loaded as PROJECTION (camera MODELVIEW kept), the renderer
-  // routes draws to depth-only pipelines, then restores the scene pass. ---
+  // pass opens with the light's view, which the renderer premultiplies onto the
+  // camera MODELVIEW, and the light's orthographic projection is loaded as
+  // PROJECTION (#665); the renderer routes draws to depth-only pipelines, then
+  // restores the scene pass. ---
   // Skipped in grid mode: the shadow map is a single global texture, so it
   // can't be made per-cell, and a shared map would leak shadows between cells
   // (an object visible only in cell B darkening an object in cell A). Grid mode
@@ -2600,29 +2946,56 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // Studio shadows (#616) replace it: while the rig has a shadowed light (and
   // metal_shadows is on), each such light renders its own map instead
   // (SceneRenderLightShadowMaps), and this whole-pixel pass does not run.
+  // A frame without studio maps forgets their key (#666).
+  if (!lights.shadows)
+    I->LightShadowMapKey.clear();
   if (lights.shadows) {
     SceneRenderLightShadowMaps(G, &context, normal, *lights.shadows);
   } else if (!lights.studioShadows && !I->grid.active &&
              SettingGetGlobal_b(G, cSetting_metal_shadows)) {
     float shadowRadius = 1.0f;
-    glm::mat4 lightVP_eye = SceneBuildLightViewProjEye(G, &shadowRadius);
+    glm::mat4 lightView(1.0f), lightProj(1.0f);
+    SceneBuildLightViewProjEye(G, lightView, lightProj, &shadowRadius);
+    const glm::mat4 lightVP_eye = lightProj * lightView;
     const float* mvp = SceneGetModelViewMatrixPtr(G);
     G->Renderer->setLightViewProjEye(glm::value_ptr(lightVP_eye));
     G->Renderer->setShadowFrustum(shadowRadius);
     G->Renderer->setShadowBias(SettingGetGlobal_f(G, cSetting_metal_shadow_bias));
-    G->Renderer->matrixMode(0x1701); // PROJECTION = light VP (eye space)
-    G->Renderer->loadMatrixf(glm::value_ptr(lightVP_eye));
-    G->Renderer->matrixMode(0x1700); // MODELVIEW = camera modelview
-    G->Renderer->loadMatrixf(mvp);
-    G->Renderer->beginShadowPass();
-    SceneRenderAll(G, &context, normal, nullptr, RenderPass::Opaque, false, 0.0f,
-        &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
-    G->Renderer->endShadowPass();
+    const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
+    // No pass (the map could not be made): no replay, the frame is unshadowed.
+    // The pass opens first, with the light's view (#665): until endShadowPass
+    // the renderer premultiplies it onto every modelview, as for a studio map
+    // (#616), so sphere and cylinder impostors face the light and ray-cast
+    // along it instead of standing as camera-facing billboards.
+    if (G->Renderer->beginShadowPass(glm::value_ptr(lightView))) {
+      G->Renderer->matrixMode(0x1701); // PROJECTION = the light's ortho box
+      G->Renderer->loadMatrixf(glm::value_ptr(lightProj));
+      G->Renderer->matrixMode(0x1700); // MODELVIEW = camera (x light view)
+      G->Renderer->loadMatrixf(mvp);
+      SceneRenderAll(G, &context, normal, nullptr, RenderPass::Opaque, false,
+          0.0f, &I->grid, 0, SceneRenderWhich::All,
+          SceneRenderOrder::GadgetsLast, nullptr, &overlays);
+      G->Renderer->endShadowPass();
+    }
     // Restore the camera matrices for the normal scene pass.
     G->Renderer->matrixMode(0x1701);
     G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
     G->Renderer->matrixMode(0x1700);
     G->Renderer->loadMatrixf(mvp);
+  }
+
+  // --- Background gradient (#689). Here, after the shadow pre-passes, not
+  // with the other per-frame params above: both shadow paths reopen the scene
+  // pass with a CLEAR, which would wipe a gradient drawn before them. The
+  // renderer also gets the colours for the depth-cue fog, which fades toward
+  // the background at each pixel like GL and the CPU ray tracer. ---
+  {
+    float gradTop[3], gradBottom[3];
+    const bool grad = SceneMetalBgGradient(G, gradTop, gradBottom);
+    G->Renderer->setBackgroundGradient(
+        grad, grad ? gradTop : nullptr, grad ? gradBottom : nullptr);
+    if (grad)
+      SceneDrawMetalBgGradient(G, gradTop, gradBottom);
   }
 
   // --- Render objects: opaque first, then transparent via order-independent

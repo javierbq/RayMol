@@ -48,6 +48,10 @@ final class LightRigBridgeTests: XCTestCase {
             "from pymol import cmd as _lrb_cmd\n"
             + "_lrb_cmd.set_lights(None)\n"
             + "_lrb_cmd.delete('_lrb_air')\n"
+            + "_lrb_cmd.delete('_lrb_shadow')\n"
+            + "if '_lrb_ms' in globals():\n"
+            + "    _lrb_cmd.set('metal_shadows', _lrb_ms)\n"
+            + "    del _lrb_ms\n"
             + "_lrb_cmd.set('metal_light_air_time', -1.0)\n"
             + "if '_lrb_view' in globals():\n"
             + "    _lrb_cmd.set_view(_lrb_view)\n"
@@ -125,18 +129,18 @@ final class LightRigBridgeTests: XCTestCase {
     func testDecodesFixture() throws {
         let json = """
             {"version":1,"enabled":true,"centre":[1.5,-2.0,3.25],"size":12.5,"ambient":0.05,"classic":0.0,
-             "air":{"haze":0.25,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":3},
+             "air":{"haze":0.25,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":3,"dust_glow":1.0,"dust_opacity":0.0},
              "lights":[
               {"name":"key","anchor":"camera","orbit":-45.0,"pitch":35.0,"radius":4.0,"position":[0.0,0.0,0.0],
-               "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":45.0,"softness":0.4,
+               "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":45.0,"softness":0.4,"size":0.25,
                "color":[1.0,1.0,1.0],"warmth":6500.0,"intensity":1.0,"highlight":0.5,"falloff":2.0,
                "shadow":true,"outline":false},
               {"name":"fill","anchor":"camera","orbit":60.0,"pitch":10.0,"radius":3.0,"position":[0.0,0.0,0.0],
-               "aim":"point","aim_point":[1.0,2.0,3.0],"aim_selection":"organic","beam":90.0,"softness":0.8,
+               "aim":"point","aim_point":[1.0,2.0,3.0],"aim_selection":"organic","beam":90.0,"softness":0.8,"size":0.0,
                "color":[0.5,0.75,1.0],"warmth":4000.0,"intensity":0.5,"highlight":0.25,"falloff":1.0,
                "shadow":false,"outline":false},
               {"name":"rim","anchor":"pinned","orbit":0.0,"pitch":30.0,"radius":4.0,"position":[5.0,6.0,-7.0],
-               "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":30.0,"softness":0.1,
+               "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":30.0,"softness":0.1,"size":0.0,
                "color":[1.0,0.9,0.8],"warmth":9000.0,"intensity":2.0,"highlight":1.0,"falloff":0.0,
                "shadow":false,"outline":true}]}
             """
@@ -145,12 +149,14 @@ final class LightRigBridgeTests: XCTestCase {
         XCTAssertTrue(rig.enabled)
         XCTAssertEqual(rig.centre, SIMD3(1.5, -2.0, 3.25))
         XCTAssertEqual(rig.size, 12.5)
-        XCTAssertEqual(rig.air, .init(haze: 0.25, dust: 0, dustSize: 0.35, dustSpeed: 1, scatter: 0.55, seed: 3))
+        XCTAssertEqual(rig.air, .init(haze: 0.25, dust: 0, dustSize: 0.35, dustSpeed: 1, scatter: 0.55, seed: 3, dustGlow: 1.0, dustOpacity: 0.0))
         XCTAssertEqual(rig.lights.map(\.name), ["key", "fill", "rim"])
         XCTAssertEqual(rig.lights.map(\.anchor), [.camera, .camera, .pinned])
         XCTAssertEqual(rig.lights.map(\.aim), [.centre, .point, .centre])
         XCTAssertEqual(rig.lights[0].orbit, -45)
         XCTAssertTrue(rig.lights[0].shadow)
+        XCTAssertEqual(rig.lights[0].size, 0.25)
+        XCTAssertEqual(rig.lights[1].size, 0.0)
         XCTAssertEqual(rig.lights[1].aimPoint, SIMD3(1, 2, 3))
         XCTAssertEqual(rig.lights[1].aimSelection, "organic")
         XCTAssertEqual(rig.lights[1].color, SIMD3(0.5, 0.75, 1.0))
@@ -161,7 +167,7 @@ final class LightRigBridgeTests: XCTestCase {
 
         let empty = try LightRigSnapshot.decode(Data("""
             {"version":1,"enabled":false,"centre":null,"size":null,"ambient":0.05,"classic":0.0,
-             "air":{"haze":0.0,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":0},
+             "air":{"haze":0.0,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":0,"dust_glow":1.0,"dust_opacity":0.0},
              "lights":[]}
             """.utf8))
         XCTAssertNil(empty.centre)
@@ -226,7 +232,7 @@ final class LightRigBridgeTests: XCTestCase {
         XCTAssertEqual(bridge.size, 10)
         XCTAssertEqual(bridge.ambient, 0.1)
         XCTAssertEqual(bridge.classic, 0.25)
-        XCTAssertEqual(bridge.air, .init(haze: 0.2, dust: 0.3, dustSize: 0.5, dustSpeed: 2, scatter: -0.25, seed: 7))
+        XCTAssertEqual(bridge.air, .init(haze: 0.2, dust: 0.3, dustSize: 0.5, dustSpeed: 2, scatter: -0.25, seed: 7, dustGlow: 1.0, dustOpacity: 0.0))
         XCTAssertEqual(bridge.lights.map(\.name), ["key", "fill", "rim"])
         XCTAssertEqual(bridge.lights.map(\.anchor), [.camera, .camera, .pinned])
         XCTAssertEqual(bridge.lights.map(\.aim), [.centre, .point, .centre])
@@ -445,6 +451,45 @@ final class LightRigBridgeTests: XCTestCase {
         XCTAssertEqual(engine.setLight(0, "colour", 1), .unknownField)
         XCTAssertEqual(engine.setLight(0, "orbit", .nan), .badValue)
         XCTAssertEqual(posts.count, 2)
+    }
+
+    /// Studio shadows (#616, #673): the bridge's eye-space shadowSlot matches
+    /// the frame plan's slots (_light_frame), including -1 for a shadowed light
+    /// aimed away from the casters, and is -1 everywhere with metal_shadows or
+    /// the rig off.
+    func testEyeSpaceShadowSlotMatchesTheFramePlan() throws {
+        try requireEngine()
+        engine.runPython(
+            "from pymol import cmd as _lrb_cmd\n"
+            + "_lrb_ms = _lrb_cmd.get_setting_int('metal_shadows')\n"
+            + "_lrb_cmd.pseudoatom('_lrb_shadow', pos=[0,0,0])\n"
+            + "_lrb_cmd.show('spheres', '_lrb_shadow')\n"
+            + "_lrb_cmd.set('metal_shadows', 1)\n")
+        setRig("""
+            {'enabled': True, 'centre': [0,0,0], 'size': 10.0, 'lights': [
+             {'name': 'key', 'shadow': True},
+             {'name': 'fill', 'orbit': -60.0},
+             {'name': 'away', 'shadow': True, 'anchor': 'pinned', 'position': [0.0, 0.0, 8.0],
+              'aim': 'point', 'aim_point': [0.0, 0.0, 500.0], 'beam': 10.0}]}
+            """)
+        let jsonStr = try XCTUnwrap(python("_lrb_json.dumps([l['shadow_slot'] for l in _lrb_lighting._light_frame()['rig']['lights']])"))
+        let oracleSlots = try JSONDecoder().decode([Int].self, from: Data(jsonStr.utf8))
+        let eyeSpace = try XCTUnwrap(engine.lightsEyeSpace())
+        let eyeSlots = eyeSpace.lights.map(\.shadowSlot)
+        XCTAssertEqual(eyeSlots, oracleSlots)
+        XCTAssertEqual(eyeSlots, [0, -1, -1],
+                       "key lights the caster; fill casts no shadow; away's narrow beam points away from it")
+
+        // Then metal_shadows 0: all slots -1.
+        engine.runPython("_lrb_cmd.set('metal_shadows', 0)\n")
+        let slotsShadowsOff = try XCTUnwrap(engine.lightsEyeSpace()).lights.map(\.shadowSlot)
+        XCTAssertEqual(slotsShadowsOff, [-1, -1, -1])
+
+        // Then with metal_shadows 1 and the rig disabled (setLight(-1, "enabled", 0)): all -1.
+        engine.runPython("_lrb_cmd.set('metal_shadows', 1)\n")
+        XCTAssertEqual(engine.setLight(-1, "enabled", 0), .ok)
+        let slotsRigOff = try XCTUnwrap(engine.lightsEyeSpace()).lights.map(\.shadowSlot)
+        XCTAssertEqual(slotsRigOff, [-1, -1, -1])
     }
 }
 

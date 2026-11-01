@@ -28,11 +28,11 @@ without the page fails here until the page says the same thing:
   stripped, so a renamed control fails here.
 * TestGallerySection: the gallery section names gallery.py's sections, image
   counts, scene files and options.
-* TestReleaseNotes: the release-notes draft
-  (docs/release-notes/unreleased/lighting.md, args Q2) is in the house style
+* TestReleaseNotes: the release notes that shipped studio lights
+  (docs/release-notes/v1.13.0.md, args Q2) are in the house style
   (a '### Studio lights' section, the updater footer last), macOS-facing (no
-  iPhone, iPad or touch wording outside its header comment), links to this
-  page, and every bold UI label in it is a literal in its Swift file.
+  iPhone, iPad or touch wording outside its header comment), links to the
+  site's copy of this page, and every bold UI label in it is a literal in its Swift file.
 * TestExamples: every line of every `pymol` block runs through cmd.do and
   every `python` block runs, each block in a fresh session (1rx1 as m with a
   surface, cartoon and organic sticks, viewport 640x480, the harness's view)
@@ -67,7 +67,7 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
 DOCS = os.path.join(ROOT, 'docs')
 DOC = os.path.join(DOCS, 'lighting.md')
 MATERIALS = os.path.join(DOCS, 'materials.md')
-NOTES = os.path.join(DOCS, 'release-notes', 'unreleased', 'lighting.md')
+NOTES = os.path.join(DOCS, 'release-notes', 'v1.13.0.md')
 STYLE = os.path.join(ROOT, '.claude', 'skills', 'cut-macos-release',
                      'references', 'release-notes-style.md')
 LIGHTING_SCRIPTS = os.path.join(ROOT, 'scripts', 'lighting')
@@ -110,6 +110,7 @@ LABELS = {
     'Done': os.path.join(SHARED, 'LightsBar.swift'),
     'Lights on': os.path.join(SHARED, 'LightsBar.swift'),
     'Lights off': os.path.join(SHARED, 'LightsBar.swift'),
+    'Edit light…': os.path.join(SHARED, 'LightsBar.swift'),
     'Orbit': os.path.join(SHARED, 'LightsEditing.swift'),
     'Pitch': os.path.join(SHARED, 'LightsEditing.swift'),
     'Radius': os.path.join(SHARED, 'LightsEditing.swift'),
@@ -117,6 +118,7 @@ LABELS = {
     'Warmth': os.path.join(SHARED, 'LightsEditing.swift'),
     'Beam': os.path.join(SHARED, 'LightsEditing.swift'),
     'Softness': os.path.join(SHARED, 'LightsEditing.swift'),
+    'Size': os.path.join(SHARED, 'LightsEditing.swift'),
     'Shadow': os.path.join(SHARED, 'LightsInspector.swift'),
     'Pin': os.path.join(SHARED, 'LightsInspector.swift'),
     'Turn On': os.path.join(SHARED, 'LightsInspector.swift'),
@@ -128,8 +130,12 @@ LABELS = {
     'Dust size': os.path.join(SHARED, 'LightsAtmosphere.swift'),
     'Dust speed': os.path.join(SHARED, 'LightsAtmosphere.swift'),
     'Scatter (g)': os.path.join(SHARED, 'LightsAtmosphere.swift'),
+    'Dust glow': os.path.join(SHARED, 'LightsAtmosphere.swift'),
+    'Dust opacity': os.path.join(SHARED, 'LightsAtmosphere.swift'),
     'Shadows': os.path.join(PANELS, 'ObjectPanel.swift'),
     'Exposure': os.path.join(PANELS, 'ObjectPanel.swift'),
+    'Studio lights': os.path.join(PANELS, 'ObjectPanel.swift'),
+    'Open Lights tool': os.path.join(PANELS, 'ObjectPanel.swift'),
     'Filmic tone-map': os.path.join(PANELS, 'ObjectPanel.swift'),
     'Ray-traced (AO + shadows)': os.path.join(SHARED, 'ContentView.swift'),
 }
@@ -298,13 +304,16 @@ class TestStructure(DocCase):
                 checked += 1
         self.assertGreaterEqual(checked, 10)
 
-    def testBacklitHazeIsAnOpenLimit(self):
-        # #683 (backlit haze, no extinction) is open: HDR and exposure soften
-        # it but do not fix it, so Known limits lists it and the Backlit haze
-        # text says it is open rather than citing it as history.
+    def testBacklitHazeIsAKnownLimit(self):
+        # #683 gave the haze Beer-Lambert extinction, which bounds its light
+        # and dims the molecule behind it, but a backlit haze can still wash
+        # the picture out: Known limits still lists it, and the Backlit haze
+        # text names the extinction without calling the wash-out fixed.
         self.assertIn('#683', flat(section(self.doc, 'Known limits')))
         backlit = flat(subsection(self.doc, 'Backlit haze'))
-        self.assertIn('#683, open', backlit)
+        self.assertIn('Beer-Lambert extinction (#683)', backlit)
+        self.assertNotIn('#683, open', backlit)
+        self.assertNotIn('no extinction', flat(self.doc))
         for word in ('fixed', 'resolved', 'closed'):
             self.assertNotIn(word, backlit)
 
@@ -645,7 +654,7 @@ class TestGallerySection(DocCase):
                                           'Regenerating the gallery'), option)
 
 
-# --- the release-notes draft ----------------------------------------------
+# --- the release notes --------------------------------------------------
 
 # The footer every macOS release note ends with (release-notes-style.md).
 FOOTER = ('Built on the open-source PyMOL engine. Updates install '
@@ -666,7 +675,7 @@ class TestReleaseNotes(DocCase):
         # the header comment is for the release cut, not the user
         cls.notes = re.sub(r'<!--.*?-->', '', raw, flags=re.S).strip()
         cls.studio = cls.notes[cls.notes.index('\n### Studio lights\n'):
-                               cls.notes.index('\nSee [docs/lighting.md]')]
+                               cls.notes.index('\nSee the [Studio Lights guide]')]
 
     def testHouseStyle(self):
         self.assertTrue(self.notes.startswith('## RayMol'), self.notes[:40])
@@ -684,7 +693,7 @@ class TestReleaseNotes(DocCase):
         self.assertEqual(found, [], 'iOS-only wording in the macOS notes')
 
     def testLinksTheGuide(self):
-        self.assertIn('](../../lighting.md)', self.notes)
+        self.assertIn('](https://javierbq.github.io/RayMol/guides/lighting/)', self.notes)
 
     def testBoldLabelsAreInTheirSwiftFiles(self):
         spans = [flat(s) for s in BOLD_RE.findall(self.studio)]

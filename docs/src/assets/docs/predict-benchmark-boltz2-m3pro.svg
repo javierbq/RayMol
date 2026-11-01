@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 720" width="900" height="720" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Boltz-2 inference time and MLX peak memory versus sequence length, 60 to 900 residues, on an Apple M3 Pro. Time rises from 6.5 seconds at 60 residues to 2540 seconds at 900. Peak memory rises from 0.78 GB to 32.71 GB.">
+<style>
+  .s{fill:#fcfcfb}.tp{fill:#0b0b0b}.ts{fill:#52514e}.tm{fill:#898781}
+  .grid{stroke:#e1e0d9;stroke-width:1}.axis{stroke:#c3c2b7;stroke-width:1}
+  .l1{stroke:#2a78d6}.d1{fill:#2a78d6}.l2{stroke:#eb6834}.d2{fill:#eb6834}
+  .ring{stroke:#fcfcfb;stroke-width:2}.ref{stroke:#898781;stroke-width:1;stroke-dasharray:4 3}
+  @media (prefers-color-scheme: dark){
+    .s{fill:#1a1a19}.tp{fill:#ffffff}.ts{fill:#c3c2b7}
+    .grid{stroke:#2c2c2a}.axis{stroke:#383835}
+    .l1{stroke:#3987e5}.d1{fill:#3987e5}.l2{stroke:#d95926}.d2{fill:#d95926}
+    .ring{stroke:#1a1a19}}
+</style>
+<rect class="s" x="0" y="0" width="900" height="720"/>
+<text class="tp" x="76" y="34" font-size="18" font-weight="600">Boltz-2 on-device inference: cost versus sequence length</text>
+<text class="ts" x="76" y="56" font-size="12.5">Apple M3 Pro, 36 GiB · Release build · recycling 3 / 200 diffusion steps · single chain, no MSA</text>
+<text class="tm" x="76" y="74" font-size="11.5">Warm model; the ~10 s one-time load is excluded. 17 measured points.</text>
+<text class="tp" x="76" y="90" font-size="13.5" font-weight="600">Inference time</text>
+<text class="tm" x="796" y="90" font-size="11" text-anchor="end">seconds</text>
+<line class="grid" x1="76" y1="332.0" x2="796" y2="332.0"/>
+<text class="tm" x="67" y="336.0" font-size="11" text-anchor="end">0</text>
+<line class="grid" x1="76" y1="288.2" x2="796" y2="288.2"/>
+<text class="tm" x="67" y="292.2" font-size="11" text-anchor="end">500</text>
+<line class="grid" x1="76" y1="244.3" x2="796" y2="244.3"/>
+<text class="tm" x="67" y="248.3" font-size="11" text-anchor="end">1000</text>
+<line class="grid" x1="76" y1="200.5" x2="796" y2="200.5"/>
+<text class="tm" x="67" y="204.5" font-size="11" text-anchor="end">1500</text>
+<line class="grid" x1="76" y1="156.6" x2="796" y2="156.6"/>
+<text class="tm" x="67" y="160.6" font-size="11" text-anchor="end">2000</text>
+<line class="grid" x1="76" y1="112.8" x2="796" y2="112.8"/>
+<text class="tm" x="67" y="116.8" font-size="11" text-anchor="end">2500</text>
+<line class="axis" x1="76" y1="332" x2="796" y2="332"/>
+<polyline class="l1" fill="none" stroke-width="2" stroke-linejoin="round" points="124.0,331.4 156.0,330.2 196.0,329.5 236.0,328.4 276.0,325.9 316.0,323.9 356.0,320.7 396.0,317.2 436.0,309.1 516.0,283.1 556.0,272.8 596.0,250.9 636.0,234.6 676.0,217.7 716.0,189.5 756.0,155.8 796.0,109.3"/>
+<circle class="d1 ring" cx="124.0" cy="331.4" r="4"/>
+<circle class="d1 ring" cx="156.0" cy="330.2" r="4"/>
+<circle class="d1 ring" cx="196.0" cy="329.5" r="4"/>
+<circle class="d1 ring" cx="236.0" cy="328.4" r="4"/>
+<circle class="d1 ring" cx="276.0" cy="325.9" r="4"/>
+<circle class="d1 ring" cx="316.0" cy="323.9" r="4"/>
+<circle class="d1 ring" cx="356.0" cy="320.7" r="4"/>
+<circle class="d1 ring" cx="396.0" cy="317.2" r="4"/>
+<circle class="d1 ring" cx="436.0" cy="309.1" r="4"/>
+<circle class="d1 ring" cx="516.0" cy="283.1" r="4"/>
+<circle class="d1 ring" cx="556.0" cy="272.8" r="4"/>
+<circle class="d1 ring" cx="596.0" cy="250.9" r="4"/>
+<circle class="d1 ring" cx="636.0" cy="234.6" r="4"/>
+<circle class="d1 ring" cx="676.0" cy="217.7" r="4"/>
+<circle class="d1 ring" cx="716.0" cy="189.5" r="4"/>
+<circle class="d1 ring" cx="756.0" cy="155.8" r="4"/>
+<circle class="d1 ring" cx="796.0" cy="109.3" r="4"/>
+<text class="tp" x="805.0" y="113.3" font-size="12" font-weight="600">42 min</text>
+<text class="ts" x="566.0" y="276.8" font-size="11">11 min</text>
+<text class="ts" x="446.0" y="313.1" font-size="11">4 min</text>
+<text class="tm" x="86" y="124" font-size="11">time steepens from ~N^1.5 (small) to ~N^3.3 (large)</text>
+<text class="tp" x="76" y="386" font-size="13.5" font-weight="600">MLX peak memory</text>
+<text class="tm" x="796" y="386" font-size="11" text-anchor="end">GB</text>
+<line class="grid" x1="76" y1="628.0" x2="796" y2="628.0"/>
+<text class="tm" x="67" y="632.0" font-size="11" text-anchor="end">0</text>
+<line class="grid" x1="76" y1="571.0" x2="796" y2="571.0"/>
+<text class="tm" x="67" y="575.0" font-size="11" text-anchor="end">10</text>
+<line class="grid" x1="76" y1="514.0" x2="796" y2="514.0"/>
+<text class="tm" x="67" y="518.0" font-size="11" text-anchor="end">20</text>
+<line class="grid" x1="76" y1="457.0" x2="796" y2="457.0"/>
+<text class="tm" x="67" y="461.0" font-size="11" text-anchor="end">30</text>
+<line class="grid" x1="76" y1="400.0" x2="796" y2="400.0"/>
+<text class="tm" x="67" y="404.0" font-size="11" text-anchor="end">40</text>
+<line class="ref" x1="76" y1="407.7" x2="796" y2="407.7"/>
+<text class="tm" x="796" y="400.7" font-size="10" text-anchor="end">physical RAM 38.7 GB</text>
+<line class="ref" x1="76" y1="462.8" x2="796" y2="462.8"/>
+<text class="tm" x="86" y="455.8" font-size="10">PredictSizeGuard refuses above 29.0 GB — 75% of RAM</text>
+<line class="axis" x1="76" y1="628" x2="796" y2="628"/>
+<polyline class="l2" fill="none" stroke-width="2" stroke-linejoin="round" points="124.0,623.6 156.0,618.0 196.0,611.5 236.0,608.2 276.0,606.1 316.0,601.6 356.0,594.0 396.0,585.9 436.0,583.0 516.0,566.1 556.0,553.3 596.0,540.7 636.0,522.9 676.0,505.3 716.0,485.9 756.0,464.7 796.0,441.6"/>
+<circle class="d2 ring" cx="124.0" cy="623.6" r="4"/>
+<circle class="d2 ring" cx="156.0" cy="618.0" r="4"/>
+<circle class="d2 ring" cx="196.0" cy="611.5" r="4"/>
+<circle class="d2 ring" cx="236.0" cy="608.2" r="4"/>
+<circle class="d2 ring" cx="276.0" cy="606.1" r="4"/>
+<circle class="d2 ring" cx="316.0" cy="601.6" r="4"/>
+<circle class="d2 ring" cx="356.0" cy="594.0" r="4"/>
+<circle class="d2 ring" cx="396.0" cy="585.9" r="4"/>
+<circle class="d2 ring" cx="436.0" cy="583.0" r="4"/>
+<circle class="d2 ring" cx="516.0" cy="566.1" r="4"/>
+<circle class="d2 ring" cx="556.0" cy="553.3" r="4"/>
+<circle class="d2 ring" cx="596.0" cy="540.7" r="4"/>
+<circle class="d2 ring" cx="636.0" cy="522.9" r="4"/>
+<circle class="d2 ring" cx="676.0" cy="505.3" r="4"/>
+<circle class="d2 ring" cx="716.0" cy="485.9" r="4"/>
+<circle class="d2 ring" cx="756.0" cy="464.7" r="4"/>
+<circle class="d2 ring" cx="796.0" cy="441.6" r="4"/>
+<text class="tp" x="805.0" y="445.6" font-size="12" font-weight="600">32.7 GB</text>
+<text class="ts" x="566.0" y="557.3" font-size="11">13.1 GB</text>
+<text class="tm" x="76.0" y="647.0" font-size="11" text-anchor="middle">0</text>
+<text class="tm" x="196.0" y="647.0" font-size="11" text-anchor="middle">150</text>
+<text class="tm" x="316.0" y="647.0" font-size="11" text-anchor="middle">300</text>
+<text class="tm" x="436.0" y="647.0" font-size="11" text-anchor="middle">450</text>
+<text class="tm" x="556.0" y="647.0" font-size="11" text-anchor="middle">600</text>
+<text class="tm" x="676.0" y="647.0" font-size="11" text-anchor="middle">750</text>
+<text class="tm" x="796.0" y="647.0" font-size="11" text-anchor="middle">900</text>
+<text class="ts" x="436.0" y="669.0" font-size="12" text-anchor="middle">sequence length (residues)</text>
+<text class="tm" x="76" y="696" font-size="10">Peak is MLX’s own high-water mark, reset per run. Process RSS understates it ~130× and must not be used.</text>
+<text class="tm" x="76" y="710" font-size="10">Data and full provenance: docs/predict-benchmark-boltz2-m3pro.csv</text>
+</svg>

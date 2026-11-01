@@ -92,9 +92,8 @@ int MaterialSettingForRep(int repType);
  * Every other rep, and every object that is not a molecule, returns `repType`.
  *
  * Per object, not per atom: a ligand shown as sticks in the same object follows
- * too. Surfaces never follow. Only the SETTING is borrowed -- the degradations
- * of MaterialResolve stay keyed on the rep that draws (glass on sphere
- * impostors), so pass the real rep to it.
+ * too. Surfaces never follow. Only the SETTING is borrowed; pass the real rep
+ * that draws to MaterialResolve.
  *
  * With every material at `default` this changes nothing that is drawn: the
  * cartoon then resolves to `material_default`, which is what the layer would
@@ -188,8 +187,9 @@ float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
 /**
  * The parameters a material id renders with on a given representation.
  *
- * Also where a material that cannot draw on a representation degrades to
- * `default` (glass on sphere impostors, for one) rather than glitching.
+ * Also where an id with no implemented row (a material from a newer build)
+ * degrades to `default`. No rule depends on the representation since #834;
+ * `repType` stays for the callers.
  *
  * The table behind this arrives with the material table itself (#486); today
  * every id resolves to `default`, so declaring a material changes nothing that
@@ -199,8 +199,8 @@ MaterialParams MaterialResolve(int id, int repType);
 
 /**
  * The parameters a representation actually DRAWS with: the resolved material id
- * put through MaterialResolve, plus the degradation rules that depend on a
- * SETTING rather than on the rep alone (glass on `stick_ball` sticks).
+ * (from the source layer, see MaterialSourceRep; `cs` supplies the object) put
+ * through MaterialResolve.
  *
  * The single definition of "what this rep is made of". Shading and implied
  * alpha both go through it, because they have to agree: a rep that shades as
@@ -255,25 +255,6 @@ int MaterialKnobs(int id, const MaterialKnob** knobs);
  */
 MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs = nullptr);
-
-/**
- * MaterialDrawParams for the DRAW path, taking the `stick_ball` answer that the
- * rep cached at build time (Rep::emitsStickBalls) instead of rescanning atoms.
- *
- * metalApplyRepMaterial runs per draw op, per pass, per frame; the scan is
- * O(atoms) and its worst case -- a full scan, no early out -- is exactly the
- * configuration the rule targets, glass sticks with no balls.
- */
-MaterialParams MaterialDrawParamsCached(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType, bool emitsStickBalls,
-    const pymol::CObject* obj = nullptr);
-
-/**
- * Does this stick rep emit any `stick_ball` sphere? Atom-level, so this scans.
- * Call once at rep-build time and cache on the rep.
- */
-bool MaterialRepEmitsStickBalls(PyMOLGlobals* G, const CoordSet* cs,
-    const CSetting* set1, const CSetting* set2);
 
 /**
  * What the CPU ray tracer (`ray`) does with a material (#499).
@@ -342,11 +323,19 @@ MaterialRayParams MaterialRayParamsFor(int id);
  *   - `highlight` scales each light's own `highlight`;
  *   - `exponent` is the highlight's Blinn-Phong exponent (>= 1), or 0 for
  *     "the scene's shininess" (default's model);
- *   - `tint` mixes the highlight from the light's colour (0) toward the base
+ *   - `tint` mixes the highlight from the light's colour (0) toward the tint
  *     colour (1);
- *   - `wrap` lets the diffuse reach past the terminator.
+ *   - `wrap` lets the diffuse reach past the terminator;
+ *   - `highlight2` scales the second specular lobe (0 = none);
+ *   - `exponent2` is the second lobe's Blinn-Phong exponent (>= 1), or 0 for
+ *     "the scene's shininess";
+ *   - `tint2` mixes the second lobe from the light's colour (0) toward the tint
+ *     colour (1);
+ *   - `tintGain`: both lobes tint toward the same tint colour,
+ *     `saturate(base * tintGain)`, or `base` exactly at gain 1, each by its own
+ *     amount (`tint` and `tint2`).
  *
- * The neutral response {1, 1, 0, 0, 0} is `default`'s, and also what an
+ * The neutral response {1, 1, 0, 0, 0, 0, 0, 0, 1} is `default`'s, and also what an
  * unknown family, or a mode that is no material of its family, gets.
  * Inputs are clamped here (reflect, tint and rough to 0..1, as
  * RendererMetal::setRepMaterial does; p-derived highlights at >= 0; jelly's
@@ -359,6 +348,10 @@ struct MaterialLightResponse {
   float exponent = 0.0f;
   float tint = 0.0f;
   float wrap = 0.0f;
+  float highlight2 = 0.0f; // the second lobe's strength (0 = none)
+  float exponent2 = 0.0f;  // its Blinn-Phong exponent (>= 1), 0 = the scene's shininess
+  float tint2 = 0.0f;      // how far the second lobe tints toward the tint colour (0..1)
+  float tintGain = 1.0f;   // the tint colour is saturate(base * tintGain); 1 = base itself
 };
 
 MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p);
@@ -373,11 +366,10 @@ float MaterialLightSharpness(float exponent, float shininess);
 
 /**
  * The material id `ray` stamps on a representation's primitives: the
- * representation's material after the draw-time degradations
+ * representation's material as the draw path resolves it
  * (MaterialResolveForDraw), so `ray` and the viewport agree about what the
- * rep is made of. 0 for reps that take no material. Resolved ONCE per rep and
- * handed to MaterialRayWobble, because for a glass stick rep the resolve scans
- * every atom for `stick_ball`.
+ * rep is made of. 0 for reps that take no material. Resolved once per rep and
+ * handed to MaterialRayWobble.
  */
 int MaterialRayId(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs = nullptr);
@@ -417,9 +409,8 @@ const char* MaterialGetName(int id);
 int MaterialGetFamily(int id);
 
 /**
- * The material id a representation EFFECTIVELY draws with, after the per-rep
- * degradation in MaterialResolve (glass on sphere impostors, for one, which
- * would otherwise float as near-invisible discs).
+ * The material id a representation EFFECTIVELY draws with, after
+ * MaterialResolve (an id with no implemented row draws `default`).
  *
  * Distinct from MaterialResolveSettingId, which answers what the SETTING says.
  * Both matter: the setting keeps the user's intent across a .pse, while this is

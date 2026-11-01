@@ -92,10 +92,14 @@ final class MCPServerManager: ObservableObject {
         UserDefaults.standard.set(true, forKey: "raymol.mcp.enabled")
         // start() returns the live port; the manager learns it from the MCP:started line.
         let b64 = Data(token.utf8).base64EncodedString()
+        // The app version goes in the MCP serverInfo, so a client can tell
+        // which RayMol (and which features) it is talking to.
+        let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")
+            .filter { $0.isNumber || $0 == "." }
         engine.runPython(
             "import base64\n"
             + "import raymol_mcp.server as _m\n"
-            + "_m.start(\(preferredPort), base64.b64decode('\(b64)').decode('utf-8'))"
+            + "_m.start(\(preferredPort), base64.b64decode('\(b64)').decode('utf-8'), version='\(version)')"
         )
     }
 
@@ -278,7 +282,7 @@ final class MCPServerManager: ObservableObject {
     - `run_pymol_command` — one PyMOL command-language statement (`fetch 1ubq, async=0`, `show cartoon`, `color red, chain A`, `bg_color white`). Use `async=0` on `fetch`/`load`.
     - `run_python` — arbitrary Python with `cmd` (the PyMOL API), plus `np` and `Bio` when available. State persists across calls. Prefer this for multi-step logic, measurements, and data access.
     - `get_session_state` — JSON of loaded objects, selections, camera view, and frame info. Call this first to see what's loaded.
-    - `capture_viewport` — ray-traced PNG of the current view. Call after changes so you can SEE the result before describing it.
+    - `capture_viewport` — PNG of the current view, rendered with the app's Metal renderer (what the user sees). Call after changes so you can SEE the result before describing it.
     - `search_pdb` — full-text RCSB search returning PDB IDs.
 
     ## Working style

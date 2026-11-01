@@ -20,7 +20,7 @@
 // - a direct-manipulation gesture starts with `beginGesture()` (its owner),
 //   writes every tick with `set(_:_:owner:)` (refused once the owner is no
 //   longer selected), reads a step's base with `freshValue`, and snaps with
-//   `LightSnap` (orbit 15°, radius 0.5×, pitch 1°);
+//   `LightSnap` (orbit and pitch 1°, radius 0.5×; orbit steps 15°);
 // - #622's gizmo reuses that gesture start and that one owner guard
 //   (`ownsGesture`): a knob tick writes orbit and pitch together with
 //   `setPlacement(orbit:pitch:radius:owner:)` (pitch first, one re-read, so
@@ -40,10 +40,16 @@ import Foundation
 
 // MARK: - Parameters
 
+/// One arrow-key nudge of the selected light (#700): which placement field and by how many degrees.
+struct LightNudge: Equatable {
+    let parameter: LightParameter
+    let delta: Double
+}
+
 /// One numeric control of the selected light: a core light field of kind
 /// float or angle.
 enum LightParameter: String, CaseIterable {
-    case orbit, pitch, radius, intensity, warmth, beam, softness
+    case orbit, pitch, radius, intensity, warmth, beam, softness, size
 
     /// The core field name.
     var field: String { rawValue }
@@ -60,6 +66,7 @@ enum LightParameter: String, CaseIterable {
         case .warmth: return 1500...15000
         case .beam: return 1...170
         case .softness: return 0...1
+        case .size: return 0...1
         }
     }
 
@@ -90,6 +97,7 @@ enum LightParameter: String, CaseIterable {
         case .warmth: return "Warmth"
         case .beam: return "Beam"
         case .softness: return "Softness"
+        case .size: return "Size"
         }
     }
 
@@ -98,7 +106,7 @@ enum LightParameter: String, CaseIterable {
     var quantum: Double {
         switch self {
         case .orbit, .pitch: return 1
-        case .radius, .intensity, .softness: return 0.01
+        case .radius, .intensity, .softness, .size: return 0.01
         case .warmth: return 10
         case .beam: return 0.5
         }
@@ -157,6 +165,7 @@ extension LightRigSnapshot.Light {
         case .warmth: return warmth
         case .beam: return beam
         case .softness: return softness
+        case .size: return size
         }
     }
 }
@@ -204,8 +213,9 @@ enum LightAngles {
 
 // MARK: - Snapping
 
-/// The grids the orbit view snaps to (spec §9): orbit every 15° (decision 7),
-/// radius every 0.5×, pitch to the dial's 1°. Values are compared at
+/// The grids the orbit view snaps to (spec §9): a drag rounds orbit and pitch
+/// to the dial's 1° (so a lamp follows the pointer), radius every 0.5×; the
+/// discrete steps (`nextOrbit`: VoiceOver, keyboard) stay on the 15° grid. Values are compared at
 /// `tolerance`, the eye-space drift a pinned light's Float placement carries,
 /// so 104.99999 counts as on 105. Non-finite input gives nil.
 enum LightSnap {
@@ -213,10 +223,12 @@ enum LightSnap {
     static let orbitStep = 15.0
     static let radiusStep = 0.5
 
-    /// The nearest multiple of 15°, wrapped into (-180, 180].
+    /// Rounded to the orbit quantum (1°), wrapped into (-180, 180]. A drag
+    /// uses this, so the light follows the pointer with no 15° stops.
     static func orbit(_ degrees: Double) -> Double? {
         guard degrees.isFinite else { return nil }
-        return LightAngles.wrap((degrees / orbitStep).rounded() * orbitStep)
+        // `+ 0` turns -0 (a small negative rounded) into 0.
+        return LightAngles.wrap(LightParameter.orbit.rounded(degrees)) + 0
     }
 
     /// The nearest multiple of 0.5×, clamped into the core's 0.5...8.
@@ -240,7 +252,7 @@ enum LightSnap {
         return radius(start * magnification)
     }
 
-    /// The next 15° grid value above (`up`) or below `degrees`, wrapped. A
+    /// The next 15° step above (`up`) or below `degrees`, wrapped. A
     /// value within `tolerance` of a grid value counts as on it.
     static func nextOrbit(from degrees: Double, up: Bool) -> Double? {
         guard let n = next(degrees, step: orbitStep, up: up) else { return nil }
@@ -328,6 +340,88 @@ enum LightColour {
     static func swatchIndex(of rgb: SIMD3<Double>) -> Int? {
         swatches.firstIndex { matches($0.rgb, rgb) }
     }
+
+    /// A light's warmth as an RGB multiplier on its colour: layer1's
+    /// `LightWarmthRGB` (LightShading.cpp) in Swift. The colour of a black
+    /// body at `kelvin` (Krystek's 1985 rational fit of the Planckian locus,
+    /// then CIE 1960 (u, v) to xy to XYZ to linear sRGB), divided by the
+    /// colour at 6500 K and by its largest channel, so 6500 K is exactly
+    /// (1, 1, 1). `kelvin` is clamped into the warmth range; NaN is neutral.
+    static func warmthRGB(kelvin: Double) -> SIMD3<Double> {
+        let range = LightParameter.warmth.range
+        let neutral = 6500.0
+        let k = kelvin.isNaN ? neutral : min(max(kelvin, range.lowerBound), range.upperBound)
+        func planck(_ t: Double) -> SIMD3<Double> {
+            let t2 = t * t
+            let u = (0.860117757 + 1.54118254e-4 * t + 1.28641212e-7 * t2)
+                / (1.0 + 8.42420235e-4 * t + 7.08145163e-7 * t2)
+            let v = (0.317398726 + 4.22806245e-5 * t + 4.20481691e-8 * t2)
+                / (1.0 - 2.89741816e-5 * t + 1.61456053e-7 * t2)
+            let d = 2.0 * u - 8.0 * v + 4.0
+            let x = 3.0 * u / d
+            let y = 2.0 * v / d
+            let bigX = x / y
+            let bigZ = (1.0 - x - y) / y
+            return SIMD3(3.2404542 * bigX - 1.5371385 - 0.4985314 * bigZ,
+                         -0.9692660 * bigX + 1.8760108 + 0.0415560 * bigZ,
+                         0.0556434 * bigX - 0.2040259 + 1.0572252 * bigZ)
+        }
+        let reference = planck(neutral)
+        var c = planck(k) / reference
+        c = SIMD3(max(c.x, 0), max(c.y, 0), max(c.z, 0))
+        let top = max(c.x, max(c.y, c.z))
+        return top > 0 ? c / top : SIMD3(1, 1, 1)
+    }
+}
+
+// MARK: - Marker colour
+
+/// The colour a light's markers (the bar chip dot, the orbit lamp, the
+/// gizmo knob, the inspector dot) are drawn in (#798): the colour the light
+/// casts, and an outline that contrasts with it. Pure, so the tests check it
+/// without drawing.
+struct LightMarkerColour: Equatable {
+    /// The light's Colour tinted by its Warmth, in display sRGB, 0...1: the
+    /// RGB `LightRigPack` sends to the shader before Intensity scales it (it
+    /// multiplies the two directly, so this does too). Intensity is left out
+    /// on purpose: a dim light keeps its hue, and the rig-off dimming is the
+    /// views' opacity.
+    var fill: SIMD3<Double>
+    /// Black or white, whichever contrasts more with `fill` (WCAG contrast
+    /// ratio): a thin stroke round the marker, so a white light reads on a
+    /// light background and a dark one on a dark dial.
+    var outline: SIMD3<Double>
+
+    /// A neutral white light (the default rig light): the marker before the
+    /// rig is read.
+    static let neutral = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 6500)
+
+    init(color: SIMD3<Double>, warmth: Double) {
+        func clamp(_ x: Double) -> Double { x.isFinite ? min(max(x, 0), 1) : 0 }
+        let tint = LightColour.warmthRGB(kelvin: warmth)
+        let f = SIMD3(clamp(color.x) * tint.x, clamp(color.y) * tint.y, clamp(color.z) * tint.z)
+        fill = SIMD3(clamp(f.x), clamp(f.y), clamp(f.z))
+        outline = Self.contrastRatio(Self.luminance(fill), 0) >= Self.contrastRatio(Self.luminance(fill), 1)
+            ? SIMD3(0, 0, 0) : SIMD3(1, 1, 1)
+    }
+
+    /// The marker for `light`.
+    init(_ light: LightRigSnapshot.Light) {
+        self.init(color: light.color, warmth: light.warmth)
+    }
+
+    /// WCAG relative luminance of an sRGB colour: 0 black, 1 white.
+    static func luminance(_ rgb: SIMD3<Double>) -> Double {
+        func linear(_ c: Double) -> Double {
+            c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(rgb.x) + 0.7152 * linear(rgb.y) + 0.0722 * linear(rgb.z)
+    }
+
+    /// WCAG contrast ratio between two luminances, 1...21.
+    static func contrastRatio(_ a: Double, _ b: Double) -> Double {
+        (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
 }
 
 // MARK: - Warmth track
@@ -394,7 +488,7 @@ extension LightsController {
     @discardableResult
     func set(_ parameter: LightParameter, _ value: Double, owner: String) -> LightSetResult {
         guard ownsGesture(owner) else { return .badIndex }
-        return set(parameter, value)
+        return writeNumbers([(parameter.field, value)], editKey: gestureEditKey)
     }
 
     /// Move the light a gesture began on (#622's knob tick): `ownsGesture`,
@@ -405,7 +499,7 @@ extension LightsController {
     func setPlacement(orbit: Double?, pitch: Double?, radius: Double? = nil,
                       owner: String) -> LightSetResult {
         guard ownsGesture(owner) else { return .badIndex }
-        return setPlacement(orbit: orbit, pitch: pitch, radius: radius)
+        return setPlacement(orbit: orbit, pitch: pitch, radius: radius, editKey: gestureEditKey)
     }
 
     /// Aim the light a gesture began on at a world point (#622's aim dot,
@@ -415,7 +509,7 @@ extension LightsController {
     @discardableResult
     func setAim(_ point: SIMD3<Double>, owner: String) -> LightSetResult {
         guard ownsGesture(owner) else { return .badIndex }
-        return edit("aim_point", point)
+        return edit("aim_point", point, editKey: gestureEditKey)
     }
 
     /// The one owner guard of every gesture write (`set`, `setPlacement` and
@@ -452,6 +546,12 @@ extension LightsController {
         return set(parameter, current + delta)
     }
 
+    /// An arrow-key nudge in the main view (#700): one stepper-style write, so it
+    /// re-reads a stale mirror, wraps orbit / clamps pitch in the core, and counts
+    /// as an edit by the same rules as a stepper press.
+    @discardableResult
+    func nudge(_ nudge: LightNudge) -> LightSetResult { step(nudge.parameter, by: nudge.delta) }
+
     /// Move the selected light: each given value is written with the selected
     /// index fixed for the whole call, in the order pitch, orbit, radius
     /// (on a pinned light each write re-pins and derives the other two from
@@ -461,12 +561,12 @@ extension LightsController {
     /// succeeded.
     @discardableResult
     func setPlacement(orbit: Double? = nil, pitch: Double? = nil,
-                      radius: Double? = nil) -> LightSetResult {
+                      radius: Double? = nil, editKey: String? = nil) -> LightSetResult {
         var fields: [(String, Double)] = []
         if let pitch { fields.append((LightParameter.pitch.field, pitch)) }
         if let orbit { fields.append((LightParameter.orbit.field, orbit)) }
         if let radius { fields.append((LightParameter.radius.field, radius)) }
-        return writeNumbers(fields)
+        return writeNumbers(fields, editKey: editKey)
     }
 
     /// Set the selected light's colour (sRGB 0...1). A colour within

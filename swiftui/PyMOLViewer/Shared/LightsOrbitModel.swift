@@ -43,6 +43,11 @@ enum LightsOrbitMetrics {
     static let arcSize = CGSize(width: 58, height: 196)
     /// Between the plan's outer ring and its canvas edge.
     static let planMargin: CGFloat = 5
+    /// The aim tick (#678): its length, its gap from the lamp's edge, and the
+    /// shortest tick worth drawing.
+    static let aimTickLength: CGFloat = 16
+    static let aimTickGap: CGFloat = 3
+    static let aimTickMinimum: CGFloat = 3
     /// The drawn radius of a lamp, and of the selected one.
     static let lampRadius: CGFloat = 6
     static let selectedLampRadius: CGFloat = 8
@@ -166,6 +171,36 @@ struct OrbitPlanLayout: Equatable {
         point(orbit: orbit, distance: drawnDistance(radius: radius))
     }
 
+    /// The short tick that shows where a light aimed at a point points (#678):
+    /// from just outside the lamp at `lamp` (radius `lampRadius`) towards the
+    /// aim point, whose offset from the rig centre in the plan's (x, z) eye
+    /// axes is `aim` (scene sizes). It stops at the aim point and at the outer
+    /// ring. nil for a light aimed at the centre (`aim` nil: it always points
+    /// inward) and when the aim point is on the lamp, so it has no direction.
+    func aimTick(from lamp: CGPoint, lampRadius: CGFloat, aim: SIMD2<Double>?)
+        -> (from: CGPoint, to: CGPoint)? {
+        guard let aim, aim.x.isFinite, aim.y.isFinite else { return nil }
+        let target = CGPoint(x: centre.x + CGFloat(aim.x) * pointsPerSize,
+                             y: centre.y + CGFloat(aim.y) * pointsPerSize)
+        let dx = target.x - lamp.x, dy = target.y - lamp.y
+        let distance = hypot(dx, dy)
+        let gap = lampRadius + LightsOrbitMetrics.aimTickGap
+        guard distance > gap + LightsOrbitMetrics.aimTickMinimum else { return nil }
+        let ux = dx / distance, uy = dy / distance
+        var length = min(LightsOrbitMetrics.aimTickLength, distance - gap)
+        let start = CGPoint(x: lamp.x + ux * gap, y: lamp.y + uy * gap)
+        // Clip along the beam where it leaves the outer ring; a start already
+        // outside it (a lamp on the rim aiming outwards) has no tick.
+        let sx = start.x - centre.x, sy = start.y - centre.y
+        let c = sx * sx + sy * sy - outerRadius * outerRadius
+        guard c <= 0 else { return nil }
+        let b = sx * ux + sy * uy
+        length = min(length, -b + (b * b - c).squareRoot())
+        guard length >= LightsOrbitMetrics.aimTickMinimum else { return nil }
+        let end = CGPoint(x: start.x + ux * length, y: start.y + uy * length)
+        return (start, end)
+    }
+
     /// The orbit of `point` around the centre; nil within
     /// `LightsOrbitMetrics.centreDeadZone` of it.
     func orbit(at point: CGPoint) -> Double? {
@@ -234,20 +269,53 @@ struct PitchArcLayout: Equatable {
     }
 
     var centre: CGPoint { CGPoint(x: LightsOrbitMetrics.arcInset, y: size.height / 2) }
-    var radius: CGFloat {
-        max(min(size.width - LightsOrbitMetrics.arcInset - LightsOrbitMetrics.arcMargin,
-                size.height / 2 - LightsOrbitMetrics.arcMargin), 1)
+    /// The half ellipse's horizontal radius: out to the canvas's right margin.
+    var radiusX: CGFloat {
+        max(size.width - LightsOrbitMetrics.arcInset - LightsOrbitMetrics.arcMargin, 1)
+    }
+    /// Its vertical radius: the full canvas height less the margins, so a
+    /// narrow canvas gets a flatter ellipse instead of a small circle (#681).
+    var radiusY: CGFloat {
+        max(size.height / 2 - LightsOrbitMetrics.arcMargin, 1)
     }
 
     /// The point of the arc at `pitch`.
     func point(pitch: Double) -> CGPoint {
         let o = LightAngles.offset(pitch: pitch)
-        return CGPoint(x: centre.x + radius * CGFloat(o.dx), y: centre.y + radius * CGFloat(o.dy))
+        return CGPoint(x: centre.x + radiusX * CGFloat(o.dx), y: centre.y + radiusY * CGFloat(o.dy))
     }
 
-    /// The pitch of `point` around the centre (the left half clamps to ±90).
+    /// How far `point` is from the arc's ellipse (positive outside, negative
+    /// inside): the distance to the nearest point of the full ellipse, found
+    /// by a coarse scan and a refinement. Infinite at the centre.
+    func distanceToArc(_ point: CGPoint) -> CGFloat {
+        let dx = point.x - centre.x, dy = point.y - centre.y
+        let f = hypot(dx / radiusX, dy / radiusY)
+        guard f > 1e-9 else { return .infinity }
+        func gap(_ degrees: Double) -> Double {
+            let o = LightAngles.offset(pitch: degrees)
+            return hypot(Double(dx - radiusX * CGFloat(o.dx)), Double(dy - radiusY * CGFloat(o.dy)))
+        }
+        var best = -180.0, bestGap = Double.infinity
+        for degrees in stride(from: -180.0, through: 180, by: 2) where gap(degrees) < bestGap {
+            best = degrees
+            bestGap = gap(degrees)
+        }
+        var low = best - 2, high = best + 2
+        for _ in 0..<30 {
+            let m1 = low + (high - low) / 3, m2 = high - (high - low) / 3
+            if gap(m1) < gap(m2) { high = m2 } else { low = m1 }
+        }
+        let nearest = CGFloat(gap((low + high) / 2))
+        return f >= 1 ? nearest : -nearest
+    }
+
+    /// The pitch of `point` around the centre (the left half clamps to ±90):
+    /// the offset is unsquashed by the radii first, so the inverse of
+    /// `point(pitch:)` for any ellipse.
     func pitch(at point: CGPoint) -> Double {
-        LightAngles.pitch(dx: Double(point.x - centre.x), dy: Double(point.y - centre.y))
+        LightAngles.pitch(dx: Double(point.x - centre.x) / Double(radiusX),
+                          dy: Double(point.y - centre.y) / Double(radiusY))
     }
 }
 
@@ -323,7 +391,7 @@ enum OrbitHitTest {
         }
         let c = layout.centre
         guard point.x >= c.x,
-              abs(hypot(point.x - c.x, point.y - c.y) - layout.radius) <= layout.trackReach else { return nil }
+              abs(layout.distanceToArc(point)) <= layout.trackReach else { return nil }
         return .pitchTrack
     }
 }
@@ -504,8 +572,11 @@ struct LightsOrbitState: Equatable {
     struct Lamp: Equatable, Identifiable {
         var name: String
         var index: Int
-        /// The identity colour slot (the bar chip's colour).
+        /// The identity colour slot.
         var slot: Int
+        /// What the lamp is drawn in: the light's own colour (#798), the
+        /// bar chip's too.
+        var marker = LightMarkerColour.neutral
         /// The current placement: eye space for a pinned light.
         var orbit: Double
         var pitch: Double
@@ -514,6 +585,10 @@ struct LightsOrbitState: Equatable {
         var isPinned: Bool
         /// Beyond the plan's extent or nearer than 0.5×.
         var isOutOfRange: Bool
+        /// Where the light aims, as an offset from the rig centre on the
+        /// plan's axes in scene sizes: nil when aimed at the centre or when
+        /// eye space is not read.
+        var aimOffset: SIMD2<Double>? = nil
         /// Its pitch (`+30°`), plus its true radius when out of range
         /// (`+30° · 12.0×`).
         var labelText: String
@@ -566,13 +641,15 @@ struct LightsOrbitState: Equatable {
               let lights = controller.rig?.lights, lights.indices.contains(index) else { return nil }
         let placements = lights.indices.map { controller.placement(at: $0) ?? lights[$0].placement }
         let extent = OrbitPlanLayout.extent(for: placements.map(\.radius))
+        let eyeSpace = controller.eye.eyeSpace
         lamps = lights.enumerated().map { i, light in
             let p = placements[i]
             let out = OrbitPlanLayout.isOutOfRange(radius: p.radius, extent: extent)
             return Lamp(name: light.name, index: i, slot: controller.identitySlot(for: light.name),
-                        orbit: p.orbit, pitch: p.pitch, radius: p.radius,
+                        marker: LightMarkerColour(light), orbit: p.orbit, pitch: p.pitch, radius: p.radius,
                         isSelected: i == index, isPinned: light.anchor == .pinned,
                         isOutOfRange: out,
+                        aimOffset: Self.aimOffset(eyeSpace, at: i),
                         labelText: Self.label(pitch: p.pitch, radius: p.radius, outOfRange: out))
         }
         selected = lamps[index]
@@ -583,6 +660,15 @@ struct LightsOrbitState: Equatable {
         orbitText = LightInspectorFormat.angle(selected.orbit)
         pitchText = LightInspectorFormat.angle(selected.pitch, plus: true)
         radiusText = LightInspectorFormat.radius(selected.radius, frameSize: frameSize)
+    }
+
+    /// Light `index`'s aim as a plan offset (see `Lamp.aimOffset`): only for
+    /// a light aimed at a point, from the eye-space read.
+    static func aimOffset(_ eye: LightEyeSpace?, at index: Int) -> SIMD2<Double>? {
+        guard let eye, eye.hasFrame, eye.size > 0, eye.lights.indices.contains(index),
+              eye.lights[index].aim == .point else { return nil }
+        let d = SIMD3<Double>(eye.lights[index].target - eye.centre) / Double(eye.size)
+        return SIMD2(d.x, d.z)
     }
 
     /// The lamp of the light called `name` (ignoring case).

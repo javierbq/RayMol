@@ -2389,7 +2389,7 @@ int ExecutiveDrawCmd(PyMOLGlobals* G, int width, int height, int antialias,
       SceneUpdate(G, false);
     }
     SceneDeferImage(
-        G, extent, nullptr, antialias, -1.0, cMyPNG_FormatPNG, quiet, nullptr);
+        G, extent, nullptr, antialias, -1.0, cMyPNG_FormatPNG, quiet);
   }
   return 1;
 }
@@ -4530,13 +4530,16 @@ static int* getRepArrayFromBitmask(int visRep)
   return RepVis;
 }
 
-#ifdef _PYMOL_LIB
 /**
  * Returns a list (VLA) of enabled atom representations (AtomInfoType.visRep)
  * in selection (e.g. {cRepLine, cRepNonbonded})
  */
 int* ExecutiveGetRepsInSceneForObject(PyMOLGlobals* G, const char* name)
 {
+  if (!G || !name) {
+    return nullptr;
+  }
+
   int visRep = 0;
 
   for (SeleAtomIterator iter(G, name); iter.next();) {
@@ -4547,6 +4550,7 @@ int* ExecutiveGetRepsInSceneForObject(PyMOLGlobals* G, const char* name)
   return getRepArrayFromBitmask(visRep);
 }
 
+#ifdef _PYMOL_LIB
 /**
  * Returns a list (VLA) of enabled object representations (rec->obj->visRep)
  * (e.g. {cRepCell, cRepExtent})
@@ -5717,7 +5721,7 @@ int ExecutiveSetSession(
   int ok = true;
   int incomplete = false;
   PyObject* tmp;
-  SceneViewType sv;
+  SceneViewType sv = {}; // never apply uninitialised data (#636)
   int version = -1, version_full;
   int migrate_sessions = SettingGetGlobal_b(G, cSetting_session_migration);
   char active[WordLength] = "";
@@ -5725,6 +5729,7 @@ int ExecutiveSetSession(
   int partial_session = false;
 
   if (!partial_restore) { /* if user has requested partial restore */
+    SceneBumpDocumentGeneration(G); // document replaced (#649)
     ExecutiveDelete(G, "all");
     ColorReset(G);
   }
@@ -5946,7 +5951,11 @@ int ExecutiveSetSession(
     }
     if (tmp || (!(partial_restore |
                    partial_session))) { /* ignore missing if partial restore */
-      if (ok)
+      // Only apply a view that was actually read from the session. A full
+      // session without a 'view' key leaves the current camera alone. The
+      // float converter reports a non-numeric entry only through the Python
+      // error state, so check that too.
+      if (tmp && ok && !PyErr_Occurred())
         SceneSetView(G, sv, true, 0, 0);
       if (PyErr_Occurred()) {
         PyErr_Print();
@@ -14259,6 +14268,7 @@ static void ExecutiveSetAllRepVisMask(PyMOLGlobals* G, int repmask, int state)
           ObjectSetRepVisMask(rec->obj, repmask, state);
           fInvalidateRepMask(rec->obj, repmask, -1);
           SceneInvalidate(G);
+          SceneInvalidateExtentCache(G); // light shadow extent (#690)
           break;
         }
       }

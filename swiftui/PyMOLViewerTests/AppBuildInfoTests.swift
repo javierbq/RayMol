@@ -125,7 +125,199 @@ final class AppBuildInfoTests: XCTestCase {
     // The live property must go through the same formatter as the tested one.
     func testLiveConsoleBannerMatchesDisplayVersion() {
         XCTAssertEqual(AppBuildInfo.consoleBanner,
-                       AppBuildInfo.consoleBanner(displayVersion: AppBuildInfo.displayVersion))
+                       AppBuildInfo.consoleBanner(displayVersion: AppBuildInfo.displayVersion,
+                                                  coreSHA: AppBuildInfo.coreSHA))
         XCTAssertTrue(AppBuildInfo.consoleBanner.hasPrefix(" [build] RayMol "))
+    }
+
+    // The stamped core commit makes a stale-core link visible in the console
+    // (#400). Blank/absent stamps must not leave a dangling " core ".
+    func testConsoleBannerShowsCoreSHAWhenStamped() {
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)", coreSHA: "1fc5fc983"),
+                       " [build] RayMol 1.10.0 (27) core 1fc5fc983")
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)", coreSHA: "1fc5fc983-dirty"),
+                       " [build] RayMol 1.10.0 (27) core 1fc5fc983-dirty")
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)", coreSHA: nil),
+                       " [build] RayMol 1.10.0 (27)")
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)", coreSHA: "  "),
+                       " [build] RayMol 1.10.0 (27)")
+    }
+}
+
+// MARK: - ScriptedLaunchTests (#671)
+
+/// Covers `PyMOLEngine.isScriptedLaunch(environment:)`, which detects whether
+/// the scene is being scripted via test affordances (PYMOL_AUTOCMD/PYMOL_AUTOLOAD)
+/// so launch-time theme re-assertion does not clobber requested render settings.
+final class ScriptedLaunchTests: XCTestCase {
+
+    func testEmptyEnvironmentIsNotScripted() {
+        XCTAssertFalse(PyMOLEngine.isScriptedLaunch(environment: [:]))
+    }
+
+    func testAutoCmdIsScripted() {
+        XCTAssertTrue(PyMOLEngine.isScriptedLaunch(environment: ["PYMOL_AUTOCMD": "set metal_shadows, 0"]))
+    }
+
+    func testAutoLoadIsScripted() {
+        XCTAssertTrue(PyMOLEngine.isScriptedLaunch(environment: ["PYMOL_AUTOLOAD": "1crn.pdb"]))
+    }
+
+    func testUnrelatedEnvironmentVariablesAreNotScripted() {
+        let env = [
+            "PYMOL_AUTOEXPORT": "out.png,800,600",
+            "PYMOL_SKIP_WHATS_NEW": "1",
+        ]
+        XCTAssertFalse(PyMOLEngine.isScriptedLaunch(environment: env))
+    }
+
+    /// The launch-time theme rule itself (#671), as applyPersistedTheme uses it.
+    func testLaunchThemePlan() {
+        typealias Plan = PyMOLEngine.LaunchThemePlan
+        // Fresh launch: the theme sets the toggles and the outline default.
+        XCTAssertEqual(PyMOLEngine.launchThemePlan(scripted: false, sessionOwnsRenderState: false),
+                       Plan(applyRenderToggles: true, forceOutlineOff: true))
+        // Restored/opened session: its toggles win, the outline default still applies.
+        XCTAssertEqual(PyMOLEngine.launchThemePlan(scripted: false, sessionOwnsRenderState: true),
+                       Plan(applyRenderToggles: false, forceOutlineOff: true))
+        // Scripted launch: the script's metal_shadows / metal_raytrace /
+        // metal_outline survive the theme (neither toggles nor outline-off).
+        XCTAssertEqual(PyMOLEngine.launchThemePlan(scripted: true, sessionOwnsRenderState: false),
+                       Plan(applyRenderToggles: false, forceOutlineOff: false))
+        XCTAssertEqual(PyMOLEngine.launchThemePlan(scripted: true, sessionOwnsRenderState: true),
+                       Plan(applyRenderToggles: false, forceOutlineOff: false))
+    }
+}
+
+// MARK: - AutosaveRestoreGuardTests (#385)
+
+/// Covers the cold-launch session restore escape hatch (#385): ensuring that an
+/// interrupted restore prompts the user rather than blindly retrying and bricking
+/// the app on watchdog kills.
+final class AutosaveRestoreGuardTests: XCTestCase {
+
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "raymol.tests.385.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults = nil
+        super.tearDown()
+    }
+
+    /// Every combination of the four inputs, against a literal table (not the
+    /// production expression): skip when scripted, opening a file or no
+    /// autosave; otherwise ask after an interrupted restore, else restore.
+    func testDecisionTable() {
+        typealias A = PyMOLEngine.AutosaveRestoreAction
+        // (scripted, openRequested, autosavePresent, interrupted) -> expected
+        let table: [(Bool, Bool, Bool, Bool, A)] = [
+            (false, false, false, false, .skip),
+            (false, false, false, true,  .skip),
+            (false, false, true,  false, .restore),
+            (false, false, true,  true,  .askStartEmpty),
+            (false, true,  false, false, .skip),
+            (false, true,  false, true,  .skip),
+            (false, true,  true,  false, .skip),
+            (false, true,  true,  true,  .skip),
+            (true,  false, false, false, .skip),
+            (true,  false, false, true,  .skip),
+            (true,  false, true,  false, .skip),
+            (true,  false, true,  true,  .skip),
+            (true,  true,  false, false, .skip),
+            (true,  true,  false, true,  .skip),
+            (true,  true,  true,  false, .skip),
+            (true,  true,  true,  true,  .skip),
+        ]
+        for (scripted, open, present, interrupted, expected) in table {
+            XCTAssertEqual(PyMOLEngine.autosaveRestoreAction(
+                scripted: scripted, openRequested: open,
+                autosavePresent: present, previousRestoreInterrupted: interrupted),
+                expected,
+                "scripted=\(scripted) open=\(open) present=\(present) interrupted=\(interrupted)")
+        }
+    }
+
+    /// A scripted launch (#671) is never prompted, even after an interrupted restore.
+    func testScriptedLaunchNeverAsksEvenAfterInterruptedRestore() {
+        let action = PyMOLEngine.autosaveRestoreAction(
+            scripted: true,
+            openRequested: false,
+            autosavePresent: true,
+            previousRestoreInterrupted: true
+        )
+        XCTAssertEqual(action, .skip)
+    }
+
+    /// A plain launch after an interrupted restore asks instead of retrying.
+    func testInterruptedRestoreAsks() {
+        let action = PyMOLEngine.autosaveRestoreAction(
+            scripted: false,
+            openRequested: false,
+            autosavePresent: true,
+            previousRestoreInterrupted: true
+        )
+        XCTAssertEqual(action, .askStartEmpty)
+    }
+
+    /// The flag is set before the load and stays set until the restore is
+    /// confirmed (#385): neither the load returning nor the objects landing is
+    /// enough without a rendered frame, which is where the rep geometry
+    /// (surfaces, cartoons) is built and a large session gets killed.
+    func testRestoreConfirmedNeedsRenderedFrameAndObjects() {
+        XCTAssertFalse(PyMOLEngine.restoreConfirmed(frameRendered: false, hasObjects: false))
+        XCTAssertFalse(PyMOLEngine.restoreConfirmed(frameRendered: false, hasObjects: true))
+        XCTAssertFalse(PyMOLEngine.restoreConfirmed(frameRendered: true, hasObjects: false))
+        XCTAssertTrue(PyMOLEngine.restoreConfirmed(frameRendered: true, hasObjects: true))
+    }
+
+    /// markRestoreInProgress sets the flag the next launch reads.
+    func testMarkRestoreInProgressSetsFlag() {
+        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+        PyMOLEngine.markRestoreInProgress(in: defaults)
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
+    }
+
+    /// A kill mid-restore leaves the flag set (the clear never runs), and the
+    /// next launch then asks.
+    func testKilledMidRestoreLeavesFlagForNextLaunch() {
+        defaults.set(true, forKey: PyMOLEngine.restoreInProgressDefaultsKey)
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
+        let action = PyMOLEngine.autosaveRestoreAction(
+            scripted: false,
+            openRequested: false,
+            autosavePresent: true,
+            previousRestoreInterrupted: PyMOLEngine.restoreWasInterrupted(in: defaults)
+        )
+        XCTAssertEqual(action, .askStartEmpty)
+    }
+
+    /// The helper that Start Empty (clearAutosave), a confirmed restore and a
+    /// fresh autosave all use to clear the flag.
+    func testClearRestoreInProgress() {
+        defaults.set(true, forKey: PyMOLEngine.restoreInProgressDefaultsKey)
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
+        PyMOLEngine.clearRestoreInProgress(in: defaults)
+        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+    }
+
+    /// autosaveSession clears the flag only when the save rewrote the file
+    /// (#385); a missing file reads as nil, so a first save also counts.
+    func testModificationDateTracksRewrites() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-385-\(UUID().uuidString).pse")
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertNil(PyMOLEngine.modificationDate(of: url))
+        try Data("a".utf8).write(to: url)
+        let first = try XCTUnwrap(PyMOLEngine.modificationDate(of: url))
+        try FileManager.default.setAttributes(
+            [.modificationDate: first.addingTimeInterval(5)], ofItemAtPath: url.path)
+        XCTAssertNotEqual(PyMOLEngine.modificationDate(of: url), first)
     }
 }

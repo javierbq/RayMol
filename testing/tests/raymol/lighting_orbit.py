@@ -2,8 +2,10 @@
 
 The orbit view (swiftui/PyMOLViewer/Shared/LightsOrbitModel.swift) draws the
 rig as a flat plan seen from above, the camera at the bottom, plus a pitch
-arc, and writes only orbit, pitch or radius of the selected light, snapped to
-LightSnap's grids (orbit every 15 degrees, radius every 0.5 scene sizes),
+arc, and writes only orbit, pitch or radius of the selected light, rounded by
+LightSnap (orbit and pitch to 1 degree, so a lamp follows the pointer, #800;
+radius every 0.5 scene sizes; the 15 degree orbit step is for VoiceOver and
+keyboard steps),
 through the C++ setter the app bridge calls per drag tick (LightRigSet,
 reached here as lighting._light_set). It reads where each light is from the
 eye-space resolver (LightRigResolve, lighting._lights_eye), as the bridge
@@ -41,7 +43,10 @@ PEPTIDE = 'ACDEFG'
 SIZE = 10.0
 
 # LightSnap's grids (LightsEditing.swift; TestOrbitSource reads them back).
+# ORBIT_STEP is the discrete (VoiceOver, keyboard) step; a drag rounds orbit
+# to LightParameter.orbit.quantum (1 degree) instead.
 ORBIT_STEP = 15.0
+ORBIT_QUANTUM = 1.0
 RADIUS_STEP = 0.5
 
 # The 15-degree orbit grid in (-180, 180].
@@ -137,6 +142,15 @@ class TestPlanGrid(OrbitCase):
                  for scope, name, _kind, _default, low, high
                  in lighting._light_fields() if scope == 'light'}
         self.assertEqual((RADIUS_GRID[0], RADIUS_GRID[-1]), table['radius'])
+
+    def testWholeDegreeOrbitsReadBackExactly(self):
+        """A drag writes any whole degree (#800), not only the 15-degree
+        steps; the core holds each exactly (-180 reads back as 180)."""
+        self.rig([{'name': 'key', 'orbit': 0.0, 'pitch': 3.0, 'radius': 2.0}])
+        for orbit in range(-180, 181):
+            lighting._light_set(0, 'orbit', float(orbit))
+            self.assertEqual(lighting._light_get(0, 'orbit'),
+                             180.0 if orbit == -180 else float(orbit), orbit)
 
     def testOrbitAtAPoleLeavesTheLightWhereItIs(self):
         """At pitch +-90 a lamp drag moves the lamp on the plan but not the
@@ -292,11 +306,22 @@ class TestOrbitSource(testing.PyMOLTestCase):
             return strip_comments(handle.read())
 
     def testSnapGridsFitTheCore(self):
-        """LightSnap snaps orbit every 15 degrees and radius every 0.5x
-        (spec §9); both grids hold the core's range ends, so a snapped value
-        is one the core keeps exactly."""
+        """LightSnap rounds a drag's orbit to the orbit quantum (1 degree,
+        spec §9, #800) and its radius to 0.5x; the discrete orbit step
+        (nextOrbit: VoiceOver, keyboard) stays 15 degrees. Both grids hold the
+        core's range ends, so a snapped value is one the core keeps exactly."""
         snap = body(self.read(EDITING), 'enum LightSnap')
         self.assertIsNotNone(snap, 'enum LightSnap not found')
+        drag = body(snap, 'static func orbit(_ degrees: Double)')
+        self.assertIsNotNone(drag, 'LightSnap.orbit not found')
+        self.assertIn('LightParameter.orbit.rounded', drag)
+        self.assertNotIn('orbitStep', drag, 'a drag must not snap to the 15 degree step')
+        step = body(snap, 'static func nextOrbit(')
+        self.assertIsNotNone(step, 'LightSnap.nextOrbit not found')
+        self.assertIn('orbitStep', step)
+        quantum = body(self.read(EDITING), 'var quantum: Double')
+        self.assertIsNotNone(quantum, 'LightParameter.quantum not found')
+        self.assertIsNotNone(re.search(r'case\s+\.orbit\s*,\s*\.pitch\s*:\s*return\s+1\b', quantum))
         steps = dict(re.findall(r'static let (orbitStep|radiusStep)\s*=\s*([0-9.]+)', snap))
         self.assertEqual(float(steps.get('orbitStep', 'nan')), ORBIT_STEP)
         self.assertEqual(float(steps.get('radiusStep', 'nan')), RADIUS_STEP)
@@ -398,6 +423,30 @@ class TestOrbitSource(testing.PyMOLTestCase):
         self.assertIsNotNone(summary, 'OrbitCollapsedSummary not found')
         self.assertRegex(summary, r'@ObservedObject\s+var\s+eye:\s*LightsEyeState')
 
+    def testThePaintersPlaceEveryLabel(self):
+        """Every label the plan and the arc draw is placed by
+        OrbitPlanLabels / PitchArcLabels (#676), which keep labels off each
+        other and off the lamps: the painters draw text only through
+        OrbitLabelInk, which draws into the placed frame (never at a bare
+        point)."""
+        text = self.read(VIEW)
+        for painter, labels in (('struct OrbitPlanPainter', 'OrbitPlanLabels(state: state, layout: layout'),
+                                ('struct PitchArcPainter', 'PitchArcLabels(state: state, layout: layout')):
+            with self.subTest(painter):
+                code = body(text, painter)
+                self.assertIsNotNone(code, '%s not found' % painter)
+                self.assertTrue(labels in code, '%s does not place its labels with %s'
+                                % (painter, labels.split('(')[0]))
+                self.assertRegex(code, r'\bink\.draw\(')
+                self.assertNotRegex(code, r'\bText\(', '%s draws text outside OrbitLabelInk' % painter)
+        ink = body(text, 'private struct OrbitLabelInk')
+        self.assertIsNotNone(ink, 'OrbitLabelInk not found')
+        draw = body(ink, 'mutating func draw(')
+        self.assertIsNotNone(draw, 'OrbitLabelInk.draw not found')
+        self.assertRegex(draw, r'guard\s+let\s+frame\s*=\s*label\.frame\b')
+        self.assertRegex(draw, r'context\.draw\(\s*text\s*,\s*in:\s*frame\s*\)')
+        self.assertNotRegex(ink, r'\bat:', 'text drawn at a bare point')
+
     def testThePlanPinchesBesideItsDrag(self):
         """The plan's pinch is a simultaneous MagnifyGesture beside its
         DragGesture (the gesture wiring is otherwise checked by eye)."""
@@ -440,7 +489,11 @@ class TestOrbitSource(testing.PyMOLTestCase):
         self.assertIn('return .column', mac)
         phone = body(content, 'private func iPhoneLayout(geo: GeometryProxy)')
         self.assertIsNotNone(phone, 'iPhoneLayout not found')
-        self.assertRegex(phone, r'if\s+phoneLightsDocked\s*\{\s*lightsSheet\(room:\s*lower\.size\)')
+        # #885: in portrait the sheet docks only while the full editor is
+        # open; the light menu on the Lights bar stands in otherwise.
+        self.assertRegex(phone, r'if\s+phoneLightsDocked\s*\{\s*if\s+LightsPortraitTools\.showsSheet\('
+                                r'placement:\s*lightsPlacement,\s*editorOpen:\s*lightsEditorOpen\)\s*\{'
+                                r'\s*lightsSheet\(room:\s*lower\.size\)')
         for layout in ('private func iPhoneLandscapeLayout(geo: GeometryProxy)',
                        'private func iPadMacStyleLayout(geo: GeometryProxy)'):
             with self.subTest(layout):
@@ -486,7 +539,13 @@ class TestOrbitSource(testing.PyMOLTestCase):
         view = body(float_tools, 'struct LightsFloatingTools: View')
         self.assertIsNotNone(view, 'LightsFloatingTools not found')
         self.assertIn('LightsFloatLayout.bottomClearance(trailing: true, chrome: chrome)', view)
-        self.assertIn('.padding(.bottom, trailingClearance)', view)
+        # The clearance is the floor of the trailing column's padding; a
+        # focused field only lifts it above the keyboard (#725).
+        self.assertIn('LightsFloatLayout.trailingBottomPadding(clearance: trailingClearance', view)
+        self.assertIn('.padding(.bottom, trailingPadding)', view)
+        lift = body(float_tools, 'static func trailingBottomPadding(')
+        self.assertIsNotNone(lift, 'trailingBottomPadding not found')
+        self.assertIn('max(clearance,', lift)
         help_button = re.search(r'questionmark\.circle\.fill"\)\s*'
                                 r'\.font\(\.system\(size:\s*([0-9.]+)\)\)\s*'
                                 r'\.foregroundStyle\([^\n]*\)\s*\.padding\(([0-9.]+)\)', content)

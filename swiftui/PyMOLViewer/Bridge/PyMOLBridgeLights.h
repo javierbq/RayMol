@@ -50,4 +50,7 @@ typedef struct {
     int aim;            // 0 centre, 1 point
     int shadow;         // 0 | 1
     int outline;        // 0 | 1
+    int shadowSlot;     // this frame's shadow-map slot 0..2, -1 when it gets none
+                        // (-1 too when the rig is off, metal_shadows is off, the
+                        // light has no shadow, or no caster is in front of it)
 } PyMOLLightEye;

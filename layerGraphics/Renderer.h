@@ -269,7 +269,7 @@ public:
   // RGB of the 3D selection indicator squares (SceneRenderMetalSelections).
   // Driven by the active RayMol theme's selection color; defaults to pink.
   float selColor[3] = {1.0f, 0.2f, 0.6f};
-  void setSelectionColor(float r, float g, float b) {
+  virtual void setSelectionColor(float r, float g, float b) {
     selColor[0] = r; selColor[1] = g; selColor[2] = b;
   }
 
@@ -277,7 +277,7 @@ public:
   // SceneDrawMetalPreselection at a smaller point size BEFORE the committed
   // selColor pass so pink wins on overlap. Fixed light-cyan by default.
   float preselColor[3] = {0.40f, 0.85f, 1.0f};
-  void setPreselectionColor(float r, float g, float b) {
+  virtual void setPreselectionColor(float r, float g, float b) {
     preselColor[0] = r; preselColor[1] = g; preselColor[2] = b;
   }
 
@@ -469,6 +469,11 @@ public:
   // endLightShadowMaps() reopens the scene pass. Defaults: no-op (the GL
   // renderer has no studio shadows).
   virtual void setLightShadowFrame(bool /*studioShadows*/, int /*mapSize*/) {}
+  // Traced soft shadows (#741): this frame's source radius per block light
+  // (kLightRigBlockSlots floats, eye Å; 0 = the light keeps its map), or
+  // nullptr. SceneRenderMetal calls it once per frame, after
+  // setLightShadowFrame(). Default: no-op (GL has no ray tracing).
+  virtual void setLightSoftShadows(const float* /*radius*/) {}
   virtual bool beginLightShadowMap(int /*slot*/, const float* /*view*/)
   {
     return false;
@@ -478,11 +483,33 @@ public:
   }
   virtual void endLightShadowMaps() {}
 
+  // Studio shadow-map reuse (#666). SceneRenderLightShadowMaps calls
+  // reuseLightShadowMaps(count) instead of the map pass when nothing the maps
+  // depend on changed since the last pass: true when this renderer still
+  // holds that pass's `count` complete maps at this frame's size, and they
+  // are then this frame's (as if rendered); false, and the pass runs.
+  // Default: false (no maps to keep).
+  virtual bool reuseLightShadowMaps(int /*count*/) { return false; }
+
   // GPU frame times (#616, metal_gpu_timing: 0 off, 1 a summary per window,
   // 2 every frame) and their readout (_cmd.get_gpu_frame_stats). Defaults:
   // no-op, and no stats.
   virtual void setGpuTiming(int /*mode*/) {}
   virtual bool getGpuFrameStats(GpuFrameReport* /*out*/) const { return false; }
+
+  // Test-only (#667, _cmd.get_classic_shadow_map_bytes): the classic shadow
+  // map's size in bytes, 0 while it is not allocated (it is made lazily by the
+  // first classic shadow pre-pass) or with no such map.
+  virtual size_t classicShadowMapBytes() const { return 0; }
+  // Test-only: drops the classic shadow map; the next pre-pass makes it again.
+  virtual void releaseClassicShadowMap() {}
+
+  // Test-only (#666, _cmd.get_light_shadow_map_passes): the studio map slices
+  // rendered since the renderer was made (one per shadowed light per pass).
+  virtual unsigned long long lightShadowMapSlicesRendered() const { return 0; }
+  // Test-only: forgets the kept studio maps, so the next shadowed frame
+  // renders them again (an uncached reference frame).
+  virtual void forgetLightShadowMaps() {}
 
   // The air (#618, haze and dust): this frame's air block, or nullptr when
   // the frame draws no air. SceneRenderMetal calls it once per frame, after
@@ -494,6 +521,24 @@ public:
   // frame before a traced one): the air's dust clock then follows the movie
   // frame (SceneLightsAir). Default: false.
   virtual bool offscreenFrame() const { return false; }
+
+  // #685, dust-only ticks: when the light rig's dust animates and nothing else
+  // in the scene changed, a frame may skip the scene passes and pass 1,
+  // re-running only the post chain from the kept pre-air image.
+  // Defaults: never armed, never dust-only.
+  virtual bool armAirOnlyFrame() { return false; }
+  virtual bool airOnlyArmed() const { return false; }
+  virtual bool beginAirOnlyFrame() { return false; }
+  // Test-only (#685, _cmd.get_metal_air_cache_stats): frames that ran the
+  // scene passes (beginFrame), post chains run by endFrame, and dust-only
+  // frames, since the last forget. forget zeroes them and drops the kept
+  // pre-air image first. Default: false (no counters).
+  virtual bool airCacheStats(int& sceneFrames, int& postChains,
+                             int& airFrames, bool forget) { return false; }
+  // Test-only (#739, _cmd.set_metal_air_debug_poison): while on, the air
+  // pass's haze density reads +inf, so its term is non-finite and the NaN
+  // guards must drop it. Default: false (no renderer to poison).
+  virtual bool setAirDebugPoison(bool on) { return false; }
 
   // PyMOL key-light direction (cSetting_light). The direction toward the light
   // used for shading and shadow casting is -normalize(light). Default: no-op
@@ -541,12 +586,18 @@ public:
   virtual void endPeelPrepass() {}
   virtual bool peelSupported() const { return false; }
 
-  // Real shadow map. SceneRenderMetal sets the light's eye-space view-projection
-  // via setLightViewProjEye, then replays the opaque geometry between
-  // beginShadowPass/endShadowPass with the light VP loaded (matrixMode/
-  // loadMatrixf); draws route to depth-only pipelines writing the light-POV
-  // depth map, which the post pass PCF-samples. Default: no-op (GL unaffected).
-  virtual void beginShadowPass() {}
+  // Real shadow map. SceneRenderMetal opens the pass with
+  // beginShadowPass(view), view = the light's eye-space view (camera eye
+  // space -> the light's, column-major), which the renderer premultiplies onto
+  // every modelview until endShadowPass, as beginLightShadowMap does (#616),
+  // so impostor casters face the light (#665); the caller then loads the
+  // light's orthographic projection. Draws route to depth-only pipelines
+  // writing the light-POV depth map, which the post pass PCF-samples.
+  // beginShadowPass returns false when the pass did not open (no map, no
+  // pipelines): the caller then skips the replay and endShadowPass, and the
+  // frame draws unshadowed (#667).
+  // Default: no-op, true (GL unaffected).
+  virtual bool beginShadowPass(const float* /*view*/) { return true; }
   virtual void endShadowPass() {}
   virtual void setLightViewProjEye(const float* m) {}
   // World half-extent of the shadow ortho box, so the receiver can express its
@@ -577,6 +628,25 @@ public:
       float radius, float r, float g, float b)
   {
   }
+
+  // When true, current draw calls represent UI overlays (gadgets, gizmos)
+  // that should not be recorded into ray tracing acceleration structures (#433).
+  virtual void setOverlayDraw(bool /*overlay*/) {}
+
+  // Background vertical gradient for the scene pass and depth-cue fog (#689).
+  virtual void setBackgroundGradient(
+      bool /*on*/, const float* /*top*/, const float* /*bottom*/)
+  {
+  }
+
+  // Draws until false are screen-space overlays (ramp gadgets,
+  // RenderContext::UnitWindow): drawn after the post chain, unlit, above
+  // everything (#689).
+  virtual void setScreenOverlay(bool /*on*/) {}
+
+  // The GL ramp shader's offsetPt (RAMP_OFFSETPT) for the following overlay
+  // draws (#689).
+  virtual void setScreenOverlayOffset(float /*x*/, float /*y*/, float /*z*/) {}
 };
 
 } // namespace pymol

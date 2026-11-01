@@ -153,6 +153,8 @@ final class FakeRigStore {
         var radius = 4.0
         var beam = 45.0
         var softness = 0.4
+        /// The light's source size (#741).
+        var size = 0.0
         var warmth = 6500.0
         var intensity = 1.0
         var shadow = false
@@ -171,7 +173,7 @@ final class FakeRigStore {
 
     /// The core's ranges (layer1/LightRig.cpp) and its shadow cap.
     static let ranges: [String: ClosedRange<Double>] = [
-        "pitch": -90...90, "radius": 0.5...8, "beam": 1...170, "softness": 0...1,
+        "pitch": -90...90, "radius": 0.5...8, "beam": 1...170, "softness": 0...1, "size": 0...1,
         "warmth": 1500...15000, "intensity": 0...4,
     ]
     static let maxShadowed = 3
@@ -184,12 +186,15 @@ final class FakeRigStore {
             + #"{"name": "dust_size", "kind": "float", "default": 0.35, "min": 0.05, "max": 2.0}, "#
             + #"{"name": "dust_speed", "kind": "float", "default": 1.0, "min": 0.0, "max": 10.0}, "#
             + #"{"name": "scatter", "kind": "float", "default": 0.55, "min": -0.9, "max": 0.9}, "#
-            + #"{"name": "seed", "kind": "int", "default": 0, "min": 0, "max": 1000000}]"#
+            + #"{"name": "seed", "kind": "int", "default": 0, "min": 0, "max": 1000000}, "#
+            + #"{"name": "dust_glow", "kind": "float", "default": 1.0, "min": 0.0, "max": 4.0}, "#
+            + #"{"name": "dust_opacity", "kind": "float", "default": 0.0, "min": 0.0, "max": 1.0}]"#
         return try! AirField.decodeList(Data(json.utf8))
     }()
     /// The core's default air (LightAir in layer1/LightRig.h).
     static let defaultAir = LightRigSnapshot.Air(haze: 0, dust: 0, dustSize: 0.35, dustSpeed: 1,
-                                                 scatter: 0.55, seed: 0)
+                                                 scatter: 0.55, seed: 0,
+                                                 dustGlow: 1.0, dustOpacity: 0.0)
 
     var exists = false
     var enabled = false
@@ -215,6 +220,8 @@ final class FakeRigStore {
     /// What the projection seam serves (the gizmo's camera).
     var projection: LightCameraProjection?
     private(set) var projectionReads = 0
+    /// Per-light shadow slots in `eyeSpace` (defaults to -1 for each light) (#673).
+    var shadowSlots: [Int]?
     /// Run after every number write (before it returns): a test can change
     /// things in the middle of a multi-field write.
     var afterNumberWrite: (() -> Void)?
@@ -247,6 +254,7 @@ final class FakeRigStore {
         self.enabled = enabled
         lights = names.map { Light(name: $0) }
         eyePlacements = [:]
+        shadowSlots = nil
     }
 
     func removeLight(_ name: String) {
@@ -274,7 +282,7 @@ final class FakeRigStore {
             + "\"aim\":\"\(light.aimPoint == nil ? "centre" : "point")\","
             + "\"aim_point\":\(Self.vec(light.aimPoint ?? .zero)),\"aim_selection\":\"\","
             + "\"beam\":\(Self.num(light.beam)),"
-            + "\"softness\":\(Self.num(light.softness)),\"color\":\(Self.vec(light.color)),"
+            + "\"softness\":\(Self.num(light.softness)),\"size\":\(Self.num(light.size)),\"color\":\(Self.vec(light.color)),"
             + "\"warmth\":\(Self.num(light.warmth)),\"intensity\":\(Self.num(light.intensity)),"
             + "\"highlight\":0.5,\"falloff\":2.0,\"shadow\":\(light.shadow),\"outline\":false}"
         }.joined(separator: ",")
@@ -283,7 +291,8 @@ final class FakeRigStore {
         return "{\"version\":1,\"enabled\":\(enabled),\(frame),\"ambient\":0.05,\"classic\":0.0,"
             + "\"air\":{\"haze\":\(Self.num(air.haze)),\"dust\":\(Self.num(air.dust)),"
             + "\"dust_size\":\(Self.num(air.dustSize)),\"dust_speed\":\(Self.num(air.dustSpeed)),"
-            + "\"scatter\":\(Self.num(air.scatter)),\"seed\":\(air.seed)},"
+            + "\"scatter\":\(Self.num(air.scatter)),\"seed\":\(air.seed),"
+            + "\"dust_glow\":\(Self.num(air.dustGlow)),\"dust_opacity\":\(Self.num(air.dustOpacity))},"
             + "\"lights\":[\(lightsJSON)]}"
     }
 
@@ -299,6 +308,7 @@ final class FakeRigStore {
                 let light = lights[index]
                 let place = currentPlacement(index)
                 let cosOuter = Float(cos(light.beam / 2 * .pi / 180))
+                let slot = shadowSlots?.indices.contains(index) == true ? shadowSlots![index] : -1
                 return LightEyeSpace.Light(
                     position: .zero, target: .zero, direction: SIMD3(0, 0, -1),
                     aimDistance: Float(place.radius * 10),
@@ -306,7 +316,8 @@ final class FakeRigStore {
                     orbit: Float(place.orbit), pitch: Float(place.pitch),
                     radius: Float(place.radius),
                     anchor: light.pinned ? .pinned : .camera, aim: .centre,
-                    shadow: light.shadow, outline: false)
+                    shadow: light.shadow, outline: false,
+                    shadowSlot: slot)
             })
     }
 
@@ -339,6 +350,7 @@ final class FakeRigStore {
                 let cosOuter = cos(half)
                 let band = min(1e-4, 0.5 * (1 - cosOuter))
                 let cosInner = min(1, max(cos(half * (1 - light.softness)), cosOuter + band))
+                let slot = shadowSlots?.indices.contains(index) == true ? shadowSlots![index] : -1
                 return LightEyeSpace.Light(
                     position: float3(position), target: float3(target),
                     direction: float3(direction), aimDistance: Float(distance),
@@ -347,7 +359,8 @@ final class FakeRigStore {
                     radius: Float(place.radius),
                     anchor: light.pinned ? .pinned : .camera,
                     aim: light.aimPoint == nil ? .centre : .point,
-                    shadow: light.shadow, outline: false)
+                    shadow: light.shadow, outline: false,
+                    shadowSlot: slot)
             })
     }
 
@@ -363,7 +376,7 @@ final class FakeRigStore {
     private static func light(from snapshot: LightRigSnapshot.Light) -> Light {
         Light(name: snapshot.name, orbit: snapshot.orbit, color: snapshot.color,
               pinned: snapshot.anchor == .pinned, pitch: snapshot.pitch,
-              radius: snapshot.radius, beam: snapshot.beam, softness: snapshot.softness,
+              radius: snapshot.radius, beam: snapshot.beam, softness: snapshot.softness, size: snapshot.size,
               warmth: snapshot.warmth, intensity: snapshot.intensity, shadow: snapshot.shadow,
               aimPoint: snapshot.aim == .point ? snapshot.aimPoint : nil)
     }
@@ -428,6 +441,20 @@ final class FakeRigStore {
                 lights[index].pinned = false
                 eyePlacements[key] = nil
             }
+        case .aimAtCentre(let name):
+            // `aim=centre`: aimed at the centre, the placement kept.
+            let key = name.lowercased()
+            guard let index = lights.firstIndex(where: { $0.name.lowercased() == key }) else { return }
+            lights[index].aimPoint = nil
+        case .rename(let old, let new):
+            // `lights <old>, name=<new>`: the core refuses a duplicate (ignoring
+            // case, but a light may change the case of its own name).
+            let key = old.lowercased()
+            guard let index = lights.firstIndex(where: { $0.name.lowercased() == key }),
+                  !lights.enumerated().contains(where: { $0.offset != index
+                      && $0.element.name.lowercased() == new.lowercased() }) else { return }
+            if let eye = eyePlacements.removeValue(forKey: key) { eyePlacements[new.lowercased()] = eye }
+            lights[index].name = new
         case .atmosphereOff:
             // `atmosphere off`: with no rig it prints a line and changes
             // nothing.
@@ -460,6 +487,8 @@ final class FakeRigStore {
         case "dust_speed": air.dustSpeed = v
         case "scatter": air.scatter = v
         case "seed": air.seed = Int(v.rounded())
+        case "dust_glow": air.dustGlow = v
+        case "dust_opacity": air.dustOpacity = v
         default: break
         }
     }
@@ -495,6 +524,7 @@ final class FakeRigStore {
             if light.pinned { eyePlacements[key] = place }
         case "beam": light.beam = value.clamped(to: Self.ranges[field]!)
         case "softness": light.softness = value.clamped(to: Self.ranges[field]!)
+        case "size": light.size = value.clamped(to: Self.ranges[field]!)
         case "warmth": light.warmth = value.clamped(to: Self.ranges[field]!)
         case "intensity": light.intensity = value.clamped(to: Self.ranges[field]!)
         case "anchor":
@@ -1231,5 +1261,367 @@ final class LightsControllerTests: XCTestCase {
         XCTAssertNil(controller.selection.name)
         XCTAssertFalse(controller.placeHighlight(sceneNDC: SIMD2(0, 0), rim: nil))
         XCTAssertTrue(store.performed.isEmpty)
+    }
+
+    // MARK: edit count and revert confirmation (#651)
+
+    func testRevertNeedsConfirmationRule() {
+        XCTAssertFalse(LightsController.revertNeedsConfirmation(editCount: 0))
+        XCTAssertFalse(LightsController.revertNeedsConfirmation(editCount: 1))
+        XCTAssertTrue(LightsController.revertNeedsConfirmation(editCount: 2))
+        XCTAssertTrue(LightsController.revertNeedsConfirmation(editCount: 10))
+    }
+
+    func testEditCountCountsActionsAndCoalescesRuns() {
+        begin(with: ["key", "fill", "rim"])
+        XCTAssertEqual(controller.editCount, 0)
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        for i in 0..<100 {
+            XCTAssertEqual(controller.edit("orbit", Double(i)), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 1)
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        XCTAssertEqual(controller.edit("pitch", 10), .ok)
+        XCTAssertEqual(controller.editCount, 2)
+        XCTAssertTrue(controller.revertNeedsConfirmation)
+
+        controller.add()
+        XCTAssertEqual(controller.editCount, 3)
+
+        controller.select(name: "key")
+        XCTAssertEqual(controller.edit("pitch", 5), .ok)
+        XCTAssertEqual(controller.editCount, 4)
+    }
+
+    func testGestureIsOneEdit() throws {
+        begin(with: ["key", "fill", "rim"])
+        let owner = try XCTUnwrap(controller.beginGesture())
+        for i in 0..<50 {
+            XCTAssertEqual(controller.set(.orbit, Double(i), owner: owner), .ok)
+            XCTAssertEqual(controller.setPlacement(orbit: 1, pitch: 2, owner: owner), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 1)
+
+        let owner2 = try XCTUnwrap(controller.beginGesture())
+        XCTAssertEqual(controller.set(.orbit, 3, owner: owner2), .ok)
+        XCTAssertEqual(controller.editCount, 2)
+    }
+
+    func testEditCountResetsOnRevertEndAndBegin() {
+        begin(with: ["key", "fill", "rim"])
+        controller.add()
+        XCTAssertEqual(controller.edit("orbit", 30), .ok)
+        XCTAssertEqual(controller.editCount, 2)
+
+        controller.revert()
+        XCTAssertEqual(controller.editCount, 0)
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        XCTAssertEqual(controller.edit("orbit", 40), .ok)
+        XCTAssertEqual(controller.editCount, 1)
+
+        controller.end()
+        XCTAssertEqual(controller.editCount, 0)
+
+        // Failed/refused writes after end() do not count.
+        XCTAssertEqual(controller.edit("orbit", 50), .badIndex)
+        XCTAssertEqual(controller.editCount, 0)
+
+        controller.begin()
+        XCTAssertEqual(controller.editCount, 0)
+
+        XCTAssertEqual(controller.edit("orbit", 60), .ok)
+        XCTAssertEqual(controller.editCount, 1)
+
+        // Failed/refused write with nothing selected does not count.
+        store.setRig([])
+        controller.refresh()
+        XCTAssertNil(controller.selection.index)
+        XCTAssertEqual(controller.edit("orbit", 70), .badIndex)
+        XCTAssertEqual(controller.editCount, 1)
+    }
+    func testRefusedOrNoOpEditsDoNotCount() {
+        store.setRig(["key", "fill", "rim", "light4"])
+        store.lights[3].shadow = true
+        controller.begin()
+        controller.select(name: "light4")
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        for name in ["key", "fill", "rim"] {
+            controller.select(name: name)
+            XCTAssertEqual(controller.setShadow(true), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 4)
+
+        // A write of the value the light already has changes nothing.
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertEqual(controller.editCount, 4)
+
+        // Revert this light is refused by the 3-shadow cap: the rig is
+        // unchanged, so it is not an edit.
+        controller.select(name: "light4")
+        controller.revertSelectedLight()
+        XCTAssertEqual(store.lights[3].shadow, false, "refused")
+        XCTAssertEqual(controller.editCount, 4)
+    }
+    func testSeparateRunsOnOneFieldAreSeparateEdits() {
+        begin(with: ["key", "fill", "rim"])
+        for i in 1...10 {
+            store.clock += 1.0 / 60.0
+            XCTAssertEqual(controller.edit("orbit", Double(i)), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 1, "one drag")
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        // Released, then dragged again: a second edit.
+        store.clock += 1
+        for i in 20...30 {
+            store.clock += 1.0 / 60.0
+            XCTAssertEqual(controller.edit("orbit", Double(i)), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 2)
+        XCTAssertTrue(controller.revertNeedsConfirmation)
+
+        // A gesture held still past the gap is still one edit.
+        let owner = controller.beginGesture()!
+        XCTAssertEqual(controller.set(.pitch, 10, owner: owner), .ok)
+        store.clock += 2
+        XCTAssertEqual(controller.set(.pitch, 20, owner: owner), .ok)
+        XCTAssertEqual(controller.editCount, 3)
+    }
+
+    // MARK: rename (#797)
+
+    func testRenameSelectedLight() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "fill")
+        let slot = controller.identitySlot(for: "fill")
+        XCTAssertTrue(controller.renameSelected(to: "  main "))
+        XCTAssertEqual(store.performed, [.rename(old: "fill", new: "main")])
+        XCTAssertEqual(names, ["key", "main", "rim"])
+        // The selection follows the light, and so does its identity colour.
+        XCTAssertEqual(controller.selection, LightSelection(name: "main", index: 1))
+        XCTAssertEqual(controller.identitySlot(for: "main"), slot)
+        XCTAssertEqual(controller.identitySlots, ["key": 0, "main": 1, "rim": 2])
+        // One counted edit.
+        XCTAssertEqual(controller.editCount, 1)
+        XCTAssertTrue(controller.canRevert)
+    }
+
+    func testRenameKeepsTheColourWhenTheNewNameHasADefaultSlot() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "key")
+        // "rim" is taken; "light4" would take slot 3 if the colour did not follow.
+        XCTAssertTrue(controller.renameSelected(to: "light4"))
+        XCTAssertEqual(controller.identitySlot(for: "light4"), 0)
+        XCTAssertEqual(controller.identitySlots, ["light4": 0, "fill": 1, "rim": 2])
+    }
+
+    func testRenameChangingOnlyTheCase() {
+        begin(with: ["key", "fill"])
+        XCTAssertTrue(controller.renameSelected(to: "KEY"))
+        XCTAssertEqual(names, ["KEY", "fill"])
+        XCTAssertEqual(controller.selection, LightSelection(name: "KEY", index: 0))
+        XCTAssertEqual(controller.identitySlots, ["key": 0, "fill": 1])
+    }
+
+    func testRefusedNamesSendNothing() {
+        begin(with: ["key", "fill", "rim"])
+        for text in ["", "  ", "fill", "FILL", "three_point", "off", "Add", "9lives", "a b", "a-b",
+                     "é", String(repeating: "a", count: 33), "key"] {
+            XCTAssertFalse(controller.renameSelected(to: text), "\(text)")
+        }
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertEqual(names, ["key", "fill", "rim"])
+        XCTAssertEqual(controller.editCount, 0)
+        XCTAssertEqual(controller.identitySlots, ["key": 0, "fill": 1, "rim": 2])
+        XCTAssertEqual(controller.renameCheck("key"), .unchanged)
+        XCTAssertEqual(controller.renameCheck("fill"), .refused("A light named \"fill\" already exists"))
+    }
+
+    func testRenameIsRefusedWhenNothingCanBeEdited() {
+        begin(with: nil)
+        XCTAssertFalse(controller.renameSelected(to: "main"))
+        XCTAssertEqual(controller.renameCheck("main"), .refused("No light is selected"))
+        store = FakeRigStore()
+        controller = LightsController(seams: store.seams)
+        begin(with: ["key"])
+        store.busy = true
+        XCTAssertFalse(controller.renameSelected(to: "main"))
+        XCTAssertTrue(store.performed.isEmpty)
+    }
+
+    func testRenameRefusedByTheCoreRestoresTheColours() {
+        begin(with: ["key", "fill"])
+        controller.select(name: "key")
+        // A light added from the console after the last read: the check passes
+        // against the stale mirror, the core refuses.
+        store.lights.append(.init(name: "main"))
+        XCTAssertFalse(controller.renameSelected(to: "main"))
+        XCTAssertEqual(store.performed, [.rename(old: "key", new: "main")])
+        XCTAssertEqual(controller.identitySlots["key"], 0)
+        XCTAssertEqual(controller.selection.name, "key")
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testRenameOfAStaleTargetRenamesNothing() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "key")
+        // The popover was opened on "key"; the selection moved to another light.
+        controller.select(name: "fill")
+        XCTAssertEqual(controller.renameCheck("main", of: "key"), .refused("That light is gone"))
+        XCTAssertFalse(controller.renameSelected(to: "main", of: "key"))
+        // Or the light was removed from the console and the selection repaired.
+        controller.select(name: "key")
+        store.removeLight("key")
+        store.clock += 1
+        XCTAssertFalse(controller.renameSelected(to: "main", of: "key"))
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertEqual(store.lights.map(\.name), ["fill", "rim"])
+        // The target's case does not matter.
+        controller.select(name: "fill")
+        XCTAssertTrue(controller.renameSelected(to: "main", of: "FILL"))
+    }
+
+    func testRevertBringsTheOldNamesBack() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "key")
+        XCTAssertTrue(controller.renameSelected(to: "main"))
+        controller.revert()
+        XCTAssertEqual(names, ["key", "fill", "rim"])
+        XCTAssertEqual(controller.editCount, 0)
+        XCTAssertEqual(controller.selection.name, "key")
+        XCTAssertEqual(controller.identitySlots, ["key": 0, "fill": 1, "rim": 2])
+    }
+}
+
+// MARK: - Studio lights switch & Lighting group rows (#878)
+
+@MainActor
+final class StudioLightsSwitchTests: XCTestCase {
+    private var store: FakeRigStore!
+    private var controller: LightsController!
+
+    override func setUp() {
+        super.setUp()
+        store = FakeRigStore()
+        controller = LightsController(seams: store.seams)
+    }
+
+    override func tearDown() {
+        controller = nil
+        store = nil
+        super.tearDown()
+    }
+
+    private var names: [String] { controller.rig?.lights.map(\.name) ?? [] }
+
+    func testNoRigTurnOnAddsDefaultKeyLight() {
+        XCTAssertFalse(controller.rigIsOn)
+        controller.setStudioLights(true)
+        XCTAssertEqual(store.performed, [.add])
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertTrue(store.exists)
+        XCTAssertEqual(names, ["key"])
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testExistingOffRigTurnOnEnablesIt() {
+        store.setRig(["key", "fill"], enabled: false)
+        controller.setStudioLights(true)
+        XCTAssertEqual(store.performed, [.setEnabled(true)])
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertEqual(names, ["key", "fill"])
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testTurnOffDisablesRigAndKeepsLights() {
+        store.setRig(["key", "fill"], enabled: true)
+        let keptLights = store.lights
+        controller.setStudioLights(false)
+        XCTAssertEqual(store.performed, [.setEnabled(false)])
+        XCTAssertFalse(controller.rigIsOn)
+        XCTAssertEqual(store.lights, keptLights)
+        XCTAssertEqual(names, ["key", "fill"])
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testAlreadyInAskedStatePerformsNothing() {
+        // No rig, asking for off: already off.
+        controller.setStudioLights(false)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(controller.rigIsOn)
+
+        // Rig with lights, off, asking for off: already off.
+        store.setRig(["key", "fill"], enabled: false)
+        controller.setStudioLights(false)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(controller.rigIsOn)
+
+        // Rig with lights, on, asking for on: already on.
+        store.enabled = true
+        controller.setStudioLights(true)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testEmptyEnabledRigCountsAsOffAndTurnOnAddsLight() {
+        store.setRig([], enabled: true)
+        controller.refresh()
+        XCTAssertTrue(controller.isOn)
+        XCTAssertFalse(controller.hasLights)
+        XCTAssertFalse(controller.rigIsOn)
+
+        controller.setStudioLights(false)
+        XCTAssertTrue(store.performed.isEmpty)
+
+        controller.setStudioLights(true)
+        XCTAssertEqual(store.performed, [.add])
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertEqual(names, ["key"])
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testBusyOrNotReadyPerformsNothing() {
+        store.busy = true
+        controller.setStudioLights(true)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(controller.rigIsOn)
+
+        store.busy = false
+        store.ready = false
+        controller.setStudioLights(true)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(controller.rigIsOn)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testLightingGroupRowsAndRigDisabledReason() {
+        let lighting = SceneCatalog.params.filter { $0.group == "Lighting" }
+        XCTAssertEqual(lighting.map(\.setting),
+                       ["material_default", "ambient", "direct", "reflect",
+                        "specular", "shininess", "metal_sss_wrap"])
+
+        let overridden: Set<String> = ["ambient", "direct", "reflect", "specular"]
+        for p in lighting {
+            XCTAssertNil(p.dependsOn, "\(p.setting) must be disabled, never hidden")
+            XCTAssertNil(SceneCatalog.rigDisabledReason(p, rigOn: false), p.setting)
+            if overridden.contains(p.setting) {
+                XCTAssertTrue(p.rigOverridden, p.setting)
+                XCTAssertEqual(SceneCatalog.rigDisabledReason(p, rigOn: true),
+                               SceneCatalog.rigOverrideReason, p.setting)
+            } else {
+                XCTAssertFalse(p.rigOverridden, p.setting)
+                XCTAssertNil(SceneCatalog.rigDisabledReason(p, rigOn: true), p.setting)
+            }
+        }
     }
 }

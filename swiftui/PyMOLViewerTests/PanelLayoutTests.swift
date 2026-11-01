@@ -225,7 +225,7 @@ final class PanelLayoutTests: XCTestCase {
     }
 
     func testInspectorFractionAboveTheCeilingIsCapped() {
-        // 1000pt window: ceiling = min(max(1000-480, 200), 500) = 500.
+        // 1000pt window: ceiling = min(1000 - 371 - 9, 500) = 500.
         XCTAssertEqual(
             PanelLayout.inspectorWidth(
                 frac: 0.9, windowWidth: 1000,
@@ -233,22 +233,41 @@ final class PanelLayoutTests: XCTestCase {
             500, accuracy: 1e-9)
     }
 
-    func testInspectorCeilingLeavesTheViewportItsMinimum() {
-        // 800pt window, 480pt viewport minimum -> the inspector may reach 320pt.
-        XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: 800),
-                       320, accuracy: 1e-9)
+    /// Once the window is wide enough to dock (≥ 2·380), half the window is
+    /// always the tighter bound, so the viewport keeps at least its minimum plus
+    /// the seam beside an inspector dragged as wide as it goes.
+    func testDockedInspectorCeilingLeavesTheViewportItsMinimum() {
+        for window in [CGFloat(760), 800, 1000, 1200] {
+            let maxW = PanelLayout.maxInspectorWidth(windowWidth: window)
+            XCTAssertEqual(maxW, window * 0.5, accuracy: 1e-9, "\(window)pt window")
+            XCTAssertGreaterThanOrEqual(
+                window - maxW - PanelLayout.macInspectorSeamWidth,
+                PanelLayout.macViewportMinWidth, "\(window)pt window")
+        }
     }
 
     func testInspectorCeilingNeverExceedsHalfTheWindow() {
-        // A wide window would otherwise let the sidebar take all but 480pt.
         XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: 2000),
                        1000, accuracy: 1e-9)
     }
 
-    func testInspectorCeilingNeverFallsBelowMinCeilingFrac() {
-        XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: 500),
-                       100, accuracy: 1e-9)
-        XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: 0), 0, accuracy: 1e-9)
+    /// #914: the old ceiling fell to 0.2·W (120pt in a 600pt window), squeezing
+    /// the column below its content so the tab bar spilled over the viewport.
+    /// The ceiling now never drops below the inspector's minimum.
+    func testInspectorCeilingNeverFallsBelowTheInspectorMinimum() {
+        for window in [CGFloat(0), 380, 500, 600, 759, 760] {
+            XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: window),
+                           PanelLayout.macMinInspectorWidth, accuracy: 1e-9,
+                           "\(window)pt window")
+        }
+    }
+
+    /// At exactly the dock width a minimum inspector, the seam and a minimum
+    /// viewport fill the window with nothing to spare — and nothing overflowing.
+    func testDockWidthFitsMinimumInspectorSeamAndViewport() {
+        XCTAssertEqual(PanelLayout.macMinInspectorWidth + PanelLayout.macInspectorSeamWidth
+                       + PanelLayout.macViewportMinWidth,
+                       PanelLayout.macInspectorDockWindowWidth, accuracy: 1e-9)
     }
 
     func testInspectorFractionRoundTripsThroughAWidth() throws {
@@ -278,9 +297,55 @@ final class PanelLayoutTests: XCTestCase {
         XCTAssertEqual(stored, 0.3, accuracy: 1e-9)
         XCTAssertEqual(
             PanelLayout.inspectorWidth(
-                frac: stored, windowWidth: 1200,
-                maxWidth: PanelLayout.maxInspectorWidth(windowWidth: 1200)),
-            360, accuracy: 1e-9)
+                frac: stored, windowWidth: 1400,
+                maxWidth: PanelLayout.maxInspectorWidth(windowWidth: 1400)),
+            420, accuracy: 1e-9)
+    }
+
+    // MARK: - macOS inspector presentation (#914)
+
+    /// Every narrow-window rule is built from the default inspector width.
+    func testNarrowWindowRulesDeriveFromTheDefaultInspectorWidth() {
+        let p = PanelLayout.macDefaultInspectorWidth
+        XCTAssertEqual(PanelLayout.macMinWindowWidth, p, accuracy: 1e-9)
+        XCTAssertEqual(PanelLayout.macMinInspectorWidth, p, accuracy: 1e-9)
+        XCTAssertEqual(PanelLayout.macInspectorDockWindowWidth, 2 * p, accuracy: 1e-9)
+    }
+
+    func testInspectorDocksFromExactlyTwiceItsDefaultWidth() {
+        let dock = PanelLayout.macInspectorDockWindowWidth
+        XCTAssertTrue(PanelLayout.macInspectorIsNarrow(windowWidth: dock - 1))
+        XCTAssertFalse(PanelLayout.macInspectorIsNarrow(windowWidth: dock))
+        XCTAssertFalse(PanelLayout.macInspectorIsNarrow(windowWidth: dock + 1))
+    }
+
+    func testWideWindowFollowsTheUsersSidePanelFlag() {
+        for w in [PanelLayout.macInspectorDockWindowWidth, 1200] {
+            // narrowOpen is meaningless when wide, whatever its value.
+            for narrowOpen in [false, true] {
+                XCTAssertEqual(PanelLayout.macInspectorPresentation(
+                    windowWidth: w, userShown: true, narrowOpen: narrowOpen), .docked)
+                XCTAssertEqual(PanelLayout.macInspectorPresentation(
+                    windowWidth: w, userShown: false, narrowOpen: narrowOpen), .hidden)
+            }
+        }
+    }
+
+    /// Shrinking a window with the panel docked open auto-hides it — the
+    /// persisted flag (`userShown`) is still true, it just doesn't decide here.
+    func testNarrowWindowAutoHidesUntilTheUserOpensThePanel() {
+        let w = PanelLayout.macInspectorDockWindowWidth - 1
+        XCTAssertEqual(PanelLayout.macInspectorPresentation(
+            windowWidth: w, userShown: true, narrowOpen: false), .hidden)
+        XCTAssertEqual(PanelLayout.macInspectorPresentation(
+            windowWidth: w, userShown: false, narrowOpen: false), .hidden)
+    }
+
+    func testOpeningThePanelInANarrowWindowShowsItFullWidth() {
+        for w in [PanelLayout.macMinWindowWidth, PanelLayout.macInspectorDockWindowWidth - 1] {
+            XCTAssertEqual(PanelLayout.macInspectorPresentation(
+                windowWidth: w, userShown: true, narrowOpen: true), .fullWidth)
+        }
     }
 
     // MARK: - key namespace
@@ -303,5 +368,196 @@ final class PanelLayoutTests: XCTestCase {
         XCTAssertEqual(LightsFloatCorner.stored(""), .bottomLeading)
         XCTAssertEqual(LightsFloatCorner.stored("xx"), .bottomLeading)
         XCTAssertEqual(LightsFloatCorner.stored("tr"), .topTrailing)
+    }
+}
+
+// MARK: - iPhone chrome fade (#391)
+
+final class PhoneChromeFadeTests: XCTestCase {
+    private let t0: TimeInterval = 1_000_000
+
+    func testJustAfterInteractionControlsAreFullyVisibleAndHitTestable() {
+        for dt in [0.0, 1.0, 2.9] {
+            let app = PhoneChromeFade.appearance(
+                now: t0 + dt,
+                lastInteraction: t0,
+                gestureActive: false,
+                pinned: false
+            )
+            XCTAssertEqual(app.opacity, 1.0, accuracy: 1e-9)
+            XCTAssertTrue(app.isHitTestable)
+        }
+    }
+
+    func testIdleControlsAreDimmedAndHitTestable() {
+        for dt in [PhoneChromeFade.idleDelay, 10.0] {
+            let app = PhoneChromeFade.appearance(
+                now: t0 + dt,
+                lastInteraction: t0,
+                gestureActive: false,
+                pinned: false
+            )
+            XCTAssertEqual(app.opacity, PhoneChromeFade.idleOpacity, accuracy: 1e-9)
+            XCTAssertTrue(app.isHitTestable)
+        }
+    }
+
+    func testGestureActiveHidesControlsAndDisablesHitTesting() {
+        for dt in [0.0, 10.0] {
+            let app = PhoneChromeFade.appearance(
+                now: t0 + dt,
+                lastInteraction: t0,
+                gestureActive: true,
+                pinned: false
+            )
+            XCTAssertEqual(app.opacity, 0.0, accuracy: 1e-9)
+            XCTAssertFalse(app.isHitTestable)
+        }
+    }
+
+    func testPinnedBeatsBothGestureAndIdle() {
+        // Pinned while idle
+        let idlePinned = PhoneChromeFade.appearance(
+            now: t0 + 10.0,
+            lastInteraction: t0,
+            gestureActive: false,
+            pinned: true
+        )
+        XCTAssertEqual(idlePinned.opacity, 1.0, accuracy: 1e-9)
+        XCTAssertTrue(idlePinned.isHitTestable)
+
+        // Pinned during active gesture
+        let gesturePinned = PhoneChromeFade.appearance(
+            now: t0 + 0.0,
+            lastInteraction: t0,
+            gestureActive: true,
+            pinned: true
+        )
+        XCTAssertEqual(gesturePinned.opacity, 1.0, accuracy: 1e-9)
+        XCTAssertTrue(gesturePinned.isHitTestable)
+
+        // Pinned during active gesture and after idle timeout
+        let gestureAndIdlePinned = PhoneChromeFade.appearance(
+            now: t0 + 10.0,
+            lastInteraction: t0,
+            gestureActive: true,
+            pinned: true
+        )
+        XCTAssertEqual(gestureAndIdlePinned.opacity, 1.0, accuracy: 1e-9)
+        XCTAssertTrue(gestureAndIdlePinned.isHitTestable)
+    }
+
+    func testLastInteractionInTheFutureShowsFully() {
+        let app = PhoneChromeFade.appearance(
+            now: t0,
+            lastInteraction: t0 + 10.0,
+            gestureActive: false,
+            pinned: false
+        )
+        XCTAssertEqual(app.opacity, 1.0, accuracy: 1e-9)
+        XCTAssertTrue(app.isHitTestable)
+    }
+
+    func testNextChange() {
+        // Within the delay -> t0 + idleDelay
+        let next = PhoneChromeFade.nextChange(
+            now: t0 + 1.0,
+            lastInteraction: t0,
+            gestureActive: false,
+            pinned: false
+        )
+        XCTAssertEqual(next, t0 + PhoneChromeFade.idleDelay)
+
+        // At the deadline -> nil
+        XCTAssertNil(PhoneChromeFade.nextChange(
+            now: t0 + PhoneChromeFade.idleDelay,
+            lastInteraction: t0,
+            gestureActive: false,
+            pinned: false
+        ))
+
+        // After the deadline -> nil
+        XCTAssertNil(PhoneChromeFade.nextChange(
+            now: t0 + 10.0,
+            lastInteraction: t0,
+            gestureActive: false,
+            pinned: false
+        ))
+
+        // Gesture active -> nil
+        XCTAssertNil(PhoneChromeFade.nextChange(
+            now: t0 + 1.0,
+            lastInteraction: t0,
+            gestureActive: true,
+            pinned: false
+        ))
+
+        // Pinned -> nil
+        XCTAssertNil(PhoneChromeFade.nextChange(
+            now: t0 + 1.0,
+            lastInteraction: t0,
+            gestureActive: false,
+            pinned: true
+        ))
+    }
+
+    /// A last interaction ahead of `now` (it can't happen on the monotonic clock,
+    /// but the rule must stay sane): shown, and the dim is due idleDelay after it.
+    func testNextChangeWithAFutureLastInteraction() {
+        XCTAssertEqual(PhoneChromeFade.nextChange(now: t0, lastInteraction: t0 + 10,
+                                                  gestureActive: false, pinned: false),
+                       t0 + 10 + PhoneChromeFade.idleDelay)
+    }
+
+    func testSequence() {
+        // Touch at t0 -> visible
+        let atT0 = PhoneChromeFade.appearance(
+            now: t0,
+            lastInteraction: t0,
+            gestureActive: false,
+            pinned: false
+        )
+        XCTAssertEqual(atT0.opacity, 1.0, accuracy: 1e-9)
+        XCTAssertTrue(atT0.isHitTestable)
+
+        // Gesture begins at t0+5 (gestureActive true, lastInteraction t0+5) -> 0
+        let tGestureBegin = t0 + 5.0
+        let atGestureBegin = PhoneChromeFade.appearance(
+            now: tGestureBegin,
+            lastInteraction: tGestureBegin,
+            gestureActive: true,
+            pinned: false
+        )
+        XCTAssertEqual(atGestureBegin.opacity, 0.0, accuracy: 1e-9)
+        XCTAssertFalse(atGestureBegin.isHitTestable)
+
+        // Gesture ends at t0+8 (lastInteraction t0+8, false) -> 1 at t0+8 and t0+10.9, 0.25 at t0+11
+        let tGestureEnd = t0 + 8.0
+        let atGestureEnd = PhoneChromeFade.appearance(
+            now: tGestureEnd,
+            lastInteraction: tGestureEnd,
+            gestureActive: false,
+            pinned: false
+        )
+        XCTAssertEqual(atGestureEnd.opacity, 1.0, accuracy: 1e-9)
+        XCTAssertTrue(atGestureEnd.isHitTestable)
+
+        let atT10_9 = PhoneChromeFade.appearance(
+            now: t0 + 10.9,
+            lastInteraction: tGestureEnd,
+            gestureActive: false,
+            pinned: false
+        )
+        XCTAssertEqual(atT10_9.opacity, 1.0, accuracy: 1e-9)
+        XCTAssertTrue(atT10_9.isHitTestable)
+
+        let atT11 = PhoneChromeFade.appearance(
+            now: t0 + 11.0,
+            lastInteraction: tGestureEnd,
+            gestureActive: false,
+            pinned: false
+        )
+        XCTAssertEqual(atT11.opacity, 0.25, accuracy: 1e-9)
+        XCTAssertTrue(atT11.isHitTestable)
     }
 }

@@ -13,7 +13,7 @@ has no GPU, so this pins what it can:
   in-process twice (the way the app runs it), leaves the camera alone,
   installs the rig, air and settings its tag says (framed explicitly on m),
   and _light_air_frame(offscreen=True) gives what the check expects for the
-  tag: no air for the no-air twins, the overlay, grid and air-off tags and
+  tag: no air for the no-air twins, the overlay and air-off tags and
   every regression scene; the listed dust times for the clock tags;
 * the regression file sets a #618 setting only through _l618_opt and calls
   no _light_air_* helper (it must run on master);
@@ -86,10 +86,7 @@ def load_module(name, filename):
 
 
 def restore_shims():
-    """Undo the scene files' shims (what tearDown does)."""
-    original = vars(cmd).pop('_l618_set', None)
-    if original is not None:
-        cmd.set_lights = original
+    """Undo the scene files' rig state (what tearDown does)."""
     original = vars(cmd).pop('_l618_get', None)
     if original is not None:
         cmd.get_lights = original
@@ -148,11 +145,13 @@ class TestChecks(testing.PyMOLTestCase):
     def testThresholdsPinned(self):
         # FROZEN after L2 rounds 1 and 2 (check_air.py's thresholds block
         # gives the measured values); change only with new L2 evidence.
+        # #858 re-froze KNEE, RT_GEO_SHARE and reach on the reference hardware.
         pinned = {
+            'TONE_KNEE': 0.55, 'REACH_LIT_MIN': 8, 'REACH_DROP': 0.5,
             'ADD_MIN': 1, 'VISIBLE_PX': 2000, 'VISIBLE_MEAN': 2.0, 'BG_MARGIN': 3,
-            'KNEE': 204, 'RT_BG_MAX': 1, 'RT_PRESENT_PX': 2000, 'RT_GEO_TOL': 4,
-            'RT_GEO_SHARE': 0.99, 'RT_GEO_MEAN': 1.0, 'SHAFT_DARKEN': 8, 'SHAFT_PX': 500,
-            'SHAFT_OTHER': 2, 'REACH_PX': 500, 'REACH_DARKEN': 24, 'REACH_SHARE': 0.90,
+            'KNEE': 140, 'RT_BG_MAX': 1, 'RT_PRESENT_PX': 2000, 'RT_GEO_TOL': 4,
+            'RT_GEO_SHARE': 0.97, 'RT_GEO_MEAN': 1.0, 'SHAFT_DARKEN': 8, 'SHAFT_PX': 500,
+            'SHAFT_OTHER': 2, 'REACH_PX': 500, 'REACH_SHARE': 0.90,
             'REACH_BOXES': {'a': (1200, 500, 1280, 720), 'b': (0, 0, 64, 128)},
             'IN_BEAMS_PX': 50, 'IN_BEAMS_SHARE': 0.98, 'IN_BEAMS_DILATE': 3,
             'FOOT_MIN': 2, 'MOTE_MIN': 10, 'HUE_MIN': 8, 'COLOUR_SHARE': 0.90,
@@ -163,6 +162,13 @@ class TestChecks(testing.PyMOLTestCase):
         }
         for name, value in pinned.items():
             self.assertEqual(getattr(self.c, name), value, name)
+        # #730: rt_match's knee is HDR's tone knee, round(255 k); the absolute
+        # REACH_DARKEN is gone (reach judges a share)
+        self.assertEqual(self.c.KNEE, int(round(255 * self.c.TONE_KNEE)))
+        self.assertFalse(hasattr(self.c, 'REACH_DARKEN'))
+        # ...and k is check_hdr's (the C++ kLightToneKnee's python twin)
+        hdr = load_module('lighting_check_hdr', 'check_hdr.py')
+        self.assertEqual(self.c.TONE_KNEE, hdr.TONE_KNEE)
         # the plan's definitions
         self.assertEqual(self.c.cs.DIFFERS_MIN, 200)
 
@@ -194,6 +200,10 @@ class TestChecks(testing.PyMOLTestCase):
         # differently (round 1)
         bright = plus(haze, GEO, (90, 90, 90))                # 120 + 90 > 204
         self.assertTrue(self.c.check_rt_match(none, none, haze, bright).ok)
+        # #730: the knee is HDR's round(255 k) = 140, not the 8-bit 204: a
+        # result between them is past the knee (it failed at 204)
+        mid = plus(haze, GEO, (30, 30, 30))                   # 140 < 150 < 204
+        self.assertTrue(self.c.check_rt_match(none, none, haze, mid).ok)
         # no air at all: nothing to match
         self.assertFalse(self.c.check_rt_match(none, none, none, none).ok)
 
@@ -246,6 +256,22 @@ class TestChecks(testing.PyMOLTestCase):
         self.assertFalse(c.check_reach(noair, none, part, box, 'r').ok)
         # a box with too few background pixels checks nothing
         self.assertFalse(c.check_reach(noair, none, deep, (80, 2, 100, 20), 'r').ok)
+        # #730: a share, not levels. A's red at 24 beside B's bright blue (the
+        # hue-preserving curve) dropping to 7 is a shaft (17 levels: it failed
+        # REACH_DARKEN 24); dropping to 16 (a third) is not
+        mixed = plus(noair, a_shaft, (24, 0, 190))
+        self.assertTrue(c.check_reach(noair, mixed, plus(mixed, a_shaft, (-17, 0, 0)),
+                                      box, 'r').ok)
+        self.assertFalse(c.check_reach(noair, mixed, plus(mixed, a_shaft, (-8, 0, 0)),
+                                       box, 'r').ok)
+        # without the far-plane pull-back (#858's negative control on the
+        # reference Mac): A's red kept about 70% of itself, 24 -> 17
+        self.assertFalse(c.check_reach(noair, mixed, plus(mixed, a_shaft, (-7, 0, 0)),
+                                       box, 'r').ok)
+        # ...and a channel too dim to judge (below REACH_LIT_MIN) is not lit
+        dim = plus(noair, a_shaft, (6, 0, 190))
+        self.assertFalse(c.check_reach(noair, dim, plus(dim, a_shaft, (-6, 0, 0)),
+                                       box, 'r').ok)
 
     def testInBeams(self):
         none, haze = scene_none(), scene_haze()
@@ -258,6 +284,14 @@ class TestChecks(testing.PyMOLTestCase):
             outside[66 + i % 5, 2 + i * 2] += 9
         self.assertFalse(self.c.check_in_beams(none, haze, outside).ok)
         self.assertFalse(self.c.check_in_beams(none, haze, haze).ok)    # no dust
+        # #683: the haze dims a geometry pixel it does not light; motes there
+        # are still inside the footprint
+        dim = haze.copy()
+        dim[GEO] -= 30
+        over = dim.copy()
+        for i in range(60):
+            over[27 + i // 7, 55 + (i % 7) * 2] += 9
+        self.assertTrue(self.c.check_in_beams(none, dim, over).ok)
 
     def colour_set(self, a_rgb=(30, 0, 2), b_rgb=(2, 0, 30)):
         noair = scene_none()
@@ -300,10 +334,17 @@ class TestChecks(testing.PyMOLTestCase):
         # no white where white is required
         self.assertFalse(c.check_unchanged(none, haze, none, haze, need_white=True).ok)
         self.assertTrue(c.check_unchanged(none, haze, none, haze, need_white=False).ok)
-        # a geometry pixel inside the footprint gets darker (a whole-pixel knee)
+        # a background pixel inside the footprint gets darker
         darker = wh.copy()
-        darker[30, 60] = 110
+        darker[15, 20] = (240, 255, 255)
         self.assertFalse(c.check_unchanged(none, haze, wn, darker).ok)
+        # #683: the geometry may darken (extinction); the background may not
+        dimmed = wh.copy()
+        dimmed[GEO] = 90
+        self.assertTrue(c.check_unchanged(none, haze, wn, dimmed, need_white=True).ok)
+        bgdim = wh.copy()
+        bgdim[68, 5] = (200, 200, 200)
+        self.assertFalse(c.check_unchanged(none, haze, wn, bgdim).ok)
         # the air lights every pixel: no outside to compare, nothing checked
         everywhere = plus(none, (slice(None), slice(None)), (3, 3, 3))
         self.assertFalse(c.check_unchanged(none, everywhere, wn, wh).ok)
@@ -484,7 +525,8 @@ def l2_expected(tag):
     if base.startswith('filter9'):
         e['filter'] = 2
     e['grid'] = base.startswith('grid')
-    if e['haze'] == 0.0 and e['dust'] == 0.0 or base.startswith(('ovl_', 'grid_')):
+    # #686: grid_mode draws air per cell; only ovl_ is suppressed
+    if e['haze'] == 0.0 and e['dust'] == 0.0 or base.startswith('ovl_'):
         e['time'] = None
     elif base in CLOCK_TIMES:
         e['time'] = CLOCK_TIMES[base]
@@ -516,6 +558,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
     def tearDown(self):
         restore_shims()
         cmd.set_lights(None)
+        self.assertNotIn('_l618_set', vars(cmd))
         self.assertIs(cmd.set_lights, self.original[0])
         self.assertIs(cmd.get_lights, self.original[1])
         super(TestSceneFiles, self).tearDown()
@@ -554,12 +597,19 @@ class TestSceneFiles(testing.PyMOLTestCase):
 
     def testSceneFilesLoad(self):
         self.assertEqual(len(self.jobs['l2']), 64)
-        self.assertEqual(len(self.jobs['noair']), 31)
+        # #686: 30 jobs (suppressed_grid_rt0 removed)
+        self.assertEqual(len(self.jobs['noair']), 30)
         for which, spec in self.specs.items():
             self.assertEqual(spec['rig'], 'on', which)
             self.assertIsNone(spec['base'], which)
             self.assertIn('#618', spec['comment'])
+            applier = [
+                "if getattr(cmd, '_l618_rig', None) is not None: "
+                "cmd.set_lights(cmd._l618_rig(_lh_rig) if callable(cmd._l618_rig) else cmd._l618_rig)"
+            ]
+            self.assertEqual(spec.get('after_rig'), applier, which)
             for job in self.jobs[which]:
+                self.assertEqual(job.after_rig, applier, job.tag)
                 self.assertEqual(job.size, (1280, 720), job.tag)
                 tag_parts(job.tag)
                 self.assertTrue(job.extra[-1].startswith(RIG_LINE), job.tag)
@@ -581,7 +631,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
         for tag in ('zero_ortho_rt0', 'zero_oit_rt0', 'zero_oit_rt1', 'zero_grid_rt0',
                     'rigoff_air_surface_rt0', 'rigoff_air_surface_rt1',
                     'rigoff_air_cartoon_rt0', 'rigoff_air_cartoon_rt1', 'atmo_norig_rt0',
-                    'suppressed_grid_rt0', 'suppressed_ovl_rt0'):
+                    'suppressed_ovl_rt0'):
             self.assertIn(tag, tags)
 
     def testNewSettingsGuarded(self):
@@ -675,9 +725,6 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 self.assertEqual(frame['time'], f32(e['time']), job.tag)
                 self.assertEqual(frame['scale'], 0.5 if e['res'] == 2 else 1.0, job.tag)
                 self.assertEqual(frame['shadow_filter'], 2 if e['filter'] == 2 else 1, job.tag)
-            if e['grid'] and e['haze']:
-                # the air is on: only the grid suppresses it
-                self.assertIsNotNone(lighting._light_air_frame(offscreen=True), job.tag)
             if base == 'ovl_air':
                 # nothing enabled at all: no air either
                 cmd.disable('_move_gizmo')
@@ -740,14 +787,13 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 self.assertFramed(rig, job.tag)
                 self.assertAlmostEqual(rig['air']['haze'], 0.3, places=6)
                 self.assertAlmostEqual(rig['air']['dust'], 0.5, places=6)
-                if grid:
-                    # the air is on: only the grid suppresses it
-                    self.assertIsNotNone(lighting._light_air_frame(offscreen=True))
-                else:
-                    self.assertEqual(cmd.get_names('objects', enabled_only=1),
-                                     ['_move_gizmo'])
+                # #686: only the overlay case is left (a grid draws air)
+                self.assertEqual(cmd.get_names('objects', enabled_only=1),
+                                 ['_move_gizmo'])
             else:
                 self.fail('no expectation for %s' % job.tag)
+            self.assertNotIn('_l618_set', vars(cmd), job.tag)
+            self.assertIs(cmd.set_lights, self.original[0], job.tag)
             restore_shims()
 
     def testGetLightsShimOnlyHidesAnEmptyOffRig(self):

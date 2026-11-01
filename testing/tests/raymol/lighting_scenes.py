@@ -76,9 +76,9 @@ RIG_B = {
 
 
 def reset_module_state():
-    """What setUp and tearDown reset directly: reinitialize does not clear
-    these (and author([]) after reinitialize would mdo frames of a movie
-    that no longer exists)."""
+    """What setUp and tearDown reset directly, so a test starts and ends from
+    a known state whatever it did (reinitialize clears these since #657, but
+    the tests that lean on that say so themselves)."""
     raymol_scenes.clear_all()
     raymol_scene_anim._track.clear()
     raymol_scene_anim._scene_marks[:] = []
@@ -577,21 +577,25 @@ class TestSceneRigSession(_SceneRigCase):
 
     def testLegacyPicklerRoundTrip(self):
         """pse_export_version < 1.9 gives non-ASCII text back as bytes: the
-        per-scene rigs still read. (A non-ASCII scene NAME does not survive
-        the legacy pickler in the core's own scene settings, so the name is
-        ASCII here; testBytesKeysAndValues reads a bytes key.)"""
+        scene name, its string settings and the per-scene rigs all still
+        read (#660)."""
         rig = copy.deepcopy(RIG_A)
         rig['lights'][2]['aim_selection'] = 'name Cé'
-        a = self.store('Scene1', rig)
+        a = self.store('Scène', rig)
+        self.assertEqual(cmd.get('scene_current_name'), 'Scène')
         with testing.mktemp('.pse') as filename:
             cmd.set('pse_export_version', 1.8)
             cmd.save(filename)
             cmd.set('pse_export_version', 0)
+            cmd.scene('*', 'clear')
+            cmd.set('scene_current_name', '')
             reset_module_state()
             with warnings_collected() as lines:
                 cmd.load(filename)
         self.assertEqual(lines, [])
-        self.assertEqual(raymol_scenes._scene_lights, {'Scene1': a})
+        self.assertEqual(cmd.get_scene_list(), ['Scène'])
+        self.assertEqual(cmd.get('scene_current_name'), 'Scène')
+        self.assertEqual(raymol_scenes._scene_lights, {'Scène': a})
 
     def testBytesKeysAndValues(self):
         """The legacy pickler's UTF-8 bytes keys and values read as text;
@@ -746,7 +750,8 @@ class TestBlendValues(_BlendCase):
     A = {'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 2.0,
          'ambient': 0.1, 'classic': 0.0,
          'air': {'haze': 0.0, 'dust': 0.2, 'dust_size': 0.2,
-                 'dust_speed': 1.0, 'scatter': -0.5, 'seed': 3},
+                 'dust_speed': 1.0, 'scatter': -0.5, 'seed': 3,
+                 'dust_glow': 0.5, 'dust_opacity': 0.0},
          'lights': [
              {'name': 'key', 'orbit': 170.0, 'pitch': 10.0, 'radius': 2.0,
               'beam': 20.0, 'softness': 0.2, 'intensity': 1.0,
@@ -756,7 +761,8 @@ class TestBlendValues(_BlendCase):
     B = {'enabled': True, 'centre': [2.0, 4.0, 6.0], 'size': 6.0,
          'ambient': 0.3, 'classic': 0.5,
          'air': {'haze': 0.4, 'dust': 0.6, 'dust_size': 1.0,
-                 'dust_speed': 3.0, 'scatter': 0.5, 'seed': 9},
+                 'dust_speed': 3.0, 'scatter': 0.5, 'seed': 9,
+                 'dust_glow': 3.0, 'dust_opacity': 1.0},
          'lights': [
              {'name': 'key', 'orbit': -170.0, 'pitch': 50.0, 'radius': 6.0,
               'beam': 60.0, 'softness': 0.6, 'intensity': 3.0,
@@ -799,7 +805,8 @@ class TestBlendValues(_BlendCase):
         self.assertAlmostEqual(m['size'], 4.0)
         air = m['air']
         for field, want in (('haze', 0.2), ('dust', 0.4), ('dust_size', 0.6),
-                            ('dust_speed', 2.0), ('scatter', 0.0)):
+                            ('dust_speed', 2.0), ('scatter', 0.0),
+                            ('dust_glow', 1.75), ('dust_opacity', 0.5)):
             self.assertAlmostEqual(air[field], want, places=5, msg=field)
         self.assertEqual(air['seed'], 3)                 # steps with A (Q3)
         self.assertTrue(m['enabled'])
@@ -807,8 +814,31 @@ class TestBlendValues(_BlendCase):
         lighting.set_lights(m)
         self.assertRigAlmostEqual(cmd.get_lights(), m)
 
+        # and a scene dict without the keys blends from the defaults
+        no_keys_a = {'enabled': True, 'lights': [{'name': 'key'}]}
+        no_keys_b = {'enabled': True, 'lights': [{'name': 'key'}]}
+        blended = anim.blend_rigs(no_keys_a, no_keys_b, 0.5)
+        self.assertAlmostEqual(blended['air']['dust_glow'], 1.0)
+        self.assertAlmostEqual(blended['air']['dust_opacity'], 0.0)
+
+        core_b = lighting._blend_lights(no_keys_a, {
+            'enabled': True, 'lights': [{'name': 'key'}],
+            'air': {'dust_glow': 3.0, 'dust_opacity': 1.0}}, 0.5)
+        self.assertAlmostEqual(core_b['air']['dust_glow'], 2.0)
+        self.assertAlmostEqual(core_b['air']['dust_opacity'], 0.5)
+
+    def orbit_at(self, a, b, e):
+        """A camera light's orbit blended from `a` to `b` at `e`."""
+        one = lambda o: {'enabled': True, 'lights': [{'name': 'k', 'orbit': o}]}
+        return anim.blend_rigs(one(a), one(b), e)['lights'][0]['orbit']
+
+    def colour_at(self, a, b, e):
+        """A light's colour blended from `a` to `b` at `e`."""
+        one = lambda c: {'enabled': True, 'lights': [{'name': 'k', 'color': c}]}
+        return anim.blend_rigs(one(a), one(b), e)['lights'][0]['color']
+
     def testShortestPathAngles(self):
-        lerp = anim._lerp_angle
+        lerp = self.orbit_at
         self.assertAlmostEqual(lerp(160.0, -160.0, 0.5), 180.0)
         self.assertAlmostEqual(lerp(160.0, -160.0, 0.75), -170.0)
         self.assertAlmostEqual(lerp(-170.0, 170.0, 0.5), 180.0)
@@ -821,14 +851,15 @@ class TestBlendValues(_BlendCase):
                 self.assertTrue(-180.0 < v <= 180.0, (a, b, e, v))
 
     def testColourInLinearRgb(self):
-        c = anim._lerp_color([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.5)
+        c = self.colour_at([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.5)
         self.assertAlmostEqual(c[0], 0.735357, places=5)
         self.assertEqual(c[1], 0.0)
         self.assertAlmostEqual(c[2], 0.735357, places=5)
+        # the sRGB decode and encode undo each other
         for v in (0.0, 0.02, 0.04045, 0.2, 0.5, 1.0):
-            self.assertAlmostEqual(
-                anim._linear_to_srgb(anim._srgb_to_linear(v)), v, places=6)
-        self.assertEqual(anim._lerp_color([0.2, 0.4, 0.6], [1, 1, 1], 0.0),
+            self.assertAlmostEqual(self.colour_at([v] * 3, [v] * 3, 0.5)[0],
+                                   v, places=6)
+        self.assertEqual(self.colour_at([0.2, 0.4, 0.6], [1, 1, 1], 0.0),
                          [0.2, 0.4, 0.6])
 
     def testOneSidedFades(self):
@@ -853,6 +884,22 @@ class TestBlendValues(_BlendCase):
         end = anim.blend_target(a, b, 1.0)
         self.assertTrue(self.light(end, 'newb')['shadow'])
         self.assertNotIn('solo', [l['name'] for l in end['lights']])
+
+    def testSizeLerpsForMatchedLightAndOneSidedKeepsSize(self):
+        """#741: size lerps at e = 0.5 for a matched light; a one-sided light keeps its size."""
+        a = rig({'enabled': True, 'lights': [
+            {'name': 'key', 'size': 0.2},
+            {'name': 'solo', 'size': 0.8}]})
+        b = rig({'enabled': True, 'lights': [
+            {'name': 'key', 'size': 0.6},
+            {'name': 'newb', 'size': 0.5}]})
+        m = anim.blend_rigs(a, b, 0.5)
+        key = self.light(m, 'key')
+        self.assertAlmostEqual(key['size'], 0.4)
+        solo = self.light(m, 'solo')
+        self.assertAlmostEqual(solo['size'], 0.8)
+        newb = self.light(m, 'newb')
+        self.assertAlmostEqual(newb['size'], 0.5)
 
     def testStepFields(self):
         a = rig({'enabled': True, 'lights': [
@@ -918,11 +965,15 @@ class TestBlendValues(_BlendCase):
             self.assertAlmostEqual(got, want, places=5)
 
         # a vertical offset turns about the x axis
-        off = anim._slerp_offset([0.0, 4.0, 0.0], [0.0, -4.0, 0.0], 0.5)
+        a = pinned_rig([0.0, 0.0, 0.0], [0.0, 4.0, 0.0])
+        b = pinned_rig([0.0, 0.0, 0.0], [0.0, -4.0, 0.0])
+        off = self.light(anim.blend_rigs(a, b, 0.5), 'p')['position']
         for got, want in zip(off, (0.0, 0.0, 4.0)):
             self.assertAlmostEqual(got, want, places=6)
         # a zero-length offset lerps
-        self.assertEqual(anim._slerp_offset([0, 0, 0], [4, 0, 0], 0.5),
+        a = pinned_rig([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        b = pinned_rig([0.0, 0.0, 0.0], [4.0, 0.0, 0.0])
+        self.assertEqual(self.light(anim.blend_rigs(a, b, 0.5), 'p')['position'],
                          [2.0, 0.0, 0.0])
 
     def testCaseInsensitiveMatch(self):
@@ -1033,6 +1084,12 @@ class TestSceneMovieBlend(_BlendCase):
             else:
                 self.assertRigAlmostEqual(got, self.expected(f), 'f%d' % f)
 
+    def testSceneRenameMaintainsMoviePlayback(self):
+        self.build()
+        cmd.scene('B', 'rename', new_key='C')
+        self.assertEqual(played(25), self.b)
+        self.assertRigAlmostEqual(played(13), self.expected(13))
+
     def testLinearEasing(self):
         self.build(power=1.0, linear=1)
         for f in (2, 7, 13, 19, 24):
@@ -1073,22 +1130,24 @@ class TestSceneMovieBlend(_BlendCase):
         self.assertEqual([n for _f, n, _p in kfs], ['A', 'A', 'B', 'B'])
 
         # script-only paths: place_scene and append_template('scenes') blend
-        # between the frames _scene_keyframes reports -- today the native
-        # scene CUT frames, not the markers (a proposed follow-up updates
-        # this on purpose)
+        # between the frames _scene_keyframes reports -- now the marker frames,
+        # not the cut frames (#659)
         appkit_movie.reset_movie()
         cmd.mset('1 x25')
         with spying(anim, 'author') as calls:
             appkit_movie.place_scene(1, 'A')
             appkit_movie.place_scene(25, 'B')
         kfs = self.check_received(calls)
-        self.assertEqual(kfs, [(1, 'A', 0.0), (13, 'B', 0.0)])
+        self.assertEqual(kfs, [(1, 'A', 0.0), (25, 'B', 0.0)])
 
         appkit_movie.reset_movie()
         with spying(anim, 'author') as calls:
             appkit_movie.append_template('scenes', seconds_per_scene=0.5,
                                          scenes=['A', 'B'])
-        self.check_received(calls)
+        kfs = self.check_received(calls)
+        fps = cmd.get_setting_float('movie_fps') or 30.0
+        per = max(2, int(round(0.5 * fps)))
+        self.assertEqual(kfs, [(1, 'A', 0.0), (1 + per, 'B', 0.0)])
 
     def testOneCompactCommandPerFrame(self):
         self.build()
@@ -1145,6 +1204,52 @@ class TestSceneMovieBlend(_BlendCase):
         self.assertEqual(played(13), before)
         self.assertEqual(played(25), self.b)
 
+    def testReinitializeForgetsTheAnimation(self):
+        """#657: `reinitialize` drops the movie and the scenes, so the
+        Python-side per-scene extras and the authored animation go too, with
+        no mdo on the movie that is gone. Nothing here calls
+        reset_module_state() after the reinitialize."""
+        self.build()
+        self.assertTrue(anim._track or anim._lights_track)
+        self.assertTrue(anim._scene_marks)
+        self.assertTrue(raymol_scenes._scene_lights)
+        with capture_console() as printed:
+            cmd.reinitialize()
+        self.assertNotIn('Movie-Error', printed())
+        self.assertEqual(anim._track, {})
+        self.assertEqual(anim._scene_marks, [])
+        self.assertEqual(anim._lights_track, {})
+        self.assertEqual(raymol_scenes._scene_lights, {})
+        self.assertEqual(raymol_scenes._scene_settings, {})
+        # the next author() (a rebuild with no scenes is author([])) has no
+        # stale frames to blank in the movie that no longer exists
+        with capture_console() as printed:
+            anim.author([])
+        self.assertNotIn('Movie-Error', printed())
+        # and a .pse saved now carries none of it
+        session = cmd.get_session()
+        self.assertEqual(session['raymol_movie_anim'],
+                         {'track': {}, 'marks': []})
+        self.assertEqual(session['raymol_scene_lights'], {})
+
+    def testReinitializeOtherFormsKeepTheAnimation(self):
+        """Only a bare `reinitialize everything` touches the movie and the
+        scenes; `settings` and `everything` with an object pattern must leave
+        the animation and the per-scene extras alone."""
+        self.build()
+
+        def state():
+            return copy.deepcopy((
+                anim._track, anim._scene_marks, anim._lights_track,
+                raymol_scenes._scene_lights, raymol_scenes._scene_settings))
+
+        before = state()
+        # rig-only scenes: the lights track, marks and rigs are what exist
+        self.assertTrue(before[1] and before[2] and before[3])
+        for args in (('settings',), ('everything', 'm')):
+            cmd.reinitialize(*args)
+            self.assertEqual(state(), before, args)
+
     def testOlderBuildsIgnoreTheTrack(self):
         """Q4: an older build sees no frame command of ours (stripped) and
         reads only 'track' and 'marks', which the rig leaves as they were."""
@@ -1178,7 +1283,12 @@ class TestSceneMovieBlend(_BlendCase):
         self.assertEqual(anim._lights_track, {5: ('A', 'B', 0.25),
                                               6: ("A'; quit", 'B', 0.5),
                                               24: ('A', 'B', 1.0)})
-        self.assertEqual(sorted((a[0], a[1]) for a, _kw in calls),
+        hold = anim.phase_command()
+        # #687: every other frame of the movie carries the phase write
+        self.assertEqual(sorted(a[0] for a, _kw in calls if a[1] == hold),
+                         [f for f in range(1, 26) if f not in (5, 6, 24)])
+        self.assertEqual(sorted((a[0], a[1]) for a, _kw in calls
+                                if a[1] != hold),
                          [(5, '_lights_blend 41, 42, 0.25'),
                           (6, '_lights_blend 41273b2071756974, 42, 0.5'),
                           (24, '_lights_blend 41, 42, 1')])
@@ -1288,21 +1398,472 @@ class TestSceneMovieBlend(_BlendCase):
         self.assertNotIn('lights', cmd.get_session()['raymol_movie_anim'])
         self.assertFalse(any('_lights_blend' in c for c in raw_movie_commands()))
 
-    def testLoopWrapIsNotBlended(self):
-        """Known limit (Q8): the loop-wrap span after the last marker has no
-        keyframe pair, so the rig holds B there and pops to A at frame 1."""
+    def testLoopWrapBlendsBackToTheFirstScene(self):
+        cmd.set('movie_loop', 1)
         rebuild(scene_item(1, 'A'), scene_item(40, 'B', end=60))
         cmds = raw_movie_commands()
         self.assertEqual(len(cmds), 60)
-        self.assertTrue(all('_lights_blend' in cmds[f - 1] for f in range(2, 40)))
-        self.assertFalse(any('_lights_blend' in cmds[f - 1]
-                             for f in range(40, 61)))
-        # played in order: the cut at 40 applies B, which then holds
-        for f in range(1, 61):
-            got = played(f)
-            if f >= 40:
-                self.assertEqual(got, self.b, f)
+        self.assertFalse(any('_lights_blend' in cmds[f - 1] for f in (1, 40)))
+        for f in list(range(2, 40)) + list(range(41, 61)):
+            self.assertEqual(cmds[f - 1].count('_lights_blend'), 1, f)
+        for f in range(41, 61):
+            self.assertEqual(anim._lights_track[f],
+                             ('B', 'A', eased_t(f, 40, 61)), f)
+        for f in (41, 50, 60):
+            self.assertRigAlmostEqual(
+                played(f),
+                anim.blend_target(self.b, self.a, eased_t(f, 40, 61)),
+                'f%d' % f)
+        self.assertEqual(played(40), self.b)
         self.assertEqual(played(1), self.a)
+
+    def testLoopOffHoldsTheLastScene(self):
+        cmd.set('movie_loop', 0)
+        try:
+            rebuild(scene_item(1, 'A'), scene_item(40, 'B', end=60))
+            cmds = raw_movie_commands()
+            self.assertFalse(any('_lights_blend' in cmds[f - 1]
+                                 for f in range(40, 61)))
+            for f in range(40, 61):
+                self.assertEqual(played(f), self.b, f)
+            for f in range(2, 40):
+                self.assertEqual(cmds[f - 1].count('_lights_blend'), 1, f)
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testLoopWrapBlendsTheSettings(self):
+        cmd.set('movie_loop', 1)
+        cmd.set('ambient', 0.1)
+        self.store('A2', MOVIE_A)
+        cmd.set('ambient', 0.5)
+        self.store('B2', MOVIE_B)
+        rebuild(scene_item(1, 'A2'), scene_item(40, 'B2', end=60))
+        for f in range(41, 61):
+            self.assertIn(f, anim._track)
+            self.assertIn('ambient', anim._track[f])
+            v = anim._track[f]['ambient']
+            self.assertTrue(0.1 < v < 0.5, (f, v))
+        ambs = [anim._track[f]['ambient'] for f in range(41, 61)]
+        self.assertEqual(ambs, sorted(ambs, reverse=True))
+        for i in range(len(ambs) - 1):
+            self.assertGreater(ambs[i], ambs[i + 1])
+        played(50)
+        self.assertAlmostEqual(cmd.get_setting_float('ambient'),
+                               anim._track[50]['ambient'], places=4)
+
+    def testAddScenesLoopFlag(self):
+        from pymol import movie
+        try:
+            cmd.set('movie_loop', 1)
+            appkit_movie.reset_movie()
+            movie.add_scenes(['A', 'B'], pause=1.0, animate=0.5, rock=0, loop=1)
+            max_mark = max(f for f, _n in anim._scene_marks)
+            max_lights = max(anim._lights_track)
+            self.assertGreater(max_lights, max_mark)
+            wrap_frames = [f for f in anim._lights_track if f > max_mark]
+            self.assertTrue(wrap_frames)
+            for f in wrap_frames:
+                self.assertEqual(anim._lights_track[f][0], 'B')
+                self.assertEqual(anim._lights_track[f][1], 'A')
+            appkit_movie.reset_movie()
+            movie.add_scenes(['A', 'B'], pause=1.0, animate=0.5, rock=0, loop=0)
+            max_mark0 = max(f for f, _n in anim._scene_marks)
+            wrap_frames0 = [f for f in anim._lights_track if f > max_mark0]
+            self.assertFalse(wrap_frames0)
+            # appended after earlier content: the camera wraps to that
+            # content, not to scene A, so the settings do not wrap either
+            appkit_movie.reset_movie()
+            cmd.mset('1 x20')
+            movie.add_scenes(['A', 'B'], pause=1.0, animate=0.5, rock=0, loop=1)
+            first_mark = min(f for f, _n in anim._scene_marks)
+            last_mark = max(f for f, _n in anim._scene_marks)
+            self.assertEqual(first_mark, 21)
+            self.assertTrue(anim._lights_track)
+            self.assertFalse([f for f in anim._lights_track
+                              if f < first_mark or f > last_mark])
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testPlaceSceneWrapsWithTheCamera(self):
+        try:
+            cmd.set('movie_loop', 1)
+            appkit_movie.reset_movie()
+            cmd.mset('1 x60')
+            appkit_movie.place_scene(1, 'A')
+            appkit_movie.place_scene(40, 'B')
+            for f in range(41, 61):
+                self.assertIn(f, anim._lights_track)
+                self.assertEqual(anim._lights_track[f][0], 'B')
+                self.assertEqual(anim._lights_track[f][1], 'A')
+
+            cmd.set('movie_loop', 0)
+            appkit_movie.reset_movie()
+            cmd.mset('1 x60')
+            appkit_movie.place_scene(1, 'A')
+            appkit_movie.place_scene(40, 'B')
+            self.assertFalse([f for f in anim._lights_track if f > 40])
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testPlaceSceneDoesNotWrapToACameraKeyframe(self):
+        try:
+            cmd.set('movie_loop', 1)
+            appkit_movie.reset_movie()
+            cmd.mset('1 x60')
+            cmd.frame(1)
+            # the core tags a plain `mview store` with the CURRENT scene, so
+            # store the camera keyframe with no scene current
+            cmd.set('scene_current_name', '')
+            cmd.mview('store', first=1)
+            appkit_movie.place_scene(20, 'A')
+            appkit_movie.place_scene(40, 'B')
+            self.assertEqual(appkit_movie._scene_keyframes(),
+                             [(20, 'A', 0.0), (40, 'B', 0.0)])
+            self.assertFalse([f for f in anim._lights_track if f < 20 or f > 40])
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testAppendTemplateWrapsWithTheCamera(self):
+        try:
+            cmd.set('movie_loop', 1)
+            appkit_movie.reset_movie()
+            appkit_movie.append_template('scenes', seconds_per_scene=0.5,
+                                         scenes=['A', 'B'])
+            fps = cmd.get_setting_float('movie_fps') or 30.0
+            per = max(2, int(round(0.5 * fps)))
+            last_marker = 1 + per
+            wrap_frames = [f for f in anim._lights_track if f > last_marker]
+            self.assertTrue(wrap_frames)
+            for f in wrap_frames:
+                self.assertEqual(anim._lights_track[f][0], 'B')
+                self.assertEqual(anim._lights_track[f][1], 'A')
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testSceneKeyframesLeavesThePlayheadAlone(self):
+        appkit_movie.reset_movie()
+        cmd.mset('1 x25')
+        appkit_movie.place_scene(1, 'A')
+        appkit_movie.place_scene(25, 'B')
+        cmd.frame(7)
+        appkit_movie._scene_keyframes()
+        self.assertEqual(cmd.get_frame(), 7)
+        self.assertFalse([n for n in cmd.get_names('all')
+                          if n.startswith('_raymol_kf_probe')])
+
+    def testSceneKeyframesSparesAnObjectNamedLikeTheProbe(self):
+        appkit_movie.reset_movie()
+        cmd.mset('1 x25')
+        cmd.pseudoatom('_raymol_kf_probe')
+        try:
+            appkit_movie.place_scene(1, 'A')
+            appkit_movie.place_scene(25, 'B')
+            self.assertEqual([(f, n) for f, n, _p in
+                              appkit_movie._scene_keyframes()],
+                             [(1, 'A'), (25, 'B')])
+            self.assertEqual(cmd.count_atoms('_raymol_kf_probe'), 1)
+        finally:
+            cmd.delete('_raymol_kf_probe')
+
+    def testSceneKeyframesCarryTheStoredPowers(self):
+        # a Timeline rebuild stores per-keyframe powers; a later place_scene
+        # must hand them to author() (the core still eases with them)
+        rebuild(scene_item(1, 'A', power=1.0, linear=1),
+                scene_item(25, 'B', end=40, power=2.0, linear=0))
+        self.assertEqual(appkit_movie._scene_keyframes(),
+                         [(1, 'A', 1.0), (25, 'B', 2.0)])
+        with spying(anim, 'author') as calls:
+            appkit_movie.place_scene(40, 'A')
+        kfs = calls[-1][0][0]
+        self.assertEqual(kfs[:2], [(1, 'A', 1.0), (25, 'B', 2.0)])
+        self.assertEqual([(f, n) for f, n, _p in kfs[2:]], [(40, 'A')])
+
+
+class TestSceneMovieDustPhase(_BlendCase):
+
+    def testDustPhase(self):
+        a_rig = copy.deepcopy(MOVIE_A)
+        a_rig['air'] = dict(a_rig.get('air', {}), dust=0.5, dust_speed=1.0)
+        b_rig = copy.deepcopy(MOVIE_B)
+        b_rig['air'] = dict(b_rig.get('air', {}), dust=0.5, dust_speed=3.0)
+        self.store('A', a_rig)
+        self.store('B', b_rig)
+
+        cmd.set('movie_fps', 30)
+        # frames 26..39 hold B: no mark, no blend, only the phase write
+        rebuild(scene_item(1, 'A'), scene_item(25, 'B'), scene_item(40, 'B'))
+        count = cmd.count_frames()
+        self.assertGreaterEqual(count, 40)
+
+        times = []
+        for f in range(1, count + 1):
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertIsNotNone(air, 'no air at frame %d' % f)
+            times.append(air['time'])
+
+        # Assert: every step T(F+1) - T(F) is >= 0 and <= 3.0/30 + 1e-4 (float32)
+        for f in range(len(times) - 1):
+            step = times[f + 1] - times[f]
+            self.assertGreaterEqual(step, -1e-5, "step >= 0 at frame %d" % (f + 1))
+            self.assertLessEqual(step, 3.0 / 30.0 + 1e-4, "step bound at frame %d" % (f + 1))
+
+        # Reverse order
+        reverse_times = {}
+        for f in range(count, 0, -1):
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertIsNotNone(air)
+            reverse_times[f] = air['time']
+        for f in range(1, count + 1):
+            self.assertAlmostEqual(reverse_times[f], times[f - 1], delta=1e-5,
+                                   msg="reverse order frame %d" % f)
+
+        # Random order
+        import random
+        order = list(range(1, count + 1))
+        random.seed(42)
+        random.shuffle(order)
+        rand_times = {}
+        for f in order:
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertIsNotNone(air)
+            rand_times[f] = air['time']
+        for f in range(1, count + 1):
+            self.assertAlmostEqual(rand_times[f], times[f - 1], delta=1e-5,
+                                   msg="random order frame %d" % f)
+
+        # a jump straight into the hold (frame N then png) after the movie
+        # left a different phase behind: the hold frame writes its own
+        for start, f in ((40, 30), (1, 33), (24, 39), (35, 2)):
+            cmd.frame(start)
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertAlmostEqual(air['time'], times[f - 1], delta=1e-5,
+                                   msg="jump %d -> %d" % (start, f))
+        self.assertGreater(times[32] - times[31], 2.9 / 30.0)  # B's speed
+
+    def testScenesWithoutARigKeepTheClock(self):
+        # #687 review: scenes stored without a rig entry (before #617) leave
+        # the live rig alone; its dust keeps clock x speed through every
+        # keyframe instead of restarting there
+        from pymol import raymol_scenes
+        rig = copy.deepcopy(MOVIE_A)
+        rig['air'] = dict(rig['air'], dust=0.5, dust_speed=2.0)
+        self.store('A', rig)
+        self.store('B', rig)
+        raymol_scenes._scene_lights.clear()
+        cmd.set('movie_fps', 30)
+        rebuild(scene_item(1, 'A'), scene_item(13, 'B'), scene_item(25, 'A'))
+        for f in (1, 12, 13, 14, 25, 20, 2):
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertIsNotNone(air, f)
+            self.assertAlmostEqual(air['time'], (f - 1) / 30.0 * 2.0,
+                                   delta=1e-5, msg='frame %d' % f)
+
+
+# --- #661: the rig blend in the core ------------------------------------------
+
+def recall_ease(x):
+    """The easing SceneLoadAnimation gives the camera (ViewElemInterpolate,
+    power 2, bias 1), which the recall blend follows."""
+    return anim.ease(x, 2.0)
+
+
+def with_speed(source, speed):
+    out = copy.deepcopy(source)
+    out['air'] = dict(out.get('air', {}), dust=0.5, dust_speed=speed)
+    return out
+
+
+class TestRecallBlend(_BlendCase):
+    """#661: a recall that animates the camera blends the rig in the core,
+    one step per camera frame at the camera's eased position. The dust speed
+    holds the old rig's until the blend ends (the live dust clock is wall
+    time x speed, so a ramp would race the dust)."""
+
+    N = 30
+
+    def setUp(self):
+        super().setUp()
+        self.a = self.set_rig(with_speed(MOVIE_A, 1.0))
+        self.b = rig(with_speed(MOVIE_B, 3.0))
+
+    def expected(self, cur):
+        want = anim.blend_rigs(self.a, self.b, recall_ease(cur / float(self.N)))
+        want['air']['dust_speed'] = self.a['air']['dust_speed']
+        return want
+
+    def testIntermediateFramesBlend(self):
+        lighting._lights_recall(self.b, force=True)
+        # nothing moves before the camera's first frame
+        self.assertEqual(cmd.get_lights(), self.a)
+        for cur in (0, 1, 7, 15, 22, 29):
+            self.assertTrue(lighting._lights_recall_step(cur, self.N), cur)
+            got = cmd.get_lights()
+            self.assertRigAlmostEqual(got, self.expected(cur), 'cur %d' % cur)
+            e = recall_ease(cur / float(self.N))
+            # checked by hand too, not only against blend_rigs
+            self.assertAlmostEqual(got['ambient'], 0.05 + 0.1 * e, places=5)
+            self.assertAlmostEqual(got['classic'], 0.2 * e, places=5)
+            self.assertAlmostEqual(got['air']['haze'], 0.1 + 0.2 * e, places=5)
+            self.assertAlmostEqual(got['air']['dust_speed'], 1.0, places=5)
+            self.assertTrue(got['enabled'])
+        self.assertNotEqual(cmd.get_lights(), self.a)
+        self.assertNotEqual(cmd.get_lights(), self.b)
+        # the camera's last frame lands exactly on the scene's rig
+        self.assertFalse(lighting._lights_recall_step(self.N, self.N))
+        self.assertEqual(cmd.get_lights(), self.b)
+        # and nothing is pending any more
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+        self.assertEqual(cmd.get_lights(), self.b)
+
+    def testDirectStepEqualsPlayback(self):
+        lighting._lights_recall(self.b, force=True)
+        played_rigs = []
+        for cur in range(self.N):
+            lighting._lights_recall_step(cur, self.N)
+            played_rigs.append(cmd.get_lights())
+        for cur in (25, 3, 17, 0, 9):
+            self.set_rig(self.a)
+            lighting._lights_recall(self.b, force=True)
+            lighting._lights_recall_step(cur, self.N)
+            self.assertEqual(cmd.get_lights(), played_rigs[cur], cur)
+        # backwards within one blend (a movie scrubbed back)
+        lighting._lights_recall_step(28, self.N)
+        lighting._lights_recall_step(4, self.N)
+        self.assertEqual(cmd.get_lights(), played_rigs[4])
+
+    def testAnEditLandsTheBlendFirst(self):
+        # an edit mid-blend applies to the scene's rig, not a half-blended one
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        lighting._light_set(0, 'intensity', 0.5)
+        want = copy.deepcopy(self.b)
+        want['lights'][0]['intensity'] = 0.5
+        self.assertEqual(cmd.get_lights(), want)
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+        self.assertEqual(cmd.get_lights(), want)
+
+        # an 'off' scene recalled mid-blend turns the scene's rig off
+        self.set_rig(self.a)
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        lighting._light_set(-1, 'enabled', 0)
+        self.assertEqual(cmd.get_lights(), dict(self.b, enabled=False))
+
+        # recenter recentres the scene's rig
+        self.set_rig(self.a)
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        lighting._lights_recenter()
+        got = cmd.get_lights()
+        self.assertEqual([l['name'] for l in got['lights']],
+                         [l['name'] for l in self.b['lights']])
+        self.assertEqual(got['air'], self.b['air'])
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+
+        # set_lights replaces the rig and drops the blend
+        self.set_rig(self.a)
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        replaced = self.set_rig(RIG_B)
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+        self.assertEqual(cmd.get_lights(), replaced)
+
+    def testACameraCutFinishesTheBlend(self):
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        cmd.set_view(cmd.get_view())          # animate=0 aborts the animation
+        self.assertEqual(cmd.get_lights(), self.b)
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+
+    def testRecallingTheLiveRigDropsAPendingBlend(self):
+        # recall B, then A again before B's first frame: A stays
+        lighting._lights_recall(self.b, force=True)
+        with counting(lighting, 'set_lights') as calls:
+            lighting._lights_recall(self.a, force=True)
+        self.assertEqual(calls, [])
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+        self.assertEqual(cmd.get_lights(), self.a)
+
+    def testOnOffSteps(self):
+        # no rig, or a rig that is off, on either side: applied at once
+        off = dict(self.b, enabled=False)
+        lighting._lights_recall(off, force=True)
+        self.assertEqual(cmd.get_lights(), off)
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+        lighting._lights_recall(self.b, force=True)
+        self.assertEqual(cmd.get_lights(), self.b)
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+        lighting.set_lights(None)
+        lighting._lights_recall(self.a, force=True)
+        self.assertEqual(cmd.get_lights(), self.a)
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+
+    def testABadRigRaisesAndLeavesTheRig(self):
+        with self.assertRaises(pymol.CmdException) as cm:
+            lighting._lights_recall(dict(self.b, version=99), force=True)
+        self.assertIn('lights_recall', str(cm.exception))
+        self.assertEqual(cmd.get_lights(), self.a)
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+
+
+class TestRecallOutsideMovies(_BlendCase):
+    """#661: with no camera animation running (animate=0, or no GUI as
+    here) a recall applies the scene's rig at once, as before."""
+
+    def testRecallSnapsWithoutACameraAnimation(self):
+        a = self.store('A', MOVIE_A)
+        b = self.store('B', MOVIE_B)
+        cmd.scene('A', 'recall', animate=0)
+        self.assertEqual(cmd.get_lights(), a)
+        cmd.scene('B', 'recall', animate=1)
+        self.assertEqual(cmd.get_lights(), b)
+        self.assertFalse(lighting._lights_recall_step(0, 30))
+        cmd.scene('auto', 'previous')
+        self.assertEqual(cmd.get_lights(), a)
+        lighting._lights_recall(b)               # no animation: no blend
+        self.assertEqual(cmd.get_lights(), b)
+        self.assertFalse(lighting._lights_recall_step(0, 30))
+
+    def testRecallGoesThroughTheCoreAndTheMovieDoesNot(self):
+        a = self.store('A', MOVIE_A)
+        b = self.store('B', MOVIE_B)
+        with counting(lighting, '_lights_recall') as calls:
+            cmd.scene('A', 'recall')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(cmd.get_lights(), a)
+        # a movie keyframe applies its scene's rig at once (the authored
+        # _lights_blend frames do the blending there)
+        with counting(lighting, '_lights_recall') as calls:
+            anim.enter_scene(b64('B'))
+        self.assertEqual(calls, [])
+        self.assertEqual(cmd.get_lights(), b)
+
+
+class TestMovieJumpEqualsPlayback(_BlendCase):
+    """#661: any frame of a scene movie, reached by a jump, shows the rig
+    playback shows there, hold frames included."""
+
+    def testJumpEqualsPlayback(self):
+        self.store('A', MOVIE_A)
+        self.store('B', MOVIE_B)
+        # 1-13 blends A -> B, 13-25 holds B, 25-37 blends back, 37-49 holds A
+        rebuild(scene_item(1, 'A'), scene_item(13, 'B'), scene_item(25, 'B'),
+                scene_item(37, 'A'), scene_item(49, 'A'))
+        count = cmd.count_frames()
+        self.assertGreaterEqual(count, 49)
+        playback = {}
+        for f in range(1, count + 1):
+            playback[f] = played(f)
+        for start in (1, 19, 43, count):
+            for f in range(1, count + 1):
+                played(start)
+                self.assertRigAlmostEqual(played(f), playback[f],
+                                          'jump %d -> %d' % (start, f))
 
 
 # --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----
@@ -1380,7 +1941,8 @@ class TestMovieSceneFile(_BlendCase):
         self.original_set_lights = cmd.set_lights
 
     def tearDown(self):
-        cmd.set_lights = self.original_set_lights
+        self.assertNotIn('_l617_set', vars(cmd))
+        self.assertIs(cmd.set_lights, self.original_set_lights)
         for name in [n for n in dir(cmd) if n.startswith('_l617_')]:
             delattr(cmd, name)
         super().tearDown()
@@ -1407,7 +1969,13 @@ class TestMovieSceneFile(_BlendCase):
         self.assertEqual([j.tag for j in jobs], MOVIE_FILE_TAGS)
         out = os.path.join('out', 'l2')
         with open(MOVIE_FILE) as handle:
-            extra = json.load(handle)['extra']
+            spec = json.load(handle)
+            extra = spec['extra']
+            after_rig = spec['after_rig']
+        applier = [
+            "if getattr(cmd, '_l617_frame', 0) or getattr(cmd, '_l617_recall', False) or getattr(cmd, '_l617_direct', None): cmd._l617_build(cmd)"
+        ]
+        self.assertEqual(after_rig, applier)
         for job in jobs:
             render.check_path('tag', job.tag)
             render.check_path('scene script', render.script_path(out, job.tag))
@@ -1421,6 +1989,19 @@ class TestMovieSceneFile(_BlendCase):
             self.assertEqual(job.extra[:len(extra)], extra, job.tag)
             self.assertEqual(job.extra[-1], "cmd.color('grey80', 'm')",
                              job.tag)
+            self.assertEqual(job.after_rig, after_rig, job.tag)
+
+    def testCheckPathRefusalSaysSubstring(self):
+        # #646: the app's triggers are substrings, so 'presets' (has 'reset')
+        # is refused, and the message says so and suggests a rename.
+        render = self.render
+        with self.assertRaises(render.Refusal) as ctx:
+            render.check_path('--scenes', 'lighting_612_presets.json')
+        msg = str(ctx.exception)
+        self.assertIn('substring', msg)
+        self.assertIn("'reset'", msg)
+        self.assertIn('Rename', msg)
+        render.check_path('--scenes', 'lighting_612_rigs.json')
 
     def testLighting617MovieFile(self):
         render = self.render
@@ -1446,8 +2027,8 @@ class TestMovieSceneFile(_BlendCase):
             if frame:
                 self.assertEqual(cmd.get_frame(), frame, tag)
                 self.assertEqual(cmd.get_movie_length(), 25, tag)
-            # wrapped once: the original stays reachable
-            self.assertIs(cmd._l617_set, self.original_set_lights)
+            self.assertNotIn('_l617_set', vars(cmd), tag)
+            self.assertIs(cmd.set_lights, self.original_set_lights, tag)
             got[tag] = (second, raymol_scenes.scene_lights('A'),
                         raymol_scenes.scene_lights('B'))
 

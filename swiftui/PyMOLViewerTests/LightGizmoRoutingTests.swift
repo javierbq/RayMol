@@ -202,25 +202,26 @@ final class LightGizmoRoutingTests: XCTestCase {
 
     // MARK: events (points are the gizmo's: top-left)
 
-    private func mouse(_ type: NSEvent.EventType, at p: CGPoint, option: Bool = false) throws -> NSEvent {
+    private func mouse(_ type: NSEvent.EventType, at p: CGPoint, option: Bool = false,
+                       clickCount: Int = 1) throws -> NSEvent {
         let window = try XCTUnwrap(window)
         let location = CGPoint(x: p.x, y: viewSize.height - p.y)   // window: bottom-left
         return try XCTUnwrap(NSEvent.mouseEvent(
             with: type, location: location, modifierFlags: option ? [.option] : [],
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-            context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+            context: nil, eventNumber: 0, clickCount: clickCount, pressure: type == .leftMouseUp ? 0 : 1))
     }
 
-    private func press(_ p: CGPoint, option: Bool = false) throws {
-        view.mouseDown(with: try mouse(.leftMouseDown, at: p, option: option))
+    private func press(_ p: CGPoint, option: Bool = false, clickCount: Int = 1) throws {
+        view.mouseDown(with: try mouse(.leftMouseDown, at: p, option: option, clickCount: clickCount))
     }
 
     private func dragTo(_ p: CGPoint, option: Bool = false) throws {
         view.mouseDragged(with: try mouse(.leftMouseDragged, at: p, option: option))
     }
 
-    private func release(_ p: CGPoint, option: Bool = false) throws {
-        view.mouseUp(with: try mouse(.leftMouseUp, at: p, option: option))
+    private func release(_ p: CGPoint, option: Bool = false, clickCount: Int = 1) throws {
+        view.mouseUp(with: try mouse(.leftMouseUp, at: p, option: option, clickCount: clickCount))
     }
 
     private func hover(_ p: CGPoint) throws {
@@ -282,10 +283,9 @@ final class LightGizmoRoutingTests: XCTestCase {
         try press(key.centre)
         XCTAssertTrue(engine.lightGizmoPointer.ownsPress)
         XCTAssertEqual(ui.active, .knob("key"))
-        // Every press clears the hover preview first (one Python call, as in
-        // every mode since #165); the ticks and the release add none.
-        let pressPython = t.python.lines
-        XCTAssertLessThanOrEqual(pressPython.count, 1, "\(pressPython)")
+        // Entering Lights mode cleared the hover preview and none can show
+        // since, so the press runs no Python at all (#694).
+        XCTAssertEqual(t.python.lines, [], "a Lights-mode press runs no Python")
         try drag(from: key.centre, to: target)
         XCTAssertNotNil(ui.readout, "the drag shows its readout")
         XCTAssertEqual(ui.hemisphere, .front)
@@ -293,7 +293,7 @@ final class LightGizmoRoutingTests: XCTestCase {
         t.stop()
 
         XCTAssertEqual(t.events.list, [], "a gizmo drag sends no PyMOL button, drag or pick")
-        XCTAssertEqual(t.python.lines, pressPython, "no Python on a drag tick or the release")
+        XCTAssertEqual(t.python.lines, [], "no Python on the press, a drag tick or the release")
         XCTAssertEqual(t.commands.lines, [])
         XCTAssertFalse(engine.lightGizmoPointer.ownsPress)
         XCTAssertNil(ui.active)
@@ -461,7 +461,7 @@ final class LightGizmoRoutingTests: XCTestCase {
     /// An option-click on the molecule off every target runs one `lights
     /// <name>, click=` command and no atom pick; off the molecule it runs
     /// nothing; on a knob it selects that light. A plain click off the
-    /// gizmo is still today's atom pick.
+    /// gizmo runs no atom pick either (#696).
     func testOptionClickPlacesAHighlightOnAHitOnly() throws {
         try enterGizmo()
         var l = try layout()
@@ -521,14 +521,66 @@ final class LightGizmoRoutingTests: XCTestCase {
         }
         XCTAssertEqual(t.commands.lines, [])
 
-        // A plain click off the gizmo: today's atom pick.
+        // A plain click off the gizmo runs no atom pick (#696).
         t = taps()
         try press(empty)
         try release(empty)
         t.stop()
-        guard t.events.list.count == 1, case .pick = t.events.list[0] else {
-            return XCTFail("a plain click is today's atom pick: \(t.events.list)")
+        XCTAssertEqual(t.events.list, [], "a plain click in Lights mode picks nothing: \(t.events.list)")
+        XCTAssertEqual(t.commands.lines, [])
+    }
+
+    /// The click-pick decision (#696): Lights mode never picks; every other
+    /// mode picks unless the press was a drag.
+    func testClickPickDecision() {
+        let modes: [InteractionMode] = [.viewing, .move, .boxSelect, .lights]
+        for mode in modes {
+            for onGizmo in [false, true] {
+                for option in [false, true] {
+                    XCTAssertEqual(
+                        LightClickPick.shouldPick(mode: mode, onGizmo: onGizmo, option: option, wasDrag: false),
+                        mode != .lights, "\(mode) gizmo=\(onGizmo) option=\(option)")
+                    XCTAssertFalse(
+                        LightClickPick.shouldPick(mode: mode, onGizmo: onGizmo, option: option, wasDrag: true))
+                }
+            }
         }
+    }
+
+    // MARK: Double-click on the aim dot (#699)
+
+    /// A double-click on the selected light's aim dot runs one
+    /// `lights <name>, aim=centre` and nothing else (no atom pick, no PyMOL
+    /// button); a single click there runs nothing.
+    func testDoubleClickOnTheAimDotAimsAtTheCentre() throws {
+        try enterGizmo()
+        controller.select(name: "fill")
+        engine.lightsFrameRendered()
+        let l = try layout()
+        XCTAssertEqual(l.selected?.name.lowercased(), "fill")
+        let aim = try XCTUnwrap(l.selected?.aimDot, "no aim dot")
+        XCTAssertEqual(LightGizmoHitTest.target(at: aim, layout: l), .aimDot)
+        XCTAssertEqual(try rig().lights[1].aim, .point)
+        let json = engine.lightRigJSON()
+
+        var t = taps()
+        try press(aim)
+        try release(aim)
+        t.stop()
+        XCTAssertEqual(t.events.list, [], "a click on the aim dot is the gizmo's")
+        XCTAssertEqual(t.commands.lines, [])
+        XCTAssertEqual(engine.lightRigJSON(), json)
+
+        t = taps()
+        try press(aim)
+        try release(aim)
+        try press(aim, clickCount: 2)
+        try release(aim, clickCount: 2)
+        t.stop()
+        XCTAssertEqual(t.commands.lines, ["lights fill, aim=centre"])
+        XCTAssertEqual(t.events.list, [], "no atom pick and no button")
+        XCTAssertEqual(try rig().lights[1].aim, .centre)
+        XCTAssertEqual(engine.lightGizmoPointer.lastRecentre, true)
     }
 
     // MARK: Esc mid-drag
@@ -574,6 +626,104 @@ final class LightGizmoRoutingTests: XCTestCase {
         }
     }
 
+    // MARK: hover clear (#694)
+
+    /// The hover clear skips its Python select when no preview has run since
+    /// the last clear (#694). A press in Lights mode (and every idle clear)
+    /// runs no Python.
+    func testHoverClearRunsPythonOnlyAfterAPreview() throws {
+        try LightsLive.requireEngine()
+        let saved = engine.hoverPreviewEnabled
+        defer { engine.hoverPreviewEnabled = saved }
+        engine.hoverPreviewEnabled = true
+
+        engine.clearHoverPreview()
+
+        let t = taps()
+        defer { t.stop() }
+        // Only the hover pick and the clear: deferred work another test left
+        // on the main queue (e.g. leaving Design mode) may run Python too.
+        func hoverLines() -> [String] {
+            t.python.lines.filter { $0.contains("hover_preview_at") || $0.contains("_preselect") }
+        }
+
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines, [], "an idle clear runs no Python")
+        XCTAssertFalse(engine.hoverPreviewMayBeShown)
+
+        // Wait past the hover throttle so the next hover fires on the leading edge.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        t.python.lines = []
+        engine.hoverPreview(0.9, 0.9, 1.0)
+        XCTAssertTrue(engine.hoverPreviewMayBeShown)
+        XCTAssertEqual(hoverLines().count, 1, "\(t.python.lines)")
+        XCTAssertTrue(hoverLines().first?.contains("hover_preview_at") == true, "\(t.python.lines)")
+
+        t.python.lines = []
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines.count, 1)
+        XCTAssertTrue(t.python.lines.first?.contains("_preselect") == true, "\(t.python.lines)")
+
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines.count, 1, "the second clear adds none")
+
+        // A readout-only pick (preview off) leaves '_preselect' alone, so it
+        // must not make the next clear run Python.
+        let savedReadout = engine.hoverReadoutEnabled
+        defer { engine.hoverReadoutEnabled = savedReadout }
+        engine.hoverPreviewEnabled = false
+        engine.hoverReadoutEnabled = true
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        t.python.lines = []
+        engine.hoverPreview(-0.9, -0.9, 1.0)
+        XCTAssertEqual(hoverLines().count, 1, "the readout pick runs: \(t.python.lines)")
+        XCTAssertTrue(hoverLines().first?.contains("hover_preview_at") == true, "\(t.python.lines)")
+        XCTAssertFalse(engine.hoverPreviewMayBeShown, "a readout-only pick writes no preview")
+        engine.clearHoverPreview()
+        XCTAssertEqual(hoverLines().count, 1, "the clear after a readout-only pick runs no Python")
+    }
+
+    #if RAYMOL_MPNN
+    /// Both Design-mode callers of `hover_design_at` (the hover and the iOS
+    /// tap) write '_preselect', so each must arm exactly one later clear
+    /// (#694); otherwise the clear would leave the cyan glow behind.
+    func testDesignPicksArmTheHoverClear() throws {
+        try LightsLive.requireEngine()
+        engine.setDesignMode(true)
+        defer {
+            engine.setDesignMode(false)
+            // Let leaving Design mode finish its deferred work here, not in
+            // the next test.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertTrue(engine.designMode)
+        engine.clearHoverPreview()
+
+        let t = taps()
+        defer { t.stop() }
+        let picks: [(String, () -> Void)] = [
+            ("hoverDesignPreview", { self.engine.hoverDesignPreview(-0.9, -0.9, 1.0) }),
+            ("designPickResidue", { self.engine.designPickResidue(ndcX: -0.9, ndcY: -0.9, aspect: 1.0) }),
+        ]
+        for (name, pick) in picks {
+            engine.clearHoverPreview()
+            XCTAssertFalse(engine.hoverPreviewMayBeShown, name)
+            // Past the design-hover throttle, so the hover fires on the leading edge.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            t.python.lines = []
+            pick()
+            XCTAssertTrue(t.python.lines.contains { $0.contains("hover_design_at") }, "\(name): \(t.python.lines)")
+            XCTAssertTrue(engine.hoverPreviewMayBeShown, "\(name) arms the clear")
+            t.python.lines = []
+            engine.clearHoverPreview()
+            engine.clearHoverPreview()
+            XCTAssertEqual(t.python.lines.filter { $0.contains("_preselect") }.count, 1,
+                           "\(name): exactly one clear runs Python \(t.python.lines)")
+        }
+    }
+    #endif
+
     // MARK: DEBUG size check
 
     #if DEBUG
@@ -606,5 +756,25 @@ final class LightGizmoRoutingTests: XCTestCase {
         XCTAssertNil(check.check(overlay: ui.viewSize, viewport: viewSize), "within half a point")
     }
     #endif
+}
+
+// MARK: - Cursor (#701)
+
+final class LightGizmoCursorTests: XCTestCase {
+    func testCursorChoice() {
+        typealias K = LightGizmoCursorKind
+        let targets: [LightGizmoTarget] = [.aimDot, .outerHandle, .innerHandle, .knob("k"),
+                                           .outerRing, .innerRing, .rings]
+        for t in targets {
+            XCTAssertEqual(K.cursor(mode: .lights, hovered: t, isDragging: false), .openHand)
+            XCTAssertEqual(K.cursor(mode: .lights, hovered: t, isDragging: true), .closedHand)
+            XCTAssertEqual(K.cursor(mode: .viewing, hovered: t, isDragging: false), .normal)
+        }
+        XCTAssertEqual(K.cursor(mode: .lights, hovered: nil, isDragging: false), .normal)
+        // The closed hand stays while dragging, even once the pointer is off the target.
+        XCTAssertEqual(K.cursor(mode: .lights, hovered: nil, isDragging: true), .closedHand)
+        // Leaving Lights mode restores the normal cursor, even mid-press.
+        XCTAssertEqual(K.cursor(mode: .move, hovered: .aimDot, isDragging: true), .normal)
+    }
 }
 #endif

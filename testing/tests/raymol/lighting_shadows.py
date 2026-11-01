@@ -667,6 +667,102 @@ class TestCasters(ShadowCase):
         self.assertEqual(sorted(got['casters']), ['m'])
         self.assertNotIn('blocker', got['excluded'])
 
+    def _extent(self):
+        return lighting._light_shadow_casters()['extent']
+
+    def testHiddenRepsObjectDoesNotCount(self):
+        """#690: an enabled object with nothing shown draws nothing, so it
+        must not widen the box; show brings it back, hide drops it again
+        (the cache follows rep visibility, whichever way it is changed)."""
+        base = self._extent()
+        far = add(self.centre, [0.0, 200.0, 0.0])
+        cmd.pseudoatom('far', pos=far)
+        cmd.hide('everything', 'far')
+        self.assertIn('far', cmd.get_names('objects', enabled_only=1))
+        got = self._extent()
+        self.assertVec(got[0], base[0], 1e-4)
+        self.assertVec(got[1], base[1], 1e-4)
+
+        cmd.show('spheres', 'far')
+        got = self._extent()
+        self.assertGreaterEqual(got[1][1], far[1] - 1e-3)
+
+        cmd.hide('spheres', 'far')
+        got = self._extent()
+        self.assertVec(got[1], base[1], 1e-4)
+
+        # by selection and by `all`, which never go through the object branch
+        cmd.show('spheres', 'far')
+        self.assertGreaterEqual(self._extent()[1][1], far[1] - 1e-3)
+        cmd.hide('everything', 'far and name PS1')
+        self.assertVec(self._extent()[1], base[1], 1e-4)
+        cmd.show('spheres', 'far')
+        self.assertGreaterEqual(self._extent()[1][1], far[1] - 1e-3)
+        cmd.hide('everything')
+        self.assertIsNone(self._extent())
+
+    def testToggleAndSceneRecall(self):
+        base = self._extent()
+        far = add(self.centre, [0.0, 200.0, 0.0])
+        cmd.pseudoatom('far', pos=far)
+        cmd.hide('everything', 'far')
+        self.assertVec(self._extent()[1], base[1], 1e-4)
+        cmd.scene('hid', 'store')
+        cmd.toggle('spheres', 'far')
+        self.assertGreaterEqual(self._extent()[1][1], far[1] - 1e-3)
+        cmd.toggle('spheres', 'far')
+        self.assertVec(self._extent()[1], base[1], 1e-4)
+        cmd.toggle('spheres', 'far')
+        cmd.scene('shown', 'store')
+        cmd.scene('hid', 'recall')
+        self.assertVec(self._extent()[1], base[1], 1e-4)
+        cmd.scene('shown', 'recall')
+        self.assertGreaterEqual(self._extent()[1][1], far[1] - 1e-3)
+
+    def testHiddenNonMoleculeDoesNotCount(self):
+        base = self._extent()
+        far = add(self.centre, [0.0, 200.0, 0.0])
+        cmd.load_cgo([cgo.SPHERE] + far + [2.0], 'farcgo', zoom=0)
+        self.assertGreaterEqual(self._extent()[1][1], far[1])
+        cmd.hide('cgo', 'farcgo')
+        self.assertVec(self._extent()[1], base[1], 1e-4)
+        cmd.show('cgo', 'farcgo')
+        self.assertGreaterEqual(self._extent()[1][1], far[1])
+        cmd.hide('everything', 'farcgo')
+        self.assertVec(self._extent()[1], base[1], 1e-4)
+        cmd.show('cgo', 'farcgo')
+        self.assertGreaterEqual(self._extent()[1][1], far[1])
+
+    def testHideAllWithOnlyACgo(self):
+        for name in ('m', 'blocker', '_move_gizmo'):
+            cmd.delete(name)
+        cmd.load_cgo([cgo.SPHERE, 1.0, 2.0, 3.0, 2.0], 'only', zoom=0)
+        self.assertIsNotNone(self._extent())
+        cmd.hide('everything')
+        self.assertIsNone(self._extent())
+
+    def testBezierTubeCgoIsACaster(self):
+        """#663: a CGO BEZIER (the Metal tube cartoon) has an extent, the box
+        of its four control points, so the studio frusta are fitted to it.
+        Without one, a scene of tubes had no casters at all and a tube next
+        to other geometry fell outside the maps' depth range."""
+        for name in ('m', 'blocker', '_move_gizmo'):
+            cmd.delete(name)
+        pts = [[-4.0, 1.0, 2.0], [0.0, 6.0, -3.0], [5.0, -2.0, 1.0],
+               [9.0, 0.0, 7.0]]
+        cmd.load_cgo([cgo.BEZIER] + [c for p in pts for c in p], 'tube',
+                     zoom=0)
+        lo = [min(p[k] for p in pts) for k in range(3)]
+        hi = [max(p[k] for p in pts) for k in range(3)]
+        got = lighting._light_shadow_casters()
+        self.assertEqual(got['casters'], ['tube'])
+        self.assertIsNotNone(got['extent'])
+        self.assertVec(got['extent'][0], lo, 1e-4)
+        self.assertVec(got['extent'][1], hi, 1e-4)
+        ext = cmd.get_extent('tube')
+        self.assertVec(ext[0], lo, 1e-4)
+        self.assertVec(ext[1], hi, 1e-4)
+
     def testFarOverlayLeavesTheFrustaAlone(self):
         self.rig([light('key', orbit=-40.0, pitch=30.0, shadow=True),
                   light('rim', orbit=150.0, pitch=20.0, shadow=True)])
@@ -927,6 +1023,48 @@ class TestGpuTime(ShadowCase):
         self.assertEqual(stats['max'], 130.0)
         self.assertEqual(stats['median'], 70.5)
         self.assertEqual(stats['p95'], 124.0)    # ceil(0.95 x 120) = 114th of 11..130
+
+
+class TestSoftShadows(ShadowCase):
+    """Issue #741: traced per-light soft shadows."""
+
+    def testSoftRadiusHelper(self):
+        self.assertEqual(lighting._light_soft_radius(0.5, 20.0, True, True), 0.0)
+        self.assertEqual(lighting._light_soft_radius(0.5, 20.0, True, False), 10.0)
+        self.assertEqual(lighting._light_soft_radius(0.5, 20.0, False, False), 0.0)
+        self.assertEqual(lighting._light_soft_radius(0.0, 20.0, True, False), 0.0)
+
+    def testLightFrameSoftRadiusAndBlock(self):
+        self.load_m()
+        cmd.set('metal_shadows', 1)
+        self.rig([
+            light('key', orbit=-40.0, pitch=30.0, shadow=True, size=0.5),
+            light('fill', orbit=50.0, pitch=20.0, shadow=False, size=0.5),
+            light('rim', orbit=150.0, pitch=20.0, shadow=True, size=0.0),
+        ])
+        rig_info = cmd.get_lights()
+        rig_size = rig_info['size']
+        frame = lighting._light_frame(M)
+        self.assertAlmostEqual(frame['rig']['lights'][0]['soft_radius'], 0.5 * rig_size, places=4)
+        self.assertEqual(frame['rig']['lights'][1]['soft_radius'], 0.0)
+        self.assertEqual(frame['rig']['lights'][2]['soft_radius'], 0.0)
+
+        # with metal_shadows off, soft_radius is 0
+        cmd.set('metal_shadows', 0)
+        frame_off = lighting._light_frame(M)
+        self.assertEqual(frame_off['rig']['lights'][0]['soft_radius'], 0.0)
+        self.assertEqual(frame_off['rig']['lights'][1]['soft_radius'], 0.0)
+        self.assertEqual(frame_off['rig']['lights'][2]['soft_radius'], 0.0)
+
+        # the 172-float block is identical between size 0 and size 0.5 (GPU block never carries size)
+        cmd.set('metal_shadows', 1)
+        self.rig([light('key', orbit=-40.0, pitch=30.0, shadow=True, size=0.0)])
+        block_size0 = lighting._light_frame(M)['rig']['block']
+        self.rig([light('key', orbit=-40.0, pitch=30.0, shadow=True, size=0.5)])
+        block_size05 = lighting._light_frame(M)['rig']['block']
+        self.assertEqual(len(block_size0), 172)
+        self.assertEqual(len(block_size05), 172)
+        self.assertEqual(block_size0, block_size05)
 
 
 class TestSource(testing.PyMOLTestCase):

@@ -3,12 +3,71 @@
 Runs via the repo test runner:
     pymol -ckqy testing/testing.py --run tests/raymol/design_saverestore.py
 """
+import os
+import shutil
+import tempfile
+from unittest import mock
+
 from pymol import cmd, testing
 
 _TSET = ['cartoon_transparency', 'transparency', 'stick_transparency', 'sphere_transparency']
 
 
 class TestDesignSaveRestore(testing.PyMOLTestCase):
+    def testSnapshotIsNotSharedThroughTmpdir(self):
+        """Another process's files under $TMPDIR must not reach our snapshot.
+
+        Every process of one user shares $TMPDIR: when the snapshot was a file
+        there, a concurrent process (e.g. a parallel CI list) overwrote it, and
+        this one restored that process's scene or hit JSONDecodeError reading it
+        half-written. $TMPDIR is pointed at a private directory here, so the test
+        cannot disturb a real process.
+        """
+        from pymol import raymol_design
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        # What a concurrent process leaves mid-write under the old shared name.
+        partial = os.path.join(tmpdir, 'raymol_design_snapshot.json')
+        with open(partial, 'w') as f:
+            f.write('{"objects": ["m1"], "col')
+
+        with mock.patch('tempfile.gettempdir', return_value=tmpdir):
+            cmd.reinitialize()
+            cmd.fragment('ala', 'm1')
+            cmd.color('red', 'm1')
+            before = []
+            cmd.iterate('m1', 'before.append(color)', space={'before': before})
+            raymol_design.snapshot_visual_state('m1')
+            cmd.color('blue', 'm1')
+            raymol_design.dim_object('m1', 'gray70', 0.7)
+            raymol_design.restore_visual_state()
+
+        after = []
+        cmd.iterate('m1', 'after.append(color)', space={'after': after})
+        self.assertEqual(before, after)
+        self.assertAlmostEqual(
+            cmd.get_setting_float('transparency', 'm1'), 0.0, places=5)
+        # Nothing written, nothing left behind for another process to read.
+        self.assertEqual(
+            [n for n in os.listdir(tmpdir) if 'snapshot' in n],
+            ['raymol_design_snapshot.json'])
+        with open(partial) as f:
+            self.assertEqual(f.read(), '{"objects": ["m1"], "col')
+
+    def testRestoreWithoutSnapshotChangesNothing(self):
+        from pymol import raymol_design
+        cmd.reinitialize()
+        cmd.fragment('ala', 'm1')
+        cmd.color('red', 'm1')
+        before = []
+        cmd.iterate('m1', 'before.append(color)', space={'before': before})
+        with mock.patch.object(raymol_design, '_SNAPSHOT', None):
+            self.assertEqual(raymol_design.restore_visual_state(),
+                             'DESIGN_RESTORE:ok')
+        after = []
+        cmd.iterate('m1', 'after.append(color)', space={'after': after})
+        self.assertEqual(before, after)
+
     def testColorAndTransparencyRestoredExactly(self):
         cmd.reinitialize()
         cmd.fragment('ala', 'm1')

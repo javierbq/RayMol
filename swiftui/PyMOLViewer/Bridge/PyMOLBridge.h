@@ -58,11 +58,19 @@ int PyMOLBridge_SupportsRayTracing(PyMOLHandle instance);
 // Fires a cmd.set_key binding by its canonical PyMOL key token ("left",
 // "CTRL-T", "ALT-A", "F1"). Returns 1 if a binding existed and was invoked
 // (including when the binding's callable raised — the key is still consumed so
-// it isn't ALSO dispatched to a menu). Returns 0 when the key is unbound, and
-// also 0 when pymol.internal cannot be imported (shutdown / corrupted state) —
+// it isn't ALSO dispatched to a menu). A bare F-key / special-key name with no
+// binding instead recalls the scene or view of that name and counts as fired
+// (#260); arrow keys never fall back. Returns 0 when nothing fired, and also 0
+// when pymol.raymol_keys cannot be imported (shutdown / corrupted state) —
 // in that case no binding could have run, so the key falls through to macOS
 // menus and RayMol's own ⌃M / ⌃D shortcuts keep working (#258).
 int PyMOLBridge_InvokeKey(const char *key);
+// 1 iff `key` is an ALT-/CTSH- token whose binding the user defined (it differs
+// from stock PyMOL's), else 0 — including when pymol.raymol_keys cannot be
+// imported. The key monitor asks this, with "Send Key Bindings to Viewport While
+// Typing" on, before it takes an ALT-/CTSH- event away from the focused command
+// line (#261). Does not invoke anything.
+int PyMOLBridge_IsUserBoundKey(const char *key);
 
 // --- Context management ---
 void PyMOLBridge_PushValidContext(PyMOLHandle instance);
@@ -76,6 +84,14 @@ void PyMOLBridge_RunCommand(const char *command);
 int PyMOLBridge_GetView(PyMOLHandle instance, float *view, int count);
 int PyMOLBridge_SetView(PyMOLHandle instance, const float *view, int count, float animate);
 
+// Roll the camera `degrees` about the view's z axis: exactly cmd.turn('z',
+// degrees) (PyMOL_CmdTurn: SceneRotate under the API lock, as PyMOL_Drag
+// takes it), with no Python source run, so the two-finger twist can call it
+// once per tick (#719). MAIN THREAD ONLY, like GetView/SetView. Returns 1
+// when it turned, 0 for no instance or while a modal draw owns the core
+// (cmd.turn refuses then too).
+int PyMOLBridge_TurnZ(PyMOLHandle instance, float degrees);
+
 // --- Light rig (#611, spec §4.4) ---
 // Direct C++ on the scene's rig (layer1/SceneLights.h): no Python, so one call
 // per drag tick is cheap. MAIN THREAD ONLY, like GetView/SetView, and never
@@ -86,18 +102,19 @@ int PyMOLBridge_SetView(PyMOLHandle instance, const float *view, int count, floa
 // when there is no rig. Free with PyMOLBridge_FreeFeedback.
 char *PyMOLBridge_LightsJSON(PyMOLHandle instance);
 // Set one number field of light `index` (>= 0), or of the rig and its air
-// (index -1): orbit, pitch, radius, beam, softness, warmth, intensity,
+// (index -1): orbit, pitch, radius, beam, softness, size, warmth, intensity,
 // highlight, falloff, shadow, outline, anchor (0 camera, 1 pin where it is
 // now), aim (0 centre, 1 point); enabled, ambient, classic, haze, dust,
-// dust_size, dust_speed, scatter, seed. Numbers are clamped into range.
+// dust_size, dust_speed, scatter, seed, dust_glow, dust_opacity. Numbers are clamped into range.
 // Returns a PYMOL_LIGHT_SET_* code; the rig is unchanged unless it is OK.
 int PyMOLBridge_LightSet(PyMOLHandle instance, int index, const char *field, double value);
 // Set one vector field of light `index`: color (sRGB 0..1), aim_point (world
 // Å; aims the light at it) or position (world Å; pins the light there).
 int PyMOLBridge_LightSetVector(PyMOLHandle instance, int index, const char *field, double x, double y, double z);
-// Resolve the rig for the live camera. Fills *rig (when not NULL) and the
-// first min(count, capacity) entries of `lights`; returns the light count, or
-// -1 when there is no rig. PYMOL_LIGHTS_MAX entries always suffice.
+// Resolve the rig for the live camera, including each light's shadow-map
+// slot (#673). Fills *rig (when not NULL) and the first min(count, capacity)
+// entries of `lights`; returns the light count, or -1 when there is no rig.
+// PYMOL_LIGHTS_MAX entries always suffice.
 int PyMOLBridge_LightsEyeSpace(PyMOLHandle instance, PyMOLLightRigEye *rig, PyMOLLightEye *lights, int capacity);
 
 // --- The rig's air (#618) ---
@@ -111,6 +128,9 @@ int PyMOLBridge_LightsEyeSpace(PyMOLHandle instance, PyMOLLightRigEye *rig, PyMO
 // movie plays), never while a movie export renders off-main. Named outside
 // PyMOLBridge_Light*, whose set lighting_bridge.py pins.
 int PyMOLBridge_AirAnimating(PyMOLHandle instance);
+
+// Document-generation counter (#649); 0 when there is no instance.
+unsigned PyMOLBridge_DocumentGeneration(PyMOLHandle instance);
 
 // Tab autocomplete: runs PyMOL's own command-line completion (cmd._parser.complete)
 // on the current input and returns the completed string (extended to the
@@ -136,10 +156,14 @@ void PyMOLBridge_SetupMetalRenderer(PyMOLHandle instance, void *mtkView);
 // writes to the drawable, so asking for it earlier just parked the main thread
 // in `currentDrawable` (and stalled input) for as long as the GPU was behind.
 //
+// airTick = 1 when the frame renders only because the dust moves (MetalViewport's
+// airDue); such a frame may re-run only the post chain from the kept pre-air
+// image (#685).
+//
 // Returns 1 if a frame was presented, 0 if the drawable never arrived (the
 // offscreen work is still committed; the caller should render again) or if
 // there is no renderer yet.
-int PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *mtkView, int width, int height);
+int PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *mtkView, int width, int height, int airTick);
 
 // Live Metal frames committed but not yet completed on the GPU. The render loop
 // skips a tick above a small cap so the late currentDrawable wait stays short.
@@ -209,6 +233,10 @@ int PyMOLBridge_SurfacePickRelease(PyMOLHandle instance);
 // as set by PyMOLBridge_SetLetterboxAspect; 0 = the scene fills the view (also
 // when there is no renderer yet).
 float PyMOLBridge_GetLetterboxAspect(PyMOLHandle instance);
+// The number of grid_mode cells the scene lays out (SceneGetGridSize, grid_max applied), or 0 when
+// grid_mode is off, on a null handle or before the core is up (#697). The grid is drawn only when
+// this is above 1. Plain C++, no Python; main thread only (it walks the scene's objects).
+int PyMOLBridge_GridSize(PyMOLHandle instance);
 
 // --- Getters ---
 void *PyMOLBridge_GetGlobals(PyMOLHandle instance);

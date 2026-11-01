@@ -48,6 +48,18 @@ tested by hand.
        -configuration Debug -destination 'platform=macOS' build
    ```
 
+   **Stale-core guard.** The Xcode project links whatever `libpymol_core.a`
+   already exists, so a pre-build phase (`scripts/check_core_fresh.sh`) fails
+   the build with `libpymol_core.a is stale: run swiftui/build_macos.sh` when
+   the C++ sources (`layer*/`, `ov/`, `contrib/`, `include/`, `appkit/`,
+   shaders) differ from what the core was built from. `build_macos.sh` /
+   `build_ios.sh` write that fingerprint and the core's git SHA to
+   `core_sha.txt` next to the library; the SHA also appears in the console
+   banner (`core 1fc5fc983`). It compares file *contents*, so Swift-only
+   edits, `touch` and fresh git worktrees do not trip it. Bypass it with
+   `RAYMOL_SKIP_CORE_CHECK=1` (env var, or `xcodebuild ... RAYMOL_SKIP_CORE_CHECK=1`).
+   A core built before stamping existed only warns until it is rebuilt.
+
 ## Package-manager portability
 
 `swiftui/PyMOLBridge.xcconfig` (the Xcode-side build settings) and

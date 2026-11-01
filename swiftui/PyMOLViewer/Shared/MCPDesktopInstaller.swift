@@ -52,7 +52,9 @@ enum MCPDesktopInstaller {
             "name": "raymol",
             "display_name": "RayMol",
             "version": "1.0.0",
-            "description": "Drive the RayMol molecular viewer over its built-in MCP server.",
+            "description": "Drive the RayMol molecular viewer over its built-in MCP server: "
+                + "PyMOL commands plus RayMol's studio lighting, materials, Metal rendering "
+                + "and on-device structure prediction.",
             "author": ["name": "RayMol"],
             "server": [
                 "type": "binary",

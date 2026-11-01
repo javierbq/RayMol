@@ -331,6 +331,29 @@ class TestBarCommands(ModeCase):
         self.assertIn('lights: add', text)
         self.assertEqual(lighting._lights_json(), before)
 
+    def testRenameCommandString(self):
+        """The inspector's Rename (#797, LightsAction.rename): one command,
+        one edit; the light keeps its place and its other fields."""
+        do('lights three_point')
+        before = lighting.get_lights()
+        do('lights fill, name=rim_light')
+        after = lighting.get_lights()
+        self.assertEqual(self.names(), ['key', 'rim_light', 'rim'])
+        self.assertEqual(dict(after['lights'][1], name='fill'),
+                         before['lights'][1])
+        # a name the app refuses is refused by the core too (one printed
+        # error, the rig unchanged)
+        for text in ('rim', 'RIM', 'neon', 'three_point', 'off', 'Add',
+                     '9lives', 'a-b', 'x' * 33):
+            with self.subTest(text):
+                kept = lighting._lights_json()
+                self.assertIn('lights: rim_light', do(
+                    'lights rim_light, name=%s' % text))
+                self.assertEqual(lighting._lights_json(), kept)
+        # the case of its own name may change
+        do('lights rim_light, name=Rim_Light')
+        self.assertEqual(self.names(), ['key', 'Rim_Light', 'rim'])
+
     def testRemoveTheLastLightLeavesAnEmptyRig(self):
         """What the bar shows after − on the only light: an empty, off rig
         (the chips area reads "No lights")."""
@@ -428,6 +451,15 @@ class TestSwiftSource(testing.PyMOLTestCase):
             self.skipTest('%s not present; not a repo checkout' % rel)
         with open(path, encoding='utf-8') as handle:
             return handle.read()
+
+    def testRenameReservedWordsMatchTheCore(self):
+        """LightsAction.reservedNames (the inspector's inline check) is the
+        core's keyword list; the preset names come from the core's menu."""
+        text = strip_comments(self.read(ENGINE))
+        found = re.search(r'static\s+let\s+reservedNames\s*=\s*\[([^\]]*)\]', text)
+        self.assertIsNotNone(found, 'LightsAction.reservedNames not found')
+        words = re.findall(r'"([^"]*)"', found.group(1))
+        self.assertEqual(words, list(lighting_commands.KEYWORDS))
 
     def testControllerAndBarRunNoPython(self):
         for rel in NO_PYTHON_SOURCES:
