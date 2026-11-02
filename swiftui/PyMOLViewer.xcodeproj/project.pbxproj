@@ -199,6 +199,7 @@
 		8BB63E3CB5D2F5721A15E61B /* whatsnew-1110-colormenu.png in Resources */ = {isa = PBXBuildFile; fileRef = CC71792A917723EA5E462007 /* whatsnew-1110-colormenu.png */; };
 		8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */; };
 		8C4A92BCDC371C53E06902F0 /* LightsGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BF254CC0F7ADEE10473F87A /* LightsGestureUITests.swift */; };
+		8C561D8F15ECB522A86E2B99 /* DisplayScaleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3F7D14D36FF47F64373ABB2 /* DisplayScaleTests.swift */; };
 		8CDF44341FE9E9CB053BFC76 /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		8DC572A1863238F8B919ED70 /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
 		8DD3F322033248C1DAC4F31F /* whatsnew-1130-glycans.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */; };
@@ -526,6 +527,7 @@
 		AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsAtmosphere.swift; sourceTree = "<group>"; };
 		B049A83EEE87CC41BA09889D /* RFD3ResultWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3ResultWriterTests.swift; sourceTree = "<group>"; };
 		B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardDismissUITests.swift; sourceTree = "<group>"; };
+		B3F7D14D36FF47F64373ABB2 /* DisplayScaleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayScaleTests.swift; sourceTree = "<group>"; };
 		B402EB5834127D4E6B217EFE /* whatsnew-1110-raytrace.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1110-raytrace.mp4"; sourceTree = "<group>"; };
 		B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignInferenceSmokeTests.swift; sourceTree = "<group>"; };
 		B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayout.swift; sourceTree = "<group>"; };
@@ -851,6 +853,7 @@
 				D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */,
 				EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */,
 				FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */,
+				B3F7D14D36FF47F64373ABB2 /* DisplayScaleTests.swift */,
 				3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */,
 				AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
@@ -1083,10 +1086,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
-				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
 				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
+				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
+				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -1731,6 +1734,7 @@
 				6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */,
 				917ABB57816FDCD8B1D1E9CE /* DesignSizeGuardTests.swift in Sources */,
 				D0505F6B98C64B96BE87A753 /* DesignTargetSelectionTests.swift in Sources */,
+				8C561D8F15ECB522A86E2B99 /* DisplayScaleTests.swift in Sources */,
 				FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */,
 				C98E23FB46AC666B6D1B5A72 /* InferenceRouterTests.swift in Sources */,
 				57E2333020DE9DC8910BDC3E /* InteractionModeExitTests.swift in Sources */,

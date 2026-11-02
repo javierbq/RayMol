@@ -242,6 +242,19 @@ void PyMOLBridge_Reshape(PyMOLHandle h, int width, int height)
     if (h) PyMOL_Reshape(INST(h), width, height, 0);
 }
 
+void PyMOLBridge_SetDisplayScale(PyMOLHandle h, int scale)
+{
+    if (!h || scale < 1) return;
+    PyMOLGlobals* G = PyMOL_GetGlobals(INST(h));
+    if (!G || SettingGetGlobal_i(G, cSetting_display_scale_factor) == scale)
+        return;
+    // Through the cmd path so the setting's side effects run: they update
+    // _gScaleFactor and rebuild label textures at the new size.
+    char val[8];
+    snprintf(val, sizeof(val), "%d", scale);
+    PyMOL_CmdSet(INST(h), "display_scale_factor", val, "", -1, 1, 1);
+}
+
 int PyMOLBridge_GetRedisplay(PyMOLHandle h, int reset)
 {
     return h ? PyMOL_GetRedisplay(INST(h), reset) : 0;

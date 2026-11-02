@@ -5334,6 +5334,20 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_Reshape(inst, Int32(width), Int32(height))
     }
 
+    // Last backing scale handed to the core, so the per-tick call is one compare.
+    private var appliedDisplayScale = 0
+
+    /// Match the core's display_scale_factor to the viewport screen's backing
+    /// scale (2 on Retina, 3 on most iPhones). label_size is in points, so
+    /// without this Retina labels render at half size. Called every render
+    /// tick: it also follows the window between Retina and 1x displays.
+    func syncDisplayScale(_ scale: CGFloat) {
+        let s = Int(scale.rounded())
+        guard s >= 1, s != appliedDisplayScale, let inst = instance else { return }
+        appliedDisplayScale = s
+        PyMOLBridge_SetDisplayScale(inst, Int32(s))
+    }
+
 #if DEBUG
     /// What the viewport hands the core for a pointer: a PyMOL button or
     /// drag event (the camera path), or a click's atom pick.
