@@ -357,6 +357,92 @@ final class AnalysisNotesStoreTests: XCTestCase {
                        [.code(lines: ["# not a heading", "- not a bullet"])])
     }
 
+    func testMarkdownParserReadsPipeTableWithAlignments() {
+        let markdown = """
+        3 positions at 100%: **C50**, **C98**.
+        | Pos | WT | #Mut | Frac | Observed AAs (count) |
+        |----:|:--:|-----:|-----:|:---------------------|
+        | 1 | S | 18 | 18% | D(5) N(5) M(3) |
+        | 2 | L | 47 | 48% | E(23) K(8) |
+
+        After the table.
+        """
+
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: markdown), [
+            .paragraph(text: "3 positions at 100%: **C50**, **C98**."),
+            .table(alignments: [.trailing, .center, .trailing, .trailing, .leading],
+                   header: ["Pos", "WT", "#Mut", "Frac", "Observed AAs (count)"],
+                   rows: [["1", "S", "18", "18%", "D(5) N(5) M(3)"],
+                          ["2", "L", "47", "48%", "E(23) K(8)"]]),
+            .paragraph(text: "After the table.")
+        ])
+    }
+
+    func testMarkdownParserReadsTableWithoutOuterPipesAndPadsRaggedRows() {
+        let markdown = """
+        Chain | Role
+        --- | ---
+        A | design | extra
+        B |
+        """
+
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: markdown), [
+            .table(alignments: [.leading, .leading],
+                   header: ["Chain", "Role"],
+                   rows: [["A", "design"], ["B", ""]])
+        ])
+    }
+
+    func testMarkdownParserEndsTableAtLineWithoutPipeAndKeepsEscapedPipes() {
+        let markdown = """
+        | Chain | Role |
+        |---|---|
+        | A | design \\| binder |
+        not a row
+        """
+
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: markdown), [
+            .table(alignments: [.leading, .leading],
+                   header: ["Chain", "Role"],
+                   rows: [["A", "design | binder"]]),
+            .paragraph(text: "not a row")
+        ])
+    }
+
+    func testMarkdownParserNeedsDelimiterRowForTable() {
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: "a | b\nc | d"),
+                       [.paragraph(text: "a | b\nc | d")])
+        // Header and delimiter must agree on the column count.
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: "a | b\n--- | --- | ---"),
+                       [.paragraph(text: "a | b\n--- | --- | ---")])
+    }
+
+    func testMarkdownParserKeepsTableSyntaxInsideFencedCode() {
+        let markdown = "```\n| a | b |\n|---|---|\n```"
+
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: markdown),
+                       [.code(lines: ["| a | b |", "|---|---|"])])
+    }
+
+    @MainActor
+    func testHTMLAndPDFExportsRenderTables() {
+        let store = AnalysisNotesStore(debounceInterval: 60)
+        store.text = "# Mutations\n| Pos | AAs |\n|--:|:--|\n| 1 | D<5> |\n| 2 | E(23) |\nDone."
+
+        let html = store.exportHTML()
+        XCTAssertTrue(html.contains("<table>"), html)
+        XCTAssertTrue(html.contains("<th style=\"text-align:right\">Pos</th>"), html)
+        XCTAssertTrue(html.contains("<td style=\"text-align:left\">D&lt;5&gt;</td>"), html)
+        XCTAssertFalse(html.contains("|--:|"), html)
+        XCTAssertTrue(html.contains("<p>Done.</p>"), html)
+
+        let pdf = store.exportPDFData()
+        XCTAssertTrue(String(data: pdf.prefix(4), encoding: .ascii)?.hasPrefix("%PDF") == true)
+        if let path = ProcessInfo.processInfo.environment["RAYMOL_NOTES_TABLE_PDF_QA"] {
+            try? pdf.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+    }
+
     // MARK: Notes fullscreen cover command routing (#631)
 
     @MainActor

@@ -562,7 +562,24 @@ private enum AnalysisNotesExporter {
                      screenshots: [AnalysisNotesStore.ScreenshotAsset],
                      imageURL: (AnalysisNotesStore.ScreenshotAsset) -> URL?) -> String {
         var body = "<h1>\(escape(title))</h1>"
-        for raw in markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var index = 0
+        while index < lines.count {
+            let raw = lines[index]
+            index += 1
+            if let match = AnalysisNoteMarkdownParser.table(at: index - 1, in: lines),
+               case .table(let alignments, let header, let rows) = match.block {
+                index += match.lineCount - 1
+                func row(_ cells: [String], tag: String) -> String {
+                    "<tr>" + zip(cells, alignments).map { cell, alignment in
+                        let text = escape(stripRayMolLinks(readable(cell, bookmarks: bookmarks, screenshots: screenshots)))
+                        return "<\(tag) style=\"text-align:\(cssAlignment(alignment))\">\(text)</\(tag)>"
+                    }.joined() + "</tr>"
+                }
+                body += "<table><thead>\(row(header, tag: "th"))</thead><tbody>"
+                    + rows.map { row($0, tag: "td") }.joined() + "</tbody></table>"
+                continue
+            }
             if let asset = imageAsset(in: raw, screenshots: screenshots),
                let url = imageURL(asset), let data = try? Data(contentsOf: url) {
                 body += "<figure><img src=\"data:image/png;base64,\(data.base64EncodedString())\"><figcaption>\(escape(asset.title))</figcaption></figure>"
@@ -582,7 +599,7 @@ private enum AnalysisNotesExporter {
         }
         return """
         <!doctype html><html><head><meta charset="utf-8"><title>\(escape(title))</title>
-        <style>body{font:16px -apple-system,BlinkMacSystemFont,sans-serif;line-height:1.5;max-width:780px;margin:48px auto;padding:0 28px;color:#18202a}h1{border-bottom:2px solid #d9e0e8;padding-bottom:12px}h2{margin-top:32px}.bullet{margin-left:18px}.space{height:10px}figure{margin:28px 0}img{max-width:100%;border-radius:8px}figcaption{color:#657080;font-size:13px;margin-top:6px}</style>
+        <style>body{font:16px -apple-system,BlinkMacSystemFont,sans-serif;line-height:1.5;max-width:780px;margin:48px auto;padding:0 28px;color:#18202a}h1{border-bottom:2px solid #d9e0e8;padding-bottom:12px}h2{margin-top:32px}.bullet{margin-left:18px}.space{height:10px}figure{margin:28px 0}img{max-width:100%;border-radius:8px}figcaption{color:#657080;font-size:13px;margin-top:6px}table{border-collapse:collapse;margin:14px 0;font-size:14px;font-variant-numeric:tabular-nums}th,td{border:1px solid #d9e0e8;padding:4px 9px;vertical-align:top}th{background:#f3f6f9}</style>
         </head><body>\(body)</body></html>
         """
     }
@@ -644,9 +661,91 @@ private enum AnalysisNotesExporter {
             context.textPosition = CGPoint(x: x, y: baseline); CTLineDraw(line, context)
         }
 
+        func cellText(_ value: String, bold: Bool, alignment: AnalysisNoteTableAlignment) -> NSAttributedString {
+            let font = CTFontCreateWithName(bold ? "Helvetica-Bold" as CFString : "Helvetica" as CFString, 9.5, nil)
+            var textAlignment: CTTextAlignment = alignment == .center ? .center : alignment == .trailing ? .right : .left
+            let style = withUnsafeBytes(of: &textAlignment) { bytes -> CTParagraphStyle in
+                var setting = CTParagraphStyleSetting(spec: .alignment, valueSize: bytes.count,
+                                                      value: bytes.baseAddress!)
+                return CTParagraphStyleCreate(&setting, 1)
+            }
+            return NSAttributedString(string: value, attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0.08, alpha: 1),
+                NSAttributedString.Key(kCTParagraphStyleAttributeName as String): style
+            ])
+        }
+        func textSize(_ value: NSAttributedString, width: CGFloat) -> CGSize {
+            CTFramesetterSuggestFrameSizeWithConstraints(CTFramesetterCreateWithAttributedString(value), CFRange(), nil,
+                                                         CGSize(width: width, height: .greatestFiniteMagnitude), nil)
+        }
+        func drawTable(alignments: [AnalysisNoteTableAlignment], header: [String], rows: [[String]]) {
+            let padding: CGFloat = 4
+            let cells = ([header] + rows).enumerated().map { index, row in
+                row.indices.map { column in
+                    cellText(stripRayMolLinks(readable(row[column], bookmarks: bookmarks, screenshots: screenshots)),
+                             bold: index == 0, alignment: alignments[column])
+                }
+            }
+            // Columns take their natural width. When the table is wider than the
+            // page, columns under an even share keep theirs and the wide ones
+            // split what is left in proportion, so only they wrap.
+            let available = mediaBox.width - margin * 2
+            let natural = header.indices.map { column in
+                (cells.map { ceil(textSize($0[column], width: .greatestFiniteMagnitude).width) }.max() ?? 0) + padding * 2
+            }
+            var widths = natural
+            if natural.reduce(0, +) > available {
+                let share = available / CGFloat(natural.count)
+                let narrow = natural.filter { $0 <= share }.reduce(0, +)
+                let wide = natural.filter { $0 > share }.reduce(0, +)
+                widths = natural.map { $0 <= share ? $0 : $0 / wide * (available - narrow) }
+            }
+            let tableWidth = widths.reduce(0, +)
+
+            func drawRow(_ row: [NSAttributedString], isHeader: Bool) {
+                let height = row.indices.map {
+                    ceil(textSize(row[$0], width: widths[$0] - padding * 2).height)
+                }.max().map { $0 + padding * 2 } ?? 0
+                if y - height < margin {
+                    endPage(); beginPage()
+                    if !isHeader { drawRow(cells[0], isHeader: true) }
+                }
+                if isHeader {
+                    context.setFillColor(CGColor(gray: 0.95, alpha: 1))
+                    context.fill(CGRect(x: margin, y: y - height, width: tableWidth, height: height))
+                }
+                var x = margin
+                for column in row.indices {
+                    let rect = CGRect(x: x + padding, y: y - height, width: widths[column] - padding * 2,
+                                      height: height - padding)
+                    CTFrameDraw(CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(row[column]),
+                                                         CFRange(), CGPath(rect: rect, transform: nil), nil), context)
+                    x += widths[column]
+                }
+                y -= height
+                context.setStrokeColor(CGColor(gray: isHeader ? 0.7 : 0.86, alpha: 1))
+                context.move(to: CGPoint(x: margin, y: y)); context.addLine(to: CGPoint(x: margin + tableWidth, y: y)); context.strokePath()
+            }
+
+            y -= 4
+            for (index, row) in cells.enumerated() { drawRow(row, isHeader: index == 0) }
+            y -= 10
+        }
+
         beginPage()
         drawText(title, size: 25, bold: true, spacing: 18)
-        for raw in markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var index = 0
+        while index < lines.count {
+            let raw = lines[index]
+            index += 1
+            if let match = AnalysisNoteMarkdownParser.table(at: index - 1, in: lines),
+               case .table(let alignments, let header, let rows) = match.block {
+                index += match.lineCount - 1
+                drawTable(alignments: alignments, header: header, rows: rows)
+                continue
+            }
             if let asset = imageAsset(in: raw, screenshots: screenshots),
                let url = imageURL(asset), let image = cgImage(at: url) {
                 let maxHeight: CGFloat = 270
@@ -695,6 +794,14 @@ private enum AnalysisNotesExporter {
     private static func stripRayMolLinks(_ value: String) -> String {
         value.replacingOccurrences(of: #"\[([^\]]+)\]\(raymol-residue://[^\)]+\)"#,
                                    with: "$1", options: .regularExpression)
+    }
+
+    private static func cssAlignment(_ alignment: AnalysisNoteTableAlignment) -> String {
+        switch alignment {
+        case .leading: return "left"
+        case .center: return "center"
+        case .trailing: return "right"
+        }
     }
 
     private static func escape(_ value: String) -> String {
@@ -811,7 +918,29 @@ enum AnalysisNoteMarkdownBlock: Equatable {
     case quote(text: String)
     case code(lines: [String])
     case rule
+    case table(alignments: [AnalysisNoteTableAlignment], header: [String], rows: [[String]])
     case paragraph(text: String)
+}
+
+/// Column alignment from a table's delimiter row: `:--`, `:-:` or `--:`.
+enum AnalysisNoteTableAlignment: Equatable {
+    case leading, center, trailing
+
+    var horizontal: HorizontalAlignment {
+        switch self {
+        case .leading: return .leading
+        case .center: return .center
+        case .trailing: return .trailing
+        }
+    }
+
+    var text: TextAlignment {
+        switch self {
+        case .leading: return .leading
+        case .center: return .center
+        case .trailing: return .trailing
+        }
+    }
 }
 
 enum AnalysisNoteMarkdownParser {
@@ -831,7 +960,11 @@ enum AnalysisNoteMarkdownParser {
             paragraph.removeAll()
         }
 
-        for line in markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            index += 1
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
             // A fence that is still open when the note ends still renders as
@@ -859,6 +992,13 @@ enum AnalysisNoteMarkdownParser {
                 blocks.append(.heading(
                     level: hashes,
                     text: String(trimmed.dropFirst(hashes + 1)).trimmingCharacters(in: .whitespaces)))
+                continue
+            }
+
+            if let match = table(at: index - 1, in: lines) {
+                flushParagraph()
+                blocks.append(match.block)
+                index += match.lineCount - 1
                 continue
             }
 
@@ -898,6 +1038,78 @@ enum AnalysisNoteMarkdownParser {
         if let open = fence { blocks.append(.code(lines: open)) }
         flushParagraph()
         return blocks
+    }
+
+    /// A pipe table starting at `start`: a header row, a delimiter row with the
+    /// same column count, then every following line that holds a pipe. Returns
+    /// the block and how many lines it spans. A table interrupts a paragraph, so
+    /// one typed straight under a sentence still renders. Shared with the
+    /// HTML/PDF exporters, which read the note line by line.
+    static func table(at start: Int, in lines: [String]) -> (block: AnalysisNoteMarkdownBlock, lineCount: Int)? {
+        guard start + 1 < lines.count, lines[start].contains("|"),
+              let alignments = delimiterAlignments(lines[start + 1]) else { return nil }
+        let header = cells(of: lines[start])
+        guard header.count == alignments.count else { return nil }
+
+        var rows: [[String]] = []
+        var end = start + 2
+        while end < lines.count {
+            let row = lines[end].trimmingCharacters(in: .whitespaces)
+            guard !row.isEmpty, row.contains("|") else { break }
+            let values = cells(of: row)
+            rows.append((0..<header.count).map { $0 < values.count ? values[$0] : "" })
+            end += 1
+        }
+        return (.table(alignments: alignments, header: header, rows: rows), end - start)
+    }
+
+    /// Cells of one table row. One leading and one trailing pipe are optional;
+    /// `\|` is a literal pipe inside a cell.
+    private static func cells(of line: String) -> [String] {
+        var row = line.trimmingCharacters(in: .whitespaces)
+        if row.hasPrefix("|") { row.removeFirst() }
+        if row.hasSuffix("|") && !row.hasSuffix("\\|") { row.removeLast() }
+
+        var cells: [String] = []
+        var current = ""
+        var escaped = false
+        for character in row {
+            if escaped {
+                if character != "|" { current.append("\\") }
+                current.append(character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if character == "|" {
+                cells.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        if escaped { current.append("\\") }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
+    /// Alignments of a delimiter row such as `|---:|:--:|`, or nil when the
+    /// line is not one. Each cell needs at least one dash.
+    private static func delimiterAlignments(_ line: String) -> [AnalysisNoteTableAlignment]? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.contains("-"),
+              trimmed.allSatisfy({ "|:- \t".contains($0) }) else { return nil }
+        // A bare `---` is a rule, not a one-column table.
+        guard trimmed.contains("|") || trimmed.contains(":") else { return nil }
+        var alignments: [AnalysisNoteTableAlignment] = []
+        for cell in cells(of: trimmed) {
+            guard cell.contains("-"), cell.dropFirst().dropLast().allSatisfy({ $0 == "-" }) else { return nil }
+            switch (cell.hasPrefix(":"), cell.hasSuffix(":")) {
+            case (true, true): alignments.append(.center)
+            case (false, true): alignments.append(.trailing)
+            default: alignments.append(.leading)
+            }
+        }
+        return alignments
     }
 
     /// Three or more of the same rule character, ignoring spaces between them.
@@ -959,11 +1171,42 @@ struct AnalysisNoteBlockView: View {
                 .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
         case .rule:
             Divider().padding(.vertical, 3)
+        case .table(let alignments, let header, let rows):
+            table(alignments: alignments, header: header, rows: rows)
         case .paragraph(let text):
             Text(inlineMarkdown(text))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func table(alignments: [AnalysisNoteTableAlignment], header: [String],
+                       rows: [[String]]) -> some View {
+        let lines = [header] + rows
+        return AnalysisNoteTableLayout(alignments: alignments) {
+            ForEach(lines.indices, id: \.self) { row in
+                ForEach(lines[row].indices, id: \.self) { column in
+                    tableCell(lines[row][column], alignment: alignments[column], isHeader: row == 0)
+                }
+                if row < lines.count - 1 {
+                    Divider().opacity(row == 0 ? 1 : 0.5)
+                }
+            }
+        }
+        .font(.system(size: max(10, fontSize - 1)))
+        .monospacedDigit()
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+    }
+
+    private func tableCell(_ text: String, alignment: AnalysisNoteTableAlignment,
+                           isHeader: Bool) -> some View {
+        Text(inlineMarkdown(text))
+            .fontWeight(isHeader ? .semibold : .regular)
+            .multilineTextAlignment(alignment.text)
+            .textSelection(.enabled)
     }
 
     private func listRow(depth: Int, marker: Text, text: String) -> some View {
@@ -1002,6 +1245,95 @@ struct AnalysisNoteBlockView: View {
         )
         return (try? AttributedString(markdown: source, options: options))
             ?? AttributedString(source)
+    }
+}
+
+/// Lays out a note table: each row's cells, then a divider before the next
+/// row. `Grid` sizes wrapping text badly (rows come out far too tall), so the
+/// columns are measured here. Columns take their natural width; when the table
+/// is wider than the panel, columns under an even share keep theirs and the
+/// wide ones split what is left, so only they wrap — the same rule as the PDF.
+struct AnalysisNoteTableLayout: Layout {
+    let alignments: [AnalysisNoteTableAlignment]
+    var columnSpacing: CGFloat = 12
+    var rowSpacing: CGFloat = 4
+
+    private struct Metrics {
+        var widths: [CGFloat]
+        var rowHeights: [CGFloat]
+        var dividerHeight: CGFloat
+    }
+
+    private var columns: Int { alignments.count }
+
+    private func rowCount(_ subviews: Subviews) -> Int {
+        (subviews.count + 1) / (columns + 1)
+    }
+
+    private func cell(_ row: Int, _ column: Int, in subviews: Subviews) -> LayoutSubview {
+        subviews[row * (columns + 1) + column]
+    }
+
+    private func metrics(width: CGFloat?, subviews: Subviews) -> Metrics {
+        let rows = rowCount(subviews)
+        let natural = (0..<columns).map { column in
+            (0..<rows).map { ceil(cell($0, column, in: subviews).sizeThatFits(.unspecified).width) }.max() ?? 0
+        }
+        var widths = natural
+        let available = (width ?? .infinity) - columnSpacing * CGFloat(columns - 1)
+        if natural.reduce(0, +) > available {
+            let share = available / CGFloat(columns)
+            let narrow = natural.filter { $0 <= share }.reduce(0, +)
+            let wide = natural.filter { $0 > share }.reduce(0, +)
+            widths = natural.map { $0 <= share ? $0 : max(share, $0 / wide * (available - narrow)) }
+        }
+        let rowHeights = (0..<rows).map { row in
+            (0..<columns).map { column in
+                cell(row, column, in: subviews)
+                    .sizeThatFits(ProposedViewSize(width: widths[column], height: nil)).height
+            }.max() ?? 0
+        }
+        let dividerHeight = rows > 1
+            ? subviews[columns].sizeThatFits(ProposedViewSize(width: widths.reduce(0, +), height: nil)).height
+            : 0
+        return Metrics(widths: widths, rowHeights: rowHeights, dividerHeight: dividerHeight)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard columns > 0 else { return .zero }
+        let metrics = metrics(width: proposal.width, subviews: subviews)
+        let gaps = CGFloat(max(0, metrics.rowHeights.count - 1))
+        return CGSize(width: metrics.widths.reduce(0, +) + columnSpacing * CGFloat(columns - 1),
+                      height: metrics.rowHeights.reduce(0, +) + gaps * (metrics.dividerHeight + rowSpacing * 2))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard columns > 0 else { return }
+        let metrics = metrics(width: bounds.width, subviews: subviews)
+        let tableWidth = metrics.widths.reduce(0, +) + columnSpacing * CGFloat(columns - 1)
+        var y = bounds.minY
+        for row in metrics.rowHeights.indices {
+            var x = bounds.minX
+            for column in 0..<columns {
+                let width = metrics.widths[column]
+                let (anchor, anchorX): (UnitPoint, CGFloat) = switch alignments[column] {
+                case .leading: (.topLeading, x)
+                case .center: (.top, x + width / 2)
+                case .trailing: (.topTrailing, x + width)
+                }
+                cell(row, column, in: subviews).place(at: CGPoint(x: anchorX, y: y), anchor: anchor,
+                                                      proposal: ProposedViewSize(width: width, height: nil))
+                x += width + columnSpacing
+            }
+            y += metrics.rowHeights[row]
+            if row < metrics.rowHeights.count - 1 {
+                y += rowSpacing
+                subviews[row * (columns + 1) + columns].place(
+                    at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading,
+                    proposal: ProposedViewSize(width: tableWidth, height: metrics.dividerHeight))
+                y += metrics.dividerHeight + rowSpacing
+            }
+        }
     }
 }
 
