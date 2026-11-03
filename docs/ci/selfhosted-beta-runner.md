@@ -100,6 +100,13 @@ The `Keep logs` step uploads the full `archive.log`, `export.log` and
 - **Side effects on puma:** `ci_post_clone.sh` runs `brew install` on a fixed
   set of packages and turns off Xcode's plugin/macro fingerprint validation
   through `defaults`. That setting also affects interactive Xcode use on puma.
+- **The ASC client venv heals itself.** `~/.raymol-beta-venv` (PyJWT +
+  cryptography for the `asc_*.py` scripts) is always built by
+  `/usr/bin/python3`, Xcode's 3.9. Each run reuses it only if
+  `bin/python` starts and reports that same interpreter. Otherwise the run
+  rebuilds it with `venv --clear`. A Homebrew upgrade or an Xcode move
+  therefore costs one rebuild and no failed night. Never build this venv by
+  hand with another Python. If you do, the next run rebuilds it anyway.
 
 ## Troubleshooting
 

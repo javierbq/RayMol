@@ -72,10 +72,23 @@ jobs:
 
       - name: Python venv for the ASC client (idempotent)
         if: steps.skip.outputs.skip != 'true'
+        # The venv is built only by this one pinned interpreter (Xcode's 3.9,
+        # what python3 resolves to on the runner PATH) and only from scratch
+        # (--clear). Re-running `venv` over an existing venv made by another
+        # Python leaves a mix (3.9 pyvenv.cfg, bin/python3 -> Homebrew 3.14)
+        # that dies when Homebrew moves its opt link. So: reuse the venv only
+        # if it runs and is on the pinned interpreter, else rebuild it.
         run: |
           set -euo pipefail
-          python3 -m venv "$HOME/.raymol-beta-venv"
-          "$HOME/.raymol-beta-venv/bin/pip" install -q --disable-pip-version-check PyJWT cryptography
+          PY=/usr/bin/python3
+          VENV="$HOME/.raymol-beta-venv"
+          want="$("$PY" -c 'import sys; print(sys.base_prefix)')"
+          have="$("$VENV/bin/python" -c 'import sys; print(sys.base_prefix)' 2>/dev/null || true)"
+          if [ "$have" != "$want" ]; then
+            echo "venv at $VENV is missing, broken or on another Python (${have:-none}); rebuilding with $PY ($want)"
+            "$PY" -m venv --clear "$VENV"
+          fi
+          "$VENV/bin/python" -m pip install -q --disable-pip-version-check PyJWT cryptography
 
       - name: Next build number (max in App Store Connect + 1)
         id: num
