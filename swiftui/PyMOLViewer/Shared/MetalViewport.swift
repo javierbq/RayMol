@@ -901,6 +901,13 @@ extension MetalViewport {
             // then run PyMOL's idle work (advances movies/animations and sets the
             // redisplay flag).
             engine.setupMetalRenderer(view: view)
+            // Labels and other DIP2PIXEL metrics follow the screen's backing
+            // scale; re-checked every tick so a move between displays applies.
+            #if os(iOS)
+            engine.syncDisplayScale(view.contentScaleFactor)
+            #else
+            if let scale = view.window?.backingScaleFactor { engine.syncDisplayScale(scale) }
+            #endif
             // Ray tracing makes frames GPU-bound far below 120 Hz; drop the tick
             // rate so the surplus ticks stop costing a PyMOL_Idle each (#396).
             // Cheap and idempotent, so it can ride along on every tick.

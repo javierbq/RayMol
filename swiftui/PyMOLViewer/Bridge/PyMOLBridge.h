@@ -25,6 +25,10 @@ void PyMOLBridge_Stop(PyMOLHandle instance);
 int  PyMOLBridge_Idle(PyMOLHandle instance);
 void PyMOLBridge_Draw(PyMOLHandle instance);
 void PyMOLBridge_Reshape(PyMOLHandle instance, int width, int height);
+// Device pixels per point of the viewport's screen (2 on Retina). Sets the core's
+// display_scale_factor, which sizes labels (label_size is in points) and other
+// DIP2PIXEL metrics; without it Retina labels render at half size.
+void PyMOLBridge_SetDisplayScale(PyMOLHandle instance, int scale);
 int  PyMOLBridge_GetRedisplay(PyMOLHandle instance, int reset);
 
 // --- Input ---
