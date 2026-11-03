@@ -1177,9 +1177,11 @@ ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
 # Master 83dd31bbe, the same digest (comments stripped, whitespace removed,
 # sha256, 16 hex digits) of `enum RenderGate {...}` (signature included) and
 # of draw(in:)'s body; draw(in:) on this branch with the air's three edits
-# undone (AIR_DRAW_EDITS).
+# undone (AIR_DRAW_EDITS). MASTER_DRAW was re-taken for #921, whose Retina
+# display-scale sync (engine.syncDisplayScale) is the only other change to
+# draw(in:) since 83dd31bbe.
 MASTER_RENDER_GATE = '2d8f135d3658785a'
-MASTER_DRAW = '83fc4b2d4ba500a9'
+MASTER_DRAW = '6418143462c14076'
 AIR_DRAW_EDITS = (
     (re.compile(r'let airDue = !pending && !forceRedraw && hasRenderedOnce\s*'
                 r'&& airTickDue\(view: view, engine: engine\)'), ''),
