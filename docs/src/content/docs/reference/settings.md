@@ -211,3 +211,4 @@ set surface_clip_front, 0.45, my_protein
 | :--- | :--- | :--- | :--- | :--- |
 | `grid_mode` | integer | `0` | Global | Standard PyMOL setting, listed because the Metal viewport honours it per cell. Toggles tiled grid view: `0` (off), `1` (by object), `2` (by state), `3` (both). |
 | `metal_gpu_timing` | integer | `0` | Global | GPU timing diagnostics logged to console: `0` (off), `1` (one-second summary window), `2` (per-frame statistics). |
+| `metal_gpu_cache_mb` | integer | `0` | Global | Memory (MB) kept for geometry that is not on screen — hidden objects and the other states of a multi-state object such as a morph or trajectory. Applies separately to the renderer's GPU copies and to the cartoons' shader-ready copies; past it, what was drawn least recently is freed and rebuilt when next shown. `0` = platform default (1024 macOS / 256 iOS); below `0` = no limit. What is on screen is always kept. |

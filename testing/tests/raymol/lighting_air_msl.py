@@ -144,8 +144,8 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 # taken out (AIR_STATEMENTS).
 MASTER_FUNCTIONS = {
     ('RendererMetal.mm', 'RendererMetal::runPostChain'): 'b143e96513b391bd',  # #689: gradient fog uniforms, screen overlays after the matte; #664: the RT rig composite's shadow variant and its maps; #732: AO in scene units under an HDR rig; #855: binds transparent occurrence and material tables; #735: ACES as the rig's scene-unit curve
-    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'a45b7220f160c07e',  # #665: closes the classic pass's caster view; #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays; #855: clears the transparent material table; #735: ACES as the rig's scene-unit curve
-    ('SceneRender.cpp', 'SceneRenderMetal'): '0a1d6df2f4b2383e',  # #665: the classic pre-pass opens with the light's view; #433/#662: classic pre-pass excludes overlays; #689: draws the bg_gradient
+    ('RendererMetal.mm', 'RendererMetal::beginFrame'): '61c01b17a62dbbf3',  # #665: closes the classic pass's caster view; #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays; #855: clears the transparent material table; #735: ACES as the rig's scene-unit curve; #924: the upload cache's frame clock and budget trim
+    ('SceneRender.cpp', 'SceneRenderMetal'): '5f510e094c9735e0',  # #665: the classic pre-pass opens with the light's view; #433/#662: classic pre-pass excludes overlays; #689: draws the bg_gradient; #924: metal_gpu_cache_mb, cartoon shader-CGO trim before FreeAllVBOs
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
 }
 AIR_STATEMENTS = {

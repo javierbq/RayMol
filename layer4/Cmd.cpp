@@ -83,6 +83,7 @@ Z* -------------------------------------------------------------------
 
 #include "MoleculeExporter.h"
 #include "MetalPick.h"
+#include "RepCartoon.h"
 #include "SurfacePick.h"
 
 #include "GpuFrameTimes.h"
@@ -5771,6 +5772,31 @@ static PyObject* CmdGetGpuFrameStats(PyObject* self, PyObject* args)
   return GpuFrameReportAsPyDict(report);
 }
 
+/// The Metal renderer's GPU upload cache (metal_gpu_cache_mb): a dict with
+/// entries, buffer_bytes, rt_bytes, budget_bytes (0: no limit),
+/// evicted_entries and evicted_bytes; None with no Metal renderer. With trim=1
+/// the budget pass runs first, as at the start of the next frame.
+static PyObject* CmdGetMetalGpuCacheStats(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int trim = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &trim);
+  APIEnterBlocked(G);
+  pymol::Renderer::GpuCacheStats st;
+  const bool have = G->Renderer && G->Renderer->gpuCacheStats(st, trim != 0);
+  const RepCartoonShaderCGOStats cs = RepCartoonGetShaderCGOStats(G);
+  APIExitBlocked(G);
+  if (!have)
+    return APIAutoNone(Py_None);
+  return Py_BuildValue("{s:n,s:n,s:n,s:n,s:K,s:K,s:n,s:n,s:K,s:K}", "entries",
+      (Py_ssize_t) st.entries, "buffer_bytes", (Py_ssize_t) st.bufferBytes,
+      "rt_bytes", (Py_ssize_t) st.rtBytes, "budget_bytes",
+      (Py_ssize_t) st.budgetBytes, "evicted_entries", st.evictedEntries,
+      "evicted_bytes", st.evictedBytes, "cartoon_cgos", (Py_ssize_t) cs.held,
+      "cartoon_cgo_bytes", (Py_ssize_t) cs.heldBytes, "cartoon_cgos_released",
+      cs.released, "cartoon_cgo_bytes_released", cs.releasedBytes);
+}
+
 /// Test-only (#667): the Metal renderer's classic shadow map in bytes; 0 while
 /// it is not allocated, and with no Metal renderer. With release=1 the map is
 /// dropped first (the reply is then 0), so a test can watch the next shadowed
@@ -8166,6 +8192,7 @@ static PyMethodDef Cmd_methods[] = {
   {"gpu_time_summary", CmdGpuTimeSummary, METH_VARARGS},
   {"get_gpu_frame_stats", CmdGetGpuFrameStats, METH_VARARGS},
   {"get_classic_shadow_map_bytes", CmdGetClassicShadowMapBytes, METH_VARARGS},
+  {"get_metal_gpu_cache_stats", CmdGetMetalGpuCacheStats, METH_VARARGS},
   {"get_light_shadow_map_passes", CmdGetLightShadowMapPasses, METH_VARARGS},
   {"gpu_time_replay", CmdGpuTimeReplay, METH_VARARGS},
   /* the air (#618) */

@@ -1856,6 +1856,50 @@ CGO* CGOCombineBeginEnd(const CGO* I, int est, bool do_not_split_lines)
 /**
  * Release all shader resources from this CGO
  */
+/**
+ * Memory a shader CGO holds: its op stream and the CPU copies of the vertex,
+ * index and pick buffers its draw operations reference (what non-GL
+ * renderers upload from). GPU-side copies are not counted.
+ */
+size_t CGOShaderBytes(const CGO* I)
+{
+  if (!I)
+    return 0;
+  size_t bytes = sizeof(float) * I->c;
+  auto buf = [&](size_t id) {
+    if (id)
+      if (auto b = I->G->ShaderMgr->getGPUBuffer(id))
+        bytes += b->cpuDataBytes();
+  };
+  for (auto it = I->begin(); !it.is_stop(); ++it) {
+    switch (it.op_code()) {
+    case CGO_DRAW_CUSTOM: {
+      auto sp = it.cast<cgo::draw::custom>();
+      buf(sp->vboid); buf(sp->iboid); buf(sp->pickvboid);
+    } break;
+    case CGO_DRAW_SPHERE_BUFFERS: {
+      auto sp = it.cast<cgo::draw::sphere_buffers>();
+      buf(sp->vboid); buf(sp->pickvboid);
+    } break;
+    case CGO_DRAW_CYLINDER_BUFFERS: {
+      auto sp = it.cast<cgo::draw::cylinder_buffers>();
+      buf(sp->vboid); buf(sp->iboid); buf(sp->pickvboid);
+    } break;
+    case CGO_DRAW_BUFFERS_NOT_INDEXED: {
+      auto sp = it.cast<cgo::draw::buffers_not_indexed>();
+      buf(sp->vboid); buf(sp->pickvboid);
+    } break;
+    case CGO_DRAW_BUFFERS_INDEXED: {
+      auto sp = it.cast<cgo::draw::buffers_indexed>();
+      buf(sp->vboid); buf(sp->iboid); buf(sp->pickvboid);
+    } break;
+    default:
+      break;
+    }
+  }
+  return bytes;
+}
+
 void CGOFreeVBOs(CGO* I)
 {
   constexpr bool freevbos = true;

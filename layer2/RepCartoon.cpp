@@ -16,6 +16,7 @@ I* Additional authors of this source file include:
 Z* -------------------------------------------------------------------
 */
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <set>
@@ -43,6 +44,8 @@ Z* -------------------------------------------------------------------
 #include "PickAccel.h"
 
 #include "AtomIterators.h"
+#include "Executive.h"
+#include "Scene.h"
 #include "AtomNeighbors.h"
 
 enum {
@@ -89,6 +92,30 @@ struct RepCartoon : Rep {
    * change what is drawn after that, so the pick follows this, not them.
    */
   signed char stdSpheresTessellated = -1;
+
+  /**
+   * CScene::ShaderCGOFrame of the last frame that drew `std`, and what
+   * `std` holds (its op stream and the CPU copies of its vertex/index
+   * buffers), for RepCartoonTrimShaderCGOs.
+   */
+  uint64_t lastDrawnFrame = 0;
+  size_t stdBytes = 0;
+
+  /**
+   * Undo RepCartoonCGOGenerate: free `std` and hand its source back as the
+   * preshader CGO, which the next draw converts again. Only when the
+   * preshader went to `ray` (disposePreshaderCGO's swap), so `ray` IS that
+   * source. The swap keeps the CGO object the pick grid references (#614).
+   * @return false when there is nothing to release
+   */
+  bool releaseStdCGO() {
+    if (!std || preshader || !ray)
+      return false;
+    CGOFree(std);
+    stdBytes = 0;
+    std::swap(ray, preshader);
+    return true;
+  }
 
   /**
    * Free the preshader CGO or move to another owner.
@@ -302,8 +329,12 @@ void RepCartoon::render(RenderInfo* info)
         I->disposePreshaderCGO();
         I->invalidate(cRepInvPurge);
         I->cs->Active[cRepCartoon] = false;
+      } else {
+        I->stdBytes = CGOShaderBytes(I->std);
       }
     }
+
+    I->lastDrawnFrame = SceneGetShaderCGOFrame(G);
 
     if (I->std && CGOHasOperations(I->std)) {
       assert(!I->preshader);
@@ -316,6 +347,76 @@ void RepCartoon::render(RenderInfo* info)
       }
     }
   }
+}
+
+static unsigned long long s_shaderCGOsReleased = 0;
+static unsigned long long s_shaderCGOBytesReleased = 0;
+
+/// Every cartoon rep of every molecular object, with the shader CGO it holds.
+template <class F> static void ForEachCartoonRep(PyMOLGlobals* G, F&& f)
+{
+  ObjectMolecule* obj = nullptr;
+  void* hidden = nullptr;
+  while (ExecutiveIterateObjectMolecule(G, &obj, &hidden)) {
+    for (int s = 0; s < obj->NCSet; ++s) {
+      CoordSet* cs = obj->CSet[s];
+      if (!cs)
+        continue;
+      ::Rep* rep = cs->Rep[cRepCartoon];
+      if (rep && rep->type() == cRepCartoon)
+        f(static_cast<RepCartoon*>(rep));
+    }
+  }
+}
+
+void RepCartoonTrimShaderCGOs(PyMOLGlobals* G, size_t budget, uint64_t frame)
+{
+  struct Held {
+    RepCartoon* rep;
+    uint64_t lastDrawn;
+    size_t bytes;
+  };
+  std::vector<Held> candidates;
+  size_t total = 0;
+  ForEachCartoonRep(G, [&](RepCartoon* rep) {
+    if (!rep->std)
+      return;
+    total += rep->stdBytes;
+    // Not drawn by the last frame (this one has drawn nothing yet), and
+    // releasable: its source CGO is still there to convert again.
+    if (rep->lastDrawnFrame + 2 <= frame && rep->ray && !rep->preshader)
+      candidates.push_back({rep, rep->lastDrawnFrame, rep->stdBytes});
+  });
+  if (total <= budget || candidates.empty())
+    return;
+  std::sort(candidates.begin(), candidates.end(),
+      [](const Held& a, const Held& b) { return a.lastDrawn < b.lastDrawn; });
+  for (const Held& c : candidates) {
+    if (total <= budget)
+      break;
+    // Frees std's GPU buffers through the shader manager's queue, which this
+    // frame drains next (CShaderMgr::FreeAllVBOs), dropping the renderer's
+    // copies of them too.
+    if (c.rep->releaseStdCGO()) {
+      total = c.bytes < total ? total - c.bytes : 0;
+      ++s_shaderCGOsReleased;
+      s_shaderCGOBytesReleased += c.bytes;
+    }
+  }
+}
+
+RepCartoonShaderCGOStats RepCartoonGetShaderCGOStats(PyMOLGlobals* G)
+{
+  RepCartoonShaderCGOStats st;
+  ForEachCartoonRep(G, [&](RepCartoon* rep) {
+    if (rep->std) {
+      ++st.held;
+      st.heldBytes += rep->stdBytes;
+    }
+  });
+  st.released = s_shaderCGOsReleased;
+  st.releasedBytes = s_shaderCGOBytesReleased;
+  return st;
 }
 
 /**

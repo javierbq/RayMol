@@ -2092,6 +2092,11 @@ bool ScenePNG(PyMOLGlobals* G, pymol::zstring_view png, float dpi, int quiet,
 
 
 /*========================================================================*/
+uint64_t SceneGetShaderCGOFrame(PyMOLGlobals* G)
+{
+  return G->Scene ? G->Scene->ShaderCGOFrame : 0;
+}
+
 int SceneGetFrame(PyMOLGlobals * G)
 {
   if(MovieDefined(G))

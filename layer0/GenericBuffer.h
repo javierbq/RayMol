@@ -164,6 +164,10 @@ public:
    * stale vertex data (see CShaderMgr::freeAllGPUBuffers).
    */
   virtual const void* cpuDataPtr() const { return nullptr; }
+  /**
+   * @return Bytes of that CPU-side copy (0 if none).
+   */
+  virtual size_t cpuDataBytes() const { return 0; }
 protected:
   virtual void set_hash_id(size_t id) { _hashid = id; }
 private:

@@ -9,6 +9,7 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include "RepCartoon.h"
 #include "AtomInfo.h"
 #include "CGO.h"
 #include "Control.h"
@@ -2633,6 +2634,16 @@ void SceneRenderMetal(PyMOLGlobals* G)
     OrthoReshape(G, G->Option->winX, G->Option->winY, true);
     metalConfigDone = true;
   }
+
+  // Geometry not being drawn (metal_gpu_cache_mb): cartoons this frame does
+  // not reach release their shader CGOs here, BEFORE the drain below, so the
+  // buffers they free -- and the renderer's copies of them -- go this frame.
+  // The renderer trims its own upload cache in beginFrame.
+  G->Renderer->setGpuCacheBudgetMB(
+      SettingGetGlobal_i(G, cSetting_metal_gpu_cache_mb));
+  ++I->ShaderCGOFrame;
+  if (const size_t budget = G->Renderer->gpuCacheBudgetBytes())
+    RepCartoonTrimShaderCGOs(G, budget, I->ShaderCGOFrame);
 
   // Release the GPU buffer objects freed since the last frame -- the CPU
   // vertex copies Metal draws from and, through invalidateVBOCacheEntry, the

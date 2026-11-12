@@ -163,6 +163,10 @@ class CScene : public Block {
      key itself. LightShadowMapKey is the key of the last frame whose map
      pass ran (empty: none); see SceneRenderLightShadowMaps. */
   unsigned ContentGeneration{};
+  /* Metal scene frames rendered (SceneRenderMetal). Cartoon reps note the
+   * frame that last drew them, so RepCartoonTrimShaderCGOs can release the
+   * shader-ready copy of a state that is not being drawn. */
+  uint64_t ShaderCGOFrame{};
   std::vector<std::uint32_t> LightShadowMapKey;
 
   // #685: the inputs of the last full live Metal frame, taken by
