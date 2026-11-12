@@ -42,16 +42,29 @@ cmd = __import__("sys").modules["pymol.cmd"]
 # Platform memory thresholds
 # --------------------------------------------------------------------------
 #
-# morph_estimate's bytes are the memory the finished morph holds; above
-# warn the sheet turns orange, above refuse the morph is refused.  The
-# constants are floors only: on macOS (and command-line PyMOL anywhere) the
-# thresholds scale with the machine's physical memory, on iPhone and iPad
-# with the memory the app may still allocate before the system ends it
-# (os_proc_available_memory), read each time because it changes.  Any
-# failure to read a figure falls back to the floors.
+# morph_estimate's bytes are the memory the morph costs once built and played;
+# above warn the sheet turns orange, above refuse the morph is refused.
+#
+# On macOS (and command-line PyMOL anywhere) the thresholds are 1/16 and 1/4
+# of the machine's physical memory, at least 200 MB and 1 GB: the system pages
+# rather than ends the app, so they are a soft limit and the floors keep small
+# machines usable.
+#
+# On iPhone and iPad they are 1/2 and 3/4 of the memory the app may still
+# allocate before the system ends it (os_proc_available_memory), read each
+# time because it changes, with no floor: a floor is a MINIMUM, so with 300 MB
+# left the old 400 MB floor let through a morph that cannot fit.  The estimate
+# counts what the Metal renderer keeps for drawn states (drawn_bytes), so the
+# last quarter is headroom for the rest of the session, not for an uncounted
+# cost: the default 2kpo morph (estimate 1.67 GB) passes on an iPhone 15 Pro
+# with ~3.2 GB available, as it should (it peaks at 1.68 GB there with
+# 1.86 GB to spare).  Only when the figure cannot be read do the iOS
+# thresholds fall back to 100 MB and 400 MB.  Any failure to read the
+# physical memory falls back to the macOS floors.
 
 _WARN_FLOOR, _REFUSE_FLOOR = 200e6, 1e9
-_IOS_WARN_FLOOR, _IOS_REFUSE_FLOOR = 100e6, 400e6
+_IOS_WARN_FRACTION, _IOS_REFUSE_FRACTION = 0.5, 0.75
+_IOS_WARN_UNKNOWN, _IOS_REFUSE_UNKNOWN = 100e6, 400e6
 
 
 def _is_ios():
@@ -70,14 +83,22 @@ def _ios_available_memory():
     return available()
 
 
+def _ios_threshold(fraction, unknown):
+    '''*fraction* of what an iOS app may still allocate, never more than
+    that; *unknown* only when the figure cannot be read (or reads 0, which
+    os_proc_available_memory returns outside an app).'''
+    try:
+        available = float(_ios_available_memory())
+    except Exception:
+        return unknown
+    return available * fraction if available > 0 else unknown
+
+
 def _platform_warn():
-    '''Warn threshold: 1/4 of what an iOS app may still allocate (at least
-    100 MB), elsewhere 1/16 of physical memory (at least 200 MB).'''
+    '''Warn threshold: 1/2 of what an iOS app may still allocate (100 MB
+    when unknown), elsewhere 1/16 of physical memory (at least 200 MB).'''
     if _is_ios():
-        try:
-            return max(_IOS_WARN_FLOOR, _ios_available_memory() / 4.0)
-        except Exception:
-            return _IOS_WARN_FLOOR
+        return _ios_threshold(_IOS_WARN_FRACTION, _IOS_WARN_UNKNOWN)
     try:
         return max(_WARN_FLOOR, _physical_memory() / 16.0)
     except Exception:
@@ -85,13 +106,10 @@ def _platform_warn():
 
 
 def _platform_refuse():
-    '''Refuse threshold: 1/2 of what an iOS app may still allocate (at least
-    400 MB), elsewhere 1/4 of physical memory (at least 1 GB).'''
+    '''Refuse threshold: 3/4 of what an iOS app may still allocate (400 MB
+    when unknown), elsewhere 1/4 of physical memory (at least 1 GB).'''
     if _is_ios():
-        try:
-            return max(_IOS_REFUSE_FLOOR, _ios_available_memory() / 2.0)
-        except Exception:
-            return _IOS_REFUSE_FLOOR
+        return _ios_threshold(_IOS_REFUSE_FRACTION, _IOS_REFUSE_UNKNOWN)
     try:
         return max(_REFUSE_FLOOR, _physical_memory() / 4.0)
     except Exception:
@@ -184,8 +202,9 @@ _CORE_FRACTION, _MIN_HINGE, _HINGE_BLEND = 0.5, 6, 3
 # no secondary structure assigned (_helix_residues).  Surfaces and meshes are
 # never carried onto a morph (start_job hides them).  bytes_per_frame adds
 # 10 %.  Not counted: while it builds, the job's snapshot of the models and
-# one leg of frames held as Python lists; on the Metal path, GPU buffers of
-# the frames drawn.
+# one leg of frames held as Python lists.  What the Metal renderer keeps for
+# the frames it has drawn is not a per-frame cost and is counted apart
+# (drawn_bytes, below).
 
 _COORD_COST = 45
 _ATOM_REP_COST = {'sticks': 100, 'lines': 80, 'spheres': 65, 'dots': 1600,
@@ -197,6 +216,65 @@ _HELIX_CARTOON_COST = 17000     # on top of the cartoon's per-residue cost
 # matching names, and it leaves out calcium ions named CA.
 _RESIDUE = 'guide'
 _FRAME_OVERHEAD = 1.1
+
+# --------------------------------------------------------------------------
+# Memory the Metal renderer keeps for drawn states (drawn_bytes)
+# --------------------------------------------------------------------------
+#
+# On the Metal path each state, once drawn, leaves copies behind that
+# bytes_per_frame does not count: the cartoon's shader-ready CGO, the Metal
+# buffer uploaded from it and the ray-tracing geometry extracted from it.
+# Measured on an iPhone 15 Pro (2026-11-11, 2kpo cartoon, default 300-state
+# morph): about 13 MB per newly drawn state, 4.5 times bytes_per_frame's
+# 2.89 MB, until the system ended the app at state 191 (3.45 GB).  The setting
+# metal_gpu_cache_mb (PR #924) bounds these copies: its budget (0 = the
+# platform default, 256 MiB on iOS; below 0 no limit) applies separately to
+# the renderer's copies and to the cartoons' shader CGOs.  With it the same
+# morph played on the phone levelled off 0.77 GB above the built morph (915 MB
+# -> 1.68 GB): 2.85 budgets, the two caches plus the allocator's slack.  So a
+# morph is charged _DRAWN_STATE_FACTOR x bytes_per_frame per frame, at most
+# _DRAWN_BUDGETS budgets: a short morph never fills the caches, a long one
+# costs their bound, not its length.
+#
+# Counted on iOS only, where the system ends an app past its limit.  On the
+# Mac the budget is 1 GiB, so the bound (3 GiB) would refuse the default 2kpo
+# morph on an 8 GB machine that pages it without trouble, and command-line
+# PyMOL draws with OpenGL, which keeps none of these copies.
+
+_DRAWN_STATE_FACTOR = 4.5
+_DRAWN_BUDGETS = 3
+_IOS_GPU_CACHE_MIB = 256
+
+
+def drawn_cap(_self=cmd):
+    '''What drawn_bytes charges a morph at most, in bytes: 0 where drawn
+    states are not counted (outside iOS), -1 for no limit
+    (``metal_gpu_cache_mb`` below 0), else _DRAWN_BUDGETS times the budget
+    the renderer applies (``metal_gpu_cache_mb`` MiB, 0 = 256 MiB).  The
+    panel payload publishes it (``morph_drawn_cap``) so the Morph and
+    Play-models sheets add the same figure.  A core without the setting
+    (before PR #924) keeps every drawn copy: -1.'''
+    if not _is_ios():
+        return 0
+    try:
+        mib = _self.get_setting_int('metal_gpu_cache_mb')
+    except Exception:
+        return -1
+    if mib < 0:
+        return -1
+    return _DRAWN_BUDGETS * ((mib or _IOS_GPU_CACHE_MIB) << 20)
+
+
+def drawn_bytes(per_frame, frames, cap):
+    '''Bytes the Metal renderer keeps for the drawn states of a morph of
+    *frames* frames of *per_frame* bytes (bytes_per_frame) each:
+    _DRAWN_STATE_FACTOR times their bytes, at most *cap* (drawn_cap: 0 none,
+    -1 no limit).'''
+    if not cap:
+        return 0
+    total = int(_DRAWN_STATE_FACTOR * per_frame * frames)
+    return total if cap < 0 else min(total, cap)
+
 
 # Alt filter used throughout this module
 _ALT = "alt ''+A"
@@ -405,17 +483,19 @@ def morph_estimate(source, frames_per_model=15, loop=1, refinement=3,
     Returns a dict with keys:
       models, legs, frames, atoms, bytes, seconds, warn, refuse
 
-    ``bytes`` is bytes_per_frame(source) times the frames: the memory the
-    finished morph holds.  ``seconds`` is build_seconds(): the build-time hint
-    the Morph sheet shows.  ``warn`` / ``refuse`` are true when it is above
-    the thresholds() (WARN_BYTES / REFUSE_BYTES when set, else the platform
-    figures, read at call time).
+    ``bytes`` is bytes_per_frame(source) times the frames, the memory the
+    finished morph holds, plus drawn_bytes(): on iOS what the Metal renderer
+    keeps for the states it has drawn once the morph plays (bounded by
+    ``metal_gpu_cache_mb``).  ``seconds`` is build_seconds(): the build-time
+    hint the Morph sheet shows.  ``warn`` / ``refuse`` are true when it is
+    above the thresholds() (WARN_BYTES / REFUSE_BYTES when set, else the
+    platform figures, read at call time).
     '''
     models = _self.count_states(source)
     legs = models if loop else max(1, models - 1)
     frames = legs * frames_per_model
     atoms, per_frame = frame_cost(source, _self)
-    nbytes = per_frame * frames
+    nbytes = per_frame * frames + drawn_bytes(per_frame, frames, drawn_cap(_self))
     seconds = build_seconds(atoms, legs, frames, refinement)
     warn, refuse = thresholds()
 

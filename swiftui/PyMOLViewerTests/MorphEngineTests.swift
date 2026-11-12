@@ -187,6 +187,7 @@ final class MorphEngineTests: XCTestCase {
         // Python): still decodes.
         XCTAssertNil(payload.morph_bytes_per_frame)
         XCTAssertNil(payload.morph_atoms_per_frame)
+        XCTAssertNil(payload.morph_drawn_cap)
     }
 
     /// Python's bytes per morph frame of each multi-state molecule, the figure
@@ -198,11 +199,13 @@ final class MorphEngineTests: XCTestCase {
         {"objects":["2kpo","disc"],"selections":[],"enabled":["2kpo"],"sel_counts":{},
          "nstate":{"2kpo":20,"disc":20},"morph":{},
          "morph_bytes_per_frame":{"2kpo":2890000,"disc":2890000},
-         "morph_atoms_per_frame":{"2kpo":1860,"disc":1860}}
+         "morph_atoms_per_frame":{"2kpo":1860,"disc":1860},
+         "morph_drawn_cap":805306368}
         """
         let payload = try JSONDecoder().decode(PanelPayload.self, from: Data(json.utf8))
         XCTAssertEqual(payload.morph_bytes_per_frame, ["2kpo": 2_890_000, "disc": 2_890_000])
         XCTAssertEqual(payload.morph_atoms_per_frame, ["2kpo": 1860, "disc": 1860])
+        XCTAssertEqual(payload.morph_drawn_cap, 805_306_368)
     }
 
     // MARK: - Per-object playback timers

@@ -1157,7 +1157,8 @@ private struct PlayModelsSheet: View {
     private func memoryNote(models n: Int) -> (text: String?, tier: MorphSheet.MemoryTier) {
         let bytes = MorphMovie.estimatedBytes(
             models: n, framesPerModel: morph.framesPerModel,
-            bytesPerFrame: target.flatMap { engine.morphBytesPerFrame[$0] })
+            bytesPerFrame: target.flatMap { engine.morphBytesPerFrame[$0] },
+            drawnCap: engine.morphDrawnCap)
         let sized = MorphMovie.sizesMorph(plan, morphSources: engine.morphSources,
                                           morphSpecs: engine.morphSpecs)
         return MorphMovie.memoryNote(bytes: bytes, thresholds: MorphSheet.currentThresholds(),

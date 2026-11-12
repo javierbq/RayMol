@@ -27,6 +27,40 @@ final class MorphSettingsTests: XCTestCase {
                                              fps: 30).bytes)
     }
 
+    /// On iOS the estimate adds what the renderer keeps for drawn frames
+    /// (morph_jobs.drawn_bytes, same numbers): 4.5 × the frame's bytes per
+    /// frame, at most the cap Python publishes (3 × metal_gpu_cache_mb).
+    func testSummaryAddsDrawnFrames() {
+        let s = MorphSettings()
+        let cap = 3 * 256 << 20                         // 805_306_368
+        // the default 2kpo morph on an iPhone: the caches' bound, ≈ 1.7 GB
+        let sum = s.summary(models: 20, atoms: 1860, bytesPerFrame: 2_890_000, fps: 30,
+                            drawnCap: cap)
+        XCTAssertEqual(sum.bytes, 867_000_000 + 805_306_368)
+        XCTAssertEqual(MorphSettings.megabytes(sum.bytes!), "≈ 1.7 GB")
+        // not counted (macOS, an older bundled Python): the frames alone
+        XCTAssertEqual(s.summary(models: 20, atoms: 1860, bytesPerFrame: 2_890_000, fps: 30,
+                                 drawnCap: 0).bytes, 867_000_000)
+        // no limit: every frame drawn
+        XCTAssertEqual(s.summary(models: 20, atoms: 1860, bytesPerFrame: 2_890_000, fps: 30,
+                                 drawnCap: -1).bytes, 867_000_000 + 3_901_500_000)
+        // no per-frame figure: still no estimate
+        XCTAssertNil(s.summary(models: 20, atoms: 1860, bytesPerFrame: nil, fps: 30,
+                               drawnCap: cap).bytes)
+    }
+
+    /// A short morph never fills the caches: charged per frame below the cap.
+    func testDrawnBytes() {
+        let cap = 3 * 256 << 20
+        XCTAssertEqual(MorphSettings.drawnBytes(bytesPerFrame: 2_890_000, frames: 15, cap: cap),
+                       195_075_000)
+        XCTAssertEqual(MorphSettings.drawnBytes(bytesPerFrame: 2_890_000, frames: 300, cap: cap),
+                       cap)
+        XCTAssertEqual(MorphSettings.drawnBytes(bytesPerFrame: 2_890_000, frames: 300, cap: -1),
+                       3_901_500_000)
+        XCTAssertEqual(MorphSettings.drawnBytes(bytesPerFrame: 2_890_000, frames: 300, cap: 0), 0)
+    }
+
     func testSummaryNoLoop() {
         var s = MorphSettings()
         s.loop = false
@@ -501,8 +535,8 @@ final class MorphSettingsTests: XCTestCase {
     // MARK: - Memory (both sheets, spec §5.6)
 
     /// The thresholds morph_jobs.thresholds() uses: on macOS 1/16 and 1/4 of the
-    /// machine's memory (at least 200 MB and 1 GB), on iOS 1/4 and 1/2 of what the
-    /// app may still allocate (at least 100 MB and 400 MB; the floors when unknown).
+    /// machine's memory (at least 200 MB and 1 GB), on iOS 1/2 and 3/4 of what the
+    /// app may still allocate, never above it (100 MB and 400 MB when unknown).
     func testMemoryThresholds() {
         let gib: UInt64 = 1 << 30
         let mac = MorphSheet.memoryThresholds(physical: 36 * gib, available: nil, iOS: false)
@@ -512,14 +546,27 @@ final class MorphSettingsTests: XCTestCase {
         XCTAssertEqual(smallMac.warn, 200e6)
         XCTAssertEqual(smallMac.refuse, 1e9)
         let ios = MorphSheet.memoryThresholds(physical: 8 * gib, available: 3_000_000_000, iOS: true)
-        XCTAssertEqual(ios.warn, 750e6)
-        XCTAssertEqual(ios.refuse, 1.5e9)
-        let tight = MorphSheet.memoryThresholds(physical: 8 * gib, available: 600_000_000, iOS: true)
+        XCTAssertEqual(ios.warn, 1.5e9)
+        XCTAssertEqual(ios.refuse, 2.25e9)
+        // No floor: with 300 MB left the old 400 MB floor let through a morph
+        // that could not fit.
+        let tight = MorphSheet.memoryThresholds(physical: 8 * gib, available: 300_000_000, iOS: true)
         XCTAssertEqual(tight.warn, 150e6)
-        XCTAssertEqual(tight.refuse, 400e6)
+        XCTAssertEqual(tight.refuse, 225e6)
+        XCTAssertEqual(MorphSheet.memoryTier(bytes: 350_000_000, thresholds: tight), .refuse)
         let unknown = MorphSheet.memoryThresholds(physical: 8 * gib, available: nil, iOS: true)
         XCTAssertEqual(unknown.warn, 100e6)
         XCTAssertEqual(unknown.refuse, 400e6)
+        let zero = MorphSheet.memoryThresholds(physical: 8 * gib, available: 0, iOS: true)
+        XCTAssertEqual(zero.warn, 100e6)
+        XCTAssertEqual(zero.refuse, 400e6)
+        // The default 2kpo morph on a fresh iPhone 15 Pro (~3.2 GB free), drawn
+        // frames included: orange, but allowed (on the phone it levels off at
+        // 1.68 GB with 1.86 GB to spare).
+        let phone = MorphSheet.memoryThresholds(physical: 8 * gib, available: 3_200_000_000,
+                                                iOS: true)
+        XCTAssertEqual(MorphSheet.memoryTier(bytes: 867_000_000 + 805_306_368, thresholds: phone),
+                       .warn)
         // The test host's live figures: the macOS rule on its own memory.
         let live = MorphSheet.currentThresholds()
         let host = MorphSheet.memoryThresholds(physical: ProcessInfo.processInfo.physicalMemory,
@@ -534,6 +581,11 @@ final class MorphSettingsTests: XCTestCase {
         XCTAssertEqual(MorphMovie.estimatedBytes(models: 20, framesPerModel: 15,
                                                  bytesPerFrame: 2_890_000), 300 * 2_890_000)
         XCTAssertNil(MorphMovie.estimatedBytes(models: 20, framesPerModel: 15, bytesPerFrame: nil))
+        // with the drawn frames' cap Python publishes on iOS, as the Morph sheet
+        XCTAssertEqual(MorphMovie.estimatedBytes(models: 20, framesPerModel: 15,
+                                                 bytesPerFrame: 2_890_000,
+                                                 drawnCap: 3 * 256 << 20),
+                       300 * 2_890_000 + 3 * 256 << 20)
         let th = (warn: 200e6, refuse: 1e9)
         let none = MorphMovie.memoryNote(bytes: nil, thresholds: th)
         XCTAssertNil(none.text)

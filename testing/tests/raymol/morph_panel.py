@@ -19,6 +19,8 @@ Tests that:
     objects, CGOs or the morph being built), and {} when computing it fails;
     figures past their TTL are refreshed within a per-poll budget, oldest
     first
+  - the main payload's `morph_drawn_cap` carries morph_jobs.drawn_cap()
+    (0 off iOS), and 0 when computing it fails
   - the main payload's `morph_atoms_per_frame` carries morph_estimate's
     `atoms` (state 1) from the same cached pass, one model's atoms for a
     discrete object (not the object's total)
@@ -168,6 +170,21 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         p = self.payload()
         self.assertEqual(p['morph_bytes_per_frame'],
                          {'src': mj.bytes_per_frame('src')})
+
+    def testPayloadCarriesDrawnCap(self):
+        '''Both sheets add morph_estimate's drawn-state figure from here
+        (morph_jobs.drawn_cap: 0 off iOS, -1 no limit, else bytes), and 0
+        when computing it fails.'''
+        ensemble('src')
+        self.assertEqual(self.payload()['morph_drawn_cap'], 0)
+        with mock.patch.object(mj, 'drawn_cap', return_value=805306368):
+            self.assertEqual(self.payload()['morph_drawn_cap'], 805306368)
+        with mock.patch.object(mj, 'drawn_cap', return_value=-1):
+            self.assertEqual(self.payload()['morph_drawn_cap'], -1)
+        with mock.patch.object(mj, 'drawn_cap', side_effect=RuntimeError):
+            p = self.payload()
+        self.assertEqual(p['morph_drawn_cap'], 0)
+        self.assertIn('src', p['objects'])
 
     def testPayloadCarriesAtomsPerFrame(self):
         '''The Morph sheet's build-time hint reads the atoms one morph frame

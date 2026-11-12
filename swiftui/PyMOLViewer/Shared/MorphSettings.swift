@@ -52,8 +52,10 @@ struct MorphSettings: Codable, Equatable {
         let frames: Int
         /// Wall-clock length at the given frame rate.
         let seconds: Double
-        /// Memory the finished morph holds: the frames times Python's bytes per
-        /// frame. nil when Python has not published that figure.
+        /// Memory the morph costs once built and played: the frames times
+        /// Python's bytes per frame, plus what the renderer keeps for drawn
+        /// frames (`drawnBytes`, iOS only). nil when Python has not published
+        /// the per-frame figure.
         let bytes: Int?
         /// Rough time the app takes to build it, in seconds; 0 when the atom
         /// count is unknown. A hint only (spec §5.2), see `buildSeconds(…)`.
@@ -70,15 +72,36 @@ struct MorphSettings: Codable, Equatable {
     ///     representations the source shows, overhead included. The same figure
     ///     `morph_estimate` multiplies, so the sheet and `morph_object` agree.
     ///   - fps: Display frame rate in frames per second.
-    func summary(models: Int, atoms: Int, bytesPerFrame: Int?, fps: Double) -> Summary {
+    ///   - drawnCap: the panel payload's `morph_drawn_cap` (`morph_jobs.drawn_cap`):
+    ///     0 when drawn frames are not counted (outside iOS, or an older bundled
+    ///     Python), -1 for no limit, else the bound in bytes. See `drawnBytes`.
+    func summary(models: Int, atoms: Int, bytesPerFrame: Int?, fps: Double,
+                 drawnCap: Int = 0) -> Summary {
         let legs = loop ? models : models - 1
         let frames = legs * framesPerModel
         let seconds = Double(frames) / max(fps, 1)
         return Summary(legs: legs, frames: frames, seconds: seconds,
-                       bytes: bytesPerFrame.map { frames * $0 },
+                       bytes: bytesPerFrame.map {
+                           frames * $0 + Self.drawnBytes(bytesPerFrame: $0, frames: frames,
+                                                         cap: drawnCap)
+                       },
                        buildSeconds: Self.buildSeconds(atoms: atoms, legs: legs, frames: frames,
                                                        refinement: refinement))
     }
+
+    /// Bytes the Metal renderer keeps for the frames of a morph it has drawn,
+    /// on top of what the frames hold (`morph_jobs.drawn_bytes`, the same two
+    /// numbers): 4.5 × `bytesPerFrame` per frame (measured on an iPhone 15 Pro:
+    /// ~13 MB per newly drawn 2kpo state against 2.89 MB per frame), at most
+    /// `cap` (3 × the `metal_gpu_cache_mb` budget; 0 none, -1 no limit).
+    static func drawnBytes(bytesPerFrame: Int, frames: Int, cap: Int) -> Int {
+        guard cap != 0 else { return 0 }
+        let total = Int(drawnStateFactor * Double(bytesPerFrame) * Double(frames))
+        return cap < 0 ? total : min(total, cap)
+    }
+
+    /// Drawn-state bytes per byte of a frame (`morph_jobs._DRAWN_STATE_FACTOR`).
+    static let drawnStateFactor = 4.5
 
     /// Seconds the app takes to build a morph, roughly (spec §5.2): 0.05 ms per
     /// atom per leg, plus per atom per frame 0.014 ms and 0.011 ms more per
@@ -371,13 +394,16 @@ enum MorphMovie {
 
     /// Memory the smooth clip's morph would hold: its frames (a loop, so models ×
     /// frames per model) times Python's bytes per frame of the source (the panel
-    /// payload's `morph_bytes_per_frame`), as `morph_estimate` computes it; nil
-    /// without that figure.
-    static func estimatedBytes(models: Int, framesPerModel: Int, bytesPerFrame: Int?) -> Int? {
+    /// payload's `morph_bytes_per_frame`) plus the drawn frames' share
+    /// (`drawnCap`, the payload's `morph_drawn_cap`), as `morph_estimate`
+    /// computes it; nil without the per-frame figure.
+    static func estimatedBytes(models: Int, framesPerModel: Int, bytesPerFrame: Int?,
+                               drawnCap: Int = 0) -> Int? {
         var loop = MorphSettings()
         loop.framesPerModel = framesPerModel
         loop.loop = true
-        return loop.summary(models: models, atoms: 0, bytesPerFrame: bytesPerFrame, fps: 1).bytes
+        return loop.summary(models: models, atoms: 0, bytesPerFrame: bytesPerFrame, fps: 1,
+                            drawnCap: drawnCap).bytes
     }
 
     /// The caption's memory part and its tier against `thresholds` (spec §5.6,

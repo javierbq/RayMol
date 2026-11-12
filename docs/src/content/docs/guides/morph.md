@@ -281,17 +281,28 @@ about 0.6 GB on a Mac). Shown as lines instead, the same morph needs about
 residue is counted as helix: with `auto_dss` on (the default), the morph
 assigns its own when it is created.
 
+On iPhone and iPad the estimate also counts what the renderer keeps for the
+frames it has drawn once the morph plays: about 4.5 times a frame's cost per
+frame, but never more than three times the `metal_gpu_cache_mb` budget
+(256 MB by default, so at most about 805 MB). For 2kpo at 15 frames per model
+that is the full 805 MB, and the sheet reads `≈ 1.7 GB`; on an iPhone 15 Pro
+the morph, playing, levels off there. With `metal_gpu_cache_mb` below 0 (no
+limit) the drawn frames are counted in full. On a Mac this part is not
+counted: the Mac pages memory out instead of closing RayMol.
+
 The Morph sheet, and the Play-models sheet while smoothing, react at two
 levels, which depend on the device's memory:
 
 | | Warning (orange summary) | Limit (Morph disabled) |
 | :--- | :--- | :--- |
 | **macOS** | 200 MB or 1/16 of the Mac's memory, whichever is larger (1 GB on a 16 GB Mac) | 1 GB or 1/4 of the Mac's memory, whichever is larger (4 GB on a 16 GB Mac) |
-| **iPhone & iPad** | 100 MB or 1/4 of the memory available to RayMol, whichever is larger | 400 MB or 1/2 of the memory available to RayMol, whichever is larger |
+| **iPhone & iPad** | 1/2 of the memory available to RayMol | 3/4 of the memory available to RayMol |
 
 On iPhone and iPad the memory available to RayMol is what it may still
 allocate, which shrinks as the session grows (finished morphs included), so
-the levels are read again each time. The sheet and `morph_object` use one
+the levels are read again each time, and there is no minimum: with 300 MB
+left, a morph is refused above 225 MB. Only if RayMol cannot read that figure
+do the levels fall back to 100 MB and 400 MB. The sheet and `morph_object` use one
 estimate, computed by RayMol from the representations the source shows, and
 the same levels (command-line PyMOL uses the macOS rule, from the computer's
 memory). A morph refused for its size leaves a

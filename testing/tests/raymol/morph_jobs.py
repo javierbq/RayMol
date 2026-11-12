@@ -9,8 +9,11 @@ Tests that:
     not a molecular object
   - morph_estimate() returns correct fields: bytes_per_frame() (measured
     costs of coordinates and the shown reps) times frames, compared above
-    the thresholds, which scale with the machine's memory (constants are
-    floors); the estimate matches the memory a built morph really holds
+    the thresholds, which scale with the machine's memory (the macOS
+    constants are floors; on iOS fractions of the memory left, never above
+    it); the estimate matches the memory a built morph really holds; on iOS
+    it adds drawn_bytes() (what the Metal renderer keeps for drawn states,
+    bounded by metal_gpu_cache_mb through drawn_cap())
   - copy_look() copies explicit per-object settings, hides surface/mesh
   - set_state_titles() labels key frames and intermediates correctly
   - fingerprint() returns a dict that changes when state count changes, and
@@ -316,7 +319,7 @@ class TestMorphJobsBlocks(testing.PyMOLTestCase):
         self.assertGreater(mj._COORD_COST, 30)
 
     def testThresholdsScaleWithMemory(self):
-        # None: the platform's live figure; the constants are floors only.
+        # None: the platform's live figure; the macOS constants are floors.
         self.assertIsNone(mj.WARN_BYTES)
         self.assertIsNone(mj.REFUSE_BYTES)
         phys = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
@@ -328,13 +331,21 @@ class TestMorphJobsBlocks(testing.PyMOLTestCase):
             self.assertEqual(mj.thresholds(), (200e6, 1e9))
         with mock.patch.object(mj, '_physical_memory', side_effect=OSError):
             self.assertEqual(mj.thresholds(), (200e6, 1e9))
-        # iPhone and iPad: what the app may still allocate
+        # iPhone and iPad: 1/2 and 3/4 of what the app may still allocate,
+        # with no floor, so neither ever exceeds it (a 400 MB floor let a
+        # morph through with 300 MB left)
         with mock.patch.object(mj, '_is_ios', return_value=True):
             with mock.patch.object(mj, '_ios_available_memory', return_value=3e9):
-                self.assertEqual(mj.thresholds(), (750e6, 1.5e9))
-            with mock.patch.object(mj, '_ios_available_memory', return_value=1e8):
-                self.assertEqual(mj.thresholds(), (100e6, 400e6))
+                self.assertEqual(mj.thresholds(), (1.5e9, 2.25e9))
+            for left in (600e6, 300e6, 1e8, 1e6):
+                with mock.patch.object(mj, '_ios_available_memory', return_value=left):
+                    warn, refuse = mj.thresholds()
+                    self.assertEqual((warn, refuse), (left / 2, left * 3 / 4))
+                    self.assertLess(refuse, left)
+            # unknown (unreadable, or 0 outside an app): the old figures
             with mock.patch.object(mj, '_ios_available_memory', side_effect=OSError):
+                self.assertEqual(mj.thresholds(), (100e6, 400e6))
+            with mock.patch.object(mj, '_ios_available_memory', return_value=0):
                 self.assertEqual(mj.thresholds(), (100e6, 400e6))
         # a number set by a test or a user is used as is
         self.addCleanup(setattr, mj, 'WARN_BYTES', None)
@@ -355,6 +366,100 @@ class TestMorphJobsBlocks(testing.PyMOLTestCase):
         mj.WARN_BYTES = mj.REFUSE_BYTES = nbytes - 1
         est = mj.morph_estimate('ee', 10, 1)
         self.assertEqual((est['warn'], est['refuse']), (True, True))
+
+    # ---- drawn states (Metal, iOS) -----------------------------------------
+
+    class _Settings(object):
+        '''Stands in for cmd in drawn_cap: metal_gpu_cache_mb as given, or
+        unknown (a core before PR #924) when None.'''
+        def __init__(self, mib):
+            self.mib = mib
+
+        def get_setting_int(self, name):
+            assert name == 'metal_gpu_cache_mb', name
+            if self.mib is None:
+                raise pymol.CmdException('unknown setting')
+            return self.mib
+
+    def testDrawnCapFollowsTheGpuCacheBudget(self):
+        mib = 1 << 20
+        # Not counted off iOS (macOS pages; OpenGL keeps no such copies)
+        self.assertFalse(mj._is_ios())
+        self.assertEqual(mj.drawn_cap(), 0)
+        self.assertEqual(mj.drawn_cap(self._Settings(-1)), 0)
+        with mock.patch.object(mj, '_is_ios', return_value=True):
+            # 0 = the iOS default the renderer applies, 256 MiB; three budgets
+            # (the two caches plus allocator slack: measured 2.85 on device)
+            self.assertEqual(mj.drawn_cap(self._Settings(0)), 3 * 256 * mib)
+            self.assertEqual(mj.drawn_cap(self._Settings(512)), 3 * 512 * mib)
+            # below 0, and a core without the setting: no limit
+            self.assertEqual(mj.drawn_cap(self._Settings(-1)), -1)
+            self.assertEqual(mj.drawn_cap(self._Settings(None)), -1)
+            # the live core answers too (with or without the setting)
+            self.assertIn(mj.drawn_cap(), (3 * 256 * mib, -1))
+
+    def testDrawnBytesIsBoundedByTheCap(self):
+        per_frame = 2890000                 # 2kpo cartoon, bytes_per_frame
+        cap = 3 * 256 << 20
+        # measured: ~13 MB per newly drawn 2kpo state, 4.5 x per_frame
+        self.assertEqual(mj.drawn_bytes(per_frame, 1, -1), int(4.5 * per_frame))
+        # a short morph never fills the caches: charged per frame
+        self.assertEqual(mj.drawn_bytes(per_frame, 15, cap), int(4.5 * per_frame * 15))
+        # the default 300-frame morph: the caches' bound, not its length
+        self.assertEqual(mj.drawn_bytes(per_frame, 300, cap), cap)
+        self.assertEqual(mj.drawn_bytes(per_frame, 3000, cap), cap)
+        self.assertEqual(mj.drawn_bytes(per_frame, 300, -1), int(4.5 * per_frame * 300))
+        self.assertEqual(mj.drawn_bytes(per_frame, 300, 0), 0)
+
+    def testEstimateOnIosCountsDrawnStates(self):
+        cmd.fab('ACDEFGHIK', 'ei')
+        cmd.create('ei', 'ei', 1, 2)
+        cmd.show_as('cartoon', 'ei')
+        per_frame = mj.bytes_per_frame('ei')
+        built = per_frame * 30
+        self.assertEqual(mj.morph_estimate('ei', 15, 1)['bytes'], built)
+        with mock.patch.object(mj, '_is_ios', return_value=True), \
+                mock.patch.object(mj, 'drawn_cap', return_value=10 * per_frame):
+            est = mj.morph_estimate('ei', 15, 1)
+            self.assertEqual(est['bytes'], built + 10 * per_frame)
+        with mock.patch.object(mj, '_is_ios', return_value=True), \
+                mock.patch.object(mj, 'drawn_cap', return_value=-1):
+            est = mj.morph_estimate('ei', 15, 1)
+            self.assertEqual(est['bytes'], built + int(4.5 * per_frame * 30))
+
+    def testDefaultTwoKpoMorphOnAnIphone(self):
+        # The 2026-11-11 case in figures (2kpo cartoon, 15 frames per model,
+        # loop: 300 frames of 2.89 MB): 867 MB built plus the caches' bound,
+        # 805 MB, against what an iPhone 15 Pro has free.
+        per_frame, frames = 2890000, 300
+        cap = 3 * 256 << 20
+        nbytes = per_frame * frames + mj.drawn_bytes(per_frame, frames, cap)
+        self.assertEqual(nbytes, 867000000 + 805306368)
+        with mock.patch.object(mj, '_is_ios', return_value=True):
+            # a fresh app (~3.2 GB free): allowed, though over the warning,
+            # as on the phone, where it levels off with 1.86 GB to spare
+            with mock.patch.object(mj, '_ios_available_memory', return_value=3.2e9):
+                warn, refuse = mj.thresholds()
+                self.assertGreater(nbytes, warn)
+                self.assertLess(nbytes, refuse)
+            # a session that has used most of it: refused
+            with mock.patch.object(mj, '_ios_available_memory', return_value=1.5e9):
+                self.assertGreater(nbytes, mj.thresholds()[1])
+
+    def testIosRefusesAMorphThatCannotFit(self):
+        # 300 MB left: the old 400 MB floor let a 350 MB morph through
+        cmd.fab('ACDEFGHIK', 'ef')
+        cmd.create('ef', 'ef', 1, 2)
+        nbytes = mj.morph_estimate('ef', 15, 1)['bytes']
+        left = nbytes * 1.2             # free, but not 3/4 of it
+        with mock.patch.object(mj, '_is_ios', return_value=True), \
+                mock.patch.object(mj, 'drawn_cap', return_value=0), \
+                mock.patch.object(mj, '_ios_available_memory', return_value=left):
+            est = mj.morph_estimate('ef', 15, 1)
+            self.assertEqual((est['warn'], est['refuse']), (True, True))
+            with self.assertRaisesRegex(pymol.CmdException, 'needs about'):
+                mj.start_job('ef')
+        self.assertNotIn('ef_morph', cmd.get_names('objects'))
 
     # ---- copy_look -----------------------------------------------------------
 

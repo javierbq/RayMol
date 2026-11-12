@@ -241,6 +241,12 @@ final class PyMOLEngine: ObservableObject {
     /// `atoms`). The Morph sheet's build-time hint counts these: a discrete
     /// object's own atom count is every state's atoms.
     @Published var morphAtomsPerFrame: [String: Int] = [:]
+    /// The panel payload's `morph_drawn_cap` (`morph_jobs.drawn_cap`): what the
+    /// morph estimate adds for frames the Metal renderer keeps once drawn, at
+    /// most. 0 when not counted (outside iOS, an older bundled Python), -1 for
+    /// no limit, else bytes. Both morph sheets pass it to
+    /// `MorphSettings.summary`.
+    @Published var morphDrawnCap: Int = 0
     /// Morph names for which the tray's "auto-play on completion" flag is set.
     /// Keyed by the TARGET name (settings.morphName(for: source)); consumed and
     /// removed by `morphDidComplete(_:)`, dropped by each poll for a job that can
