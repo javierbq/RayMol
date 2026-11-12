@@ -213,6 +213,7 @@
 		925BACD42F7BFAB94F42F03C /* MaterialInspectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BCABF57679F5F6462F91B73 /* MaterialInspectorTests.swift */; };
 		946A8CF4D62A7AFFFA6E39A9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */; };
 		953186F444ED70F3F5F33746 /* RFD3Trajectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F41684D508836307667157 /* RFD3Trajectory.swift */; };
+		958E7A575A57CE135CABA803 /* GpuCacheBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67D413B9328181A5EE41ED3 /* GpuCacheBudgetTests.swift */; };
 		966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71574A2074A14803B91ED695 /* InferenceRouter.swift */; };
 		979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
@@ -519,6 +520,7 @@
 		A5BED19C590F00A894126D46 /* MorphSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSettings.swift; sourceTree = "<group>"; };
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
 		A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-movie-export.jpg"; sourceTree = "<group>"; };
+		A67D413B9328181A5EE41ED3 /* GpuCacheBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GpuCacheBudgetTests.swift; sourceTree = "<group>"; };
 		A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-docs.jpg"; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
 		A75B6DCB76EF7B2E69DA0BFE /* RFD3TrajectoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3TrajectoryTests.swift; sourceTree = "<group>"; };
@@ -854,6 +856,7 @@
 				EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */,
 				FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */,
 				B3F7D14D36FF47F64373ABB2 /* DisplayScaleTests.swift */,
+				A67D413B9328181A5EE41ED3 /* GpuCacheBudgetTests.swift */,
 				3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */,
 				AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
@@ -1086,10 +1089,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
-				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
 				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
 				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
+				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
+				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
 			);
 		};
 /* End PBXProject section */
@@ -1735,6 +1738,7 @@
 				917ABB57816FDCD8B1D1E9CE /* DesignSizeGuardTests.swift in Sources */,
 				D0505F6B98C64B96BE87A753 /* DesignTargetSelectionTests.swift in Sources */,
 				8C561D8F15ECB522A86E2B99 /* DisplayScaleTests.swift in Sources */,
+				958E7A575A57CE135CABA803 /* GpuCacheBudgetTests.swift in Sources */,
 				FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */,
 				C98E23FB46AC666B6D1B5A72 /* InferenceRouterTests.swift in Sources */,
 				57E2333020DE9DC8910BDC3E /* InteractionModeExitTests.swift in Sources */,

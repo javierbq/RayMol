@@ -256,6 +256,8 @@ public:
   bool armAirOnlyFrame() override;
   bool airOnlyArmed() const override;
   bool beginAirOnlyFrame() override;
+  void setGpuCacheBudgetMB(int mb) override { _gpuCacheBudgetMB = mb; }
+  bool gpuCacheStats(GpuCacheStats& out, bool trim) override;
   bool airCacheStats(int& sceneFrames, int& postChains,
                      int& airFrames, bool forget) override;
   bool setAirDebugPoison(bool on) override;
@@ -824,6 +826,9 @@ private:
       const ScreenOverlayDraw& draw, MTLPixelFormat pixelFormat);
   void encodeScreenOverlays(id<MTLTexture> target);
   void clearScreenOverlayDraws();  // releases the stash's retained buffers
+  // The Metal buffer uploaded from the CPU buffer `data`: the cached one,
+  // else a new upload, cached. Marks the entry used this frame. nil only if
+  // the upload fails.
   id<MTLBuffer> cachedVBOBuffer(const void* data, size_t dataSize);
 
   // --- Real shadow map (light-POV depth pre-pass + PCF in the post pass) ---
@@ -1524,8 +1529,32 @@ private:
   // Color mask
   MTLColorWriteMask _colorWriteMask = MTLColorWriteMaskAll;
 
-  // VBO buffer cache — reuse Metal buffers across frames
-  std::unordered_map<const void*, id<MTLBuffer>> _vboCache;
+  // VBO buffer cache — reuse Metal buffers across frames. Keyed by the CPU
+  // buffer the upload was made from; each entry remembers the scene frame
+  // (beginFrame) that last drew it, so trimGPUCache can drop what has gone
+  // unused once the cache is over budget (metal_gpu_cache_mb).
+  struct VBOCacheEntry {
+    id<MTLBuffer> buf = nil;  // +1 (MRC), released on erase
+    uint64_t lastUse = 0;     // _cacheFrame of the last draw that used it
+  };
+  std::unordered_map<const void*, VBOCacheEntry> _vboCache;
+  // Scene frames begun (beginFrame); the clock lastUse is read against.
+  uint64_t _cacheFrame = 1;
+  // metal_gpu_cache_mb as last passed in (setGpuCacheBudgetMB): 0 the platform
+  // default, < 0 no limit, else megabytes.
+  int _gpuCacheBudgetMB = 0;
+  // Bytes and entries trimGPUCache has released since the renderer was made.
+  uint64_t _gpuCacheEvictedBytes = 0;
+  uint64_t _gpuCacheEvictedEntries = 0;
+  size_t gpuCacheBudgetBytes() const override;
+  static size_t rtGeomBytes(const RTGeom& g);
+  // Frees the least recently drawn uploads (and the ray-tracing geometry
+  // extracted from the same CPU buffers) until the cache fits its budget.
+  // Only entries no draw used in the last two scene frames are candidates,
+  // and never one the built acceleration structures were made from, so
+  // everything on screen keeps its buffers. Runs at the start of a frame,
+  // when no draw list of the previous frame still holds a cached buffer.
+  void trimGPUCache();
   // One-off VBO pipeline cache (see cachedVBOPipeline). Owns each +1 pipeline.
   std::unordered_map<uint64_t, id<MTLRenderPipelineState>> _vboPipelineCache;
   id<MTLBuffer> _batchBuffer;  // reusable buffer for batch drawing

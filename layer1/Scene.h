@@ -72,6 +72,8 @@ int SceneSetFog(PyMOLGlobals *G);
 void SceneSetFogUniforms(PyMOLGlobals * G, CShaderPrg *);
 void SceneSetFrame(PyMOLGlobals * G, int mode, int frame);
 int SceneGetFrame(PyMOLGlobals * G);
+/** CScene::ShaderCGOFrame: Metal scene frames rendered so far. */
+uint64_t SceneGetShaderCGOFrame(PyMOLGlobals* G);
 int SceneGetState(PyMOLGlobals * G);
 
 void SceneDirty(PyMOLGlobals * G);      /* scene dirty, but leave the overlay if one exists */

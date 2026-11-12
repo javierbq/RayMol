@@ -959,6 +959,7 @@ bool CGOCombineBeginEnd(CGO ** I, bool do_not_split_lines = false);
 CGO* CGOCombineBeginEnd(const CGO* I, int est = 0, bool do_not_split_lines = false);
 
 void CGOFreeVBOs(CGO *I);
+size_t CGOShaderBytes(const CGO* I);
 
 CGO *CGOOptimizeToVBOIndexed(const CGO * I, int est=0, const float *color=nullptr, bool addshaders=true, bool embedTransparencyInfo=false);
 #define CGOOptimizeToVBOIndexedWithColorEmbedTransparentInfo(I, est, color, addshaders) CGOOptimizeToVBOIndexed(I, est, color, addshaders, true)

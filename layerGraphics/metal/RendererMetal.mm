@@ -579,7 +579,7 @@ RendererMetal::~RendererMetal()
 
   // Pooled Metal objects held by value in STL maps: clear()/erase() does NOT
   // send -release under MRC, so release each entry before clearing.
-  for (auto& kv : _vboCache) [kv.second release];
+  for (auto& kv : _vboCache) [kv.second.buf release];
   _vboCache.clear();
   for (auto& kv : _vboPipelineCache) [kv.second release];
   _vboPipelineCache.clear();
@@ -1231,6 +1231,7 @@ bool RendererMetal::renderAOExemptMask()
 void RendererMetal::beginFrame()
 {
   noteSceneFrame();
+  ++_cacheFrame;  // the upload cache's clock (trimGPUCache)
   // Ray tracing: (re)build the atom-sphere acceleration structure from the
   // PREVIOUS frame's accumulated geometry, BEFORE this frame's command buffer
   // exists — building (with its own cmd buffer + wait) must not happen while a
@@ -1300,6 +1301,10 @@ void RendererMetal::beginFrame()
   _contourActive = false;
   _aoExemptDraws.clear();  // cartoon/ribbon AO-exempt mask: re-stashed this frame
   _shadowMapValid = false; // set again by endShadowPass if the pre-pass runs
+  // With the previous frame's draw lists cleared above, nothing holds a cached
+  // buffer outside the cache any more (the screen-overlay stash retains its
+  // own), so this is where the upload cache may shed what has gone unused.
+  trimGPUCache();
 
   // Configure clear values on the render pass descriptor
   if (_passDesc) {
@@ -11860,13 +11865,15 @@ static float repCapDepth(const float* P, float repClipFront)
 id<MTLBuffer> RendererMetal::cachedVBOBuffer(const void* data, size_t dataSize)
 {
   auto cacheIt = _vboCache.find(data);
-  if (cacheIt != _vboCache.end())
-    return cacheIt->second;
+  if (cacheIt != _vboCache.end()) {
+    cacheIt->second.lastUse = _cacheFrame;
+    return cacheIt->second.buf;
+  }
   id<MTLBuffer> vbo = [_device newBufferWithBytes:data
                                            length:dataSize
                                           options:MTLResourceStorageModeShared];
   if (vbo)
-    _vboCache[data] = vbo;
+    _vboCache[data] = VBOCacheEntry{vbo, _cacheFrame};
   return vbo;
 }
 
@@ -12271,22 +12278,8 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   }
 
   // Reuse cached Metal buffers
-  id<MTLBuffer> vbo = nil;
-  auto vboIt = _vboCache.find(vertexData);
-  if (vboIt != _vboCache.end()) {
-    vbo = vboIt->second;
-  } else {
-    vbo = [_device newBufferWithBytes:vertexData length:vertexDataSize options:MTLResourceStorageModeShared];
-    if (vbo) _vboCache[vertexData] = vbo;
-  }
-  id<MTLBuffer> ibo = nil;
-  auto iboIt = _vboCache.find(indexData);
-  if (iboIt != _vboCache.end()) {
-    ibo = iboIt->second;
-  } else {
-    ibo = [_device newBufferWithBytes:indexData length:indexDataSize options:MTLResourceStorageModeShared];
-    if (ibo) _vboCache[indexData] = ibo;
-  }
+  id<MTLBuffer> vbo = cachedVBOBuffer(vertexData, vertexDataSize);
+  id<MTLBuffer> ibo = cachedVBOBuffer(indexData, indexDataSize);
   if (!vbo || !ibo) return;
 
   // Build vertex descriptor
@@ -12550,6 +12543,138 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   }
 }
 
+// ---------------------------------------------------------------------------
+// GPU upload cache budget (metal_gpu_cache_mb)
+//
+// Every CPU vertex/index buffer a rep draws from gets a Metal copy in
+// _vboCache, and the ray-tracing path extracts its own triangle/sphere copy
+// from the same buffer into _rtGeomCache. Both stay as long as the CPU buffer
+// does. That is the right trade for a scene whose reps are all on screen, but
+// a multi-state object keeps a rep per state: playing a 300-state morph built
+// a Metal buffer and RT geometry for every state it showed, about 13 MB a
+// state for a 110-residue cartoon on an iPhone, and the system ended the app
+// (out of memory) partway through the first loop. The CPU buffers themselves
+// belong to the reps and are not the renderer's to free; its copies are, and
+// an evicted entry is simply uploaded (and extracted) again on its next draw.
+// ---------------------------------------------------------------------------
+
+size_t RendererMetal::rtGeomBytes(const RTGeom& g)
+{
+  return sizeof(float) *
+         (g.spheres.capacity() + g.tris.capacity() + g.triCols.capacity() +
+             g.triNrms.capacity() + g.sphereCols.capacity() +
+             g.triAlpha.capacity() + g.sphereAlpha.capacity());
+}
+
+size_t RendererMetal::gpuCacheBudgetBytes() const
+{
+  if (_gpuCacheBudgetMB < 0)
+    return 0; // no limit
+  if (_gpuCacheBudgetMB > 0)
+    return size_t(_gpuCacheBudgetMB) << 20;
+  // Platform default. An iPhone app may use about 3.5 GB in all before the
+  // system ends it, and everything on screen is kept whatever the budget, so
+  // this bounds only what is cached for reps that are NOT being drawn.
+#if TARGET_OS_IPHONE
+  return size_t(256) << 20;
+#else
+  return size_t(1024) << 20;
+#endif
+}
+
+void RendererMetal::trimGPUCache()
+{
+  const size_t budget = gpuCacheBudgetBytes();
+  if (!budget)
+    return;
+  size_t total = 0;
+  for (const auto& kv : _vboCache)
+    total += kv.second.buf ? size_t([kv.second.buf length]) : 0;
+  for (const auto& kv : _rtGeomCache)
+    total += rtGeomBytes(kv.second);
+  if (total <= budget)
+    return;
+
+  // Candidates: not drawn in this frame (none yet) or the last one, and not
+  // part of either acceleration structure as built. An index buffer is an
+  // alias of the vertex buffer its triangles were extracted with, so the
+  // primary's RT geometry is charged to (and freed with) the vertex buffer.
+  struct Candidate {
+    const void* key;
+    uint64_t lastUse;
+    size_t bytes;
+  };
+  std::vector<Candidate> candidates;
+  for (const auto& kv : _vboCache) {
+    if (kv.second.lastUse + 2 > _cacheFrame)
+      continue;
+    const void* key = kv.first;
+    if (_rtBuiltKeys.count(key) || _rtTBuiltKeys.count(key))
+      continue;
+    auto a = _rtGeomAlias.find(key);
+    if (a != _rtGeomAlias.end() &&
+        (_rtBuiltKeys.count(a->second) || _rtTBuiltKeys.count(a->second)))
+      continue;
+    size_t bytes = kv.second.buf ? size_t([kv.second.buf length]) : 0;
+    auto g = _rtGeomCache.find(key);
+    if (g != _rtGeomCache.end())
+      bytes += rtGeomBytes(g->second);
+    candidates.push_back({key, kv.second.lastUse, bytes});
+  }
+  if (candidates.empty())
+    return;
+  std::sort(candidates.begin(), candidates.end(),
+      [](const Candidate& a, const Candidate& b) {
+        return a.lastUse < b.lastUse;
+      });
+
+  bool droppedRT = false;
+  for (const Candidate& c : candidates) {
+    if (total <= budget)
+      break;
+    auto it = _vboCache.find(c.key);
+    if (it == _vboCache.end())
+      continue;
+    // MRC: the map holds a +1 MTLBuffer. A command buffer still in flight
+    // keeps it alive through Metal's own retain.
+    [it->second.buf release];
+    _vboCache.erase(it);
+    auto g = _rtGeomCache.find(c.key);
+    if (g != _rtGeomCache.end()) {
+      _rtGeomCache.erase(g);
+      droppedRT = true;
+    }
+    _rtGeomAlias.erase(c.key);
+    total = c.bytes < total ? total - c.bytes : 0;
+    _gpuCacheEvictedBytes += c.bytes;
+    ++_gpuCacheEvictedEntries;
+  }
+  // Aliases (index buffers) whose primary geometry went, in one sweep rather
+  // than one per entry. None of it was in a built structure, so neither
+  // acceleration structure is dirtied.
+  if (droppedRT) {
+    for (auto it = _rtGeomAlias.begin(); it != _rtGeomAlias.end();)
+      it = _rtGeomCache.count(it->second) ? std::next(it)
+                                          : _rtGeomAlias.erase(it);
+  }
+}
+
+bool RendererMetal::gpuCacheStats(GpuCacheStats& out, bool trim)
+{
+  if (trim)
+    trimGPUCache();
+  out = GpuCacheStats{};
+  out.entries = _vboCache.size();
+  for (const auto& kv : _vboCache)
+    out.bufferBytes += kv.second.buf ? size_t([kv.second.buf length]) : 0;
+  for (const auto& kv : _rtGeomCache)
+    out.rtBytes += rtGeomBytes(kv.second);
+  out.budgetBytes = gpuCacheBudgetBytes();
+  out.evictedEntries = _gpuCacheEvictedEntries;
+  out.evictedBytes = _gpuCacheEvictedBytes;
+  return true;
+}
+
 void RendererMetal::invalidateVBOCache(uint64_t key)
 {
   // Clear entire cache — key type changed to pointer-based.
@@ -12557,7 +12682,7 @@ void RendererMetal::invalidateVBOCache(uint64_t key)
   // release them, so drop each ownership first. Any buffer still referenced by an
   // in-flight command buffer is kept alive by Metal's own retain until that
   // command buffer completes (same reasoning as ensurePostTargets).
-  for (auto& kv : _vboCache) [kv.second release];
+  for (auto& kv : _vboCache) [kv.second.buf release];
   _vboCache.clear();
   _rtGeomCache.clear();
   _rtGeomAlias.clear();
@@ -12604,7 +12729,7 @@ void RendererMetal::invalidateVBOCacheEntry(const void* cpuData)
     return;
   // MRC: the map holds a +1 MTLBuffer (newBufferWithBytes). Anything still
   // referenced by an in-flight command buffer stays alive via Metal's retain.
-  [it->second release];
+  [it->second.buf release];
   _vboCache.erase(it);
 }
 
@@ -13261,15 +13386,8 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     return;
   }
 
-  id<MTLBuffer> vbo = nil;
-  auto it = _vboCache.find(call.data);
-  if (it != _vboCache.end()) vbo = it->second;
-  else {
-    vbo = [_device newBufferWithBytes:call.data length:call.dataSize
-                              options:MTLResourceStorageModeShared];
-    if (!vbo) return;
-    _vboCache[call.data] = vbo;
-  }
+  id<MTLBuffer> vbo = cachedVBOBuffer(call.data, call.dataSize);
+  if (!vbo) return;
 
   // The impostor VBO is a plain triangle list (our build emits 6 verts/sphere
   // with corner flags {0,1,3,3,2,0}); draw all verts directly, no index buffer.
@@ -14136,17 +14254,8 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // must not be EQUAL-tested against it, or the sticks vanish outright.
   if (_peelMode && !_cylinderPeelPipeline) { _peelUnseeded = true; return; }
 
-  id<MTLBuffer> vbo = nil, ibo = nil;
-  { auto it = _vboCache.find(call.vdata);
-    if (it != _vboCache.end()) vbo = it->second;
-    else { vbo = [_device newBufferWithBytes:call.vdata length:call.vdataSize
-                                     options:MTLResourceStorageModeShared];
-           if (vbo) _vboCache[call.vdata] = vbo; } }
-  { auto it = _vboCache.find(call.idata);
-    if (it != _vboCache.end()) ibo = it->second;
-    else { ibo = [_device newBufferWithBytes:call.idata length:call.idataSize
-                                     options:MTLResourceStorageModeShared];
-           if (ibo) _vboCache[call.idata] = ibo; } }
+  id<MTLBuffer> vbo = cachedVBOBuffer(call.vdata, call.vdataSize);
+  id<MTLBuffer> ibo = cachedVBOBuffer(call.idata, call.idataSize);
   if (!vbo || !ibo) return;
 
   // Ray tracing: tessellate cylinders (sticks) into the world-triangle set,
@@ -15301,15 +15410,8 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   if (numPatches == 0) return;
 
   // Control-point buffer (cache by pointer like the other VBOs).
-  id<MTLBuffer> cpBuf = nil;
-  auto it = _vboCache.find(cp);
-  if (it != _vboCache.end()) cpBuf = it->second;
-  else {
-    cpBuf = [_device newBufferWithBytes:cp length:dataSize
-                                options:MTLResourceStorageModeShared];
-    if (!cpBuf) return;
-    _vboCache[cp] = cpBuf;
-  }
+  id<MTLBuffer> cpBuf = cachedVBOBuffer(cp, dataSize);
+  if (!cpBuf) return;
 
   // Constant per-patch tessellation factors (u = along curve, v = around ring).
   const float segF = 24.0f;  // subdivisions along the curve
@@ -15691,18 +15793,9 @@ void RendererMetal::encodeLabels(const LabelDrawCall& call, const Mat4& mv,
     return;
 
   // Upload (or reuse cached) the interleaved label vertex data.
-  id<MTLBuffer> vbo = nil;
-  auto it = _vboCache.find(call.data);
-  if (it != _vboCache.end()) {
-    vbo = it->second;
-  } else {
-    vbo = [_device newBufferWithBytes:call.data
-                               length:call.dataSize
-                              options:MTLResourceStorageModeShared];
-    if (!vbo)
-      return;
-    _vboCache[call.data] = vbo;
-  }
+  id<MTLBuffer> vbo = cachedVBOBuffer(call.data, call.dataSize);
+  if (!vbo)
+    return;
 
   [_encoder setRenderPipelineState:pipeline];
   applyDepthStencilState();

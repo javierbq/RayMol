@@ -135,6 +135,7 @@ public:
   const void* cpuDataPtr() const override {
     return m_cpuData.empty() ? nullptr : m_cpuData.data();
   }
+  size_t cpuDataBytes() const override { return m_cpuData.size(); }
 
 private:
   void retainInterleavedCPUCopy();
@@ -238,6 +239,7 @@ public:
   const void* cpuDataPtr() const override {
     return m_cpuData.empty() ? nullptr : m_cpuData.data();
   }
+  size_t cpuDataBytes() const override { return m_cpuData.size(); }
 
 private:
   void bufferSubData(std::size_t offset, pymol::span<const std::byte> data);

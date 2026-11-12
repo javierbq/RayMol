@@ -292,6 +292,24 @@ public:
   // previous rep's vertex data. Default: no-op.
   virtual void invalidateVBOCacheEntry(const void* cpuData) {}
 
+  // GPU upload cache budget (metal_gpu_cache_mb): 0 the platform default,
+  // below 0 no limit, else megabytes. Default: no-op (no such cache).
+  virtual void setGpuCacheBudgetMB(int /*mb*/) {}
+  // That budget in bytes; 0 = no limit (and no such cache).
+  virtual size_t gpuCacheBudgetBytes() const { return 0; }
+  // Test/diagnostic (_cmd.get_metal_gpu_cache_stats): what the upload cache
+  // holds now and what it has released. trim runs the budget pass first, as
+  // the next frame would. Default: false (no such cache).
+  struct GpuCacheStats {
+    size_t entries = 0;          // cached uploads (vertex/index buffers)
+    size_t bufferBytes = 0;      // their Metal buffers
+    size_t rtBytes = 0;          // ray-tracing geometry extracted from them
+    size_t budgetBytes = 0;      // 0: no limit
+    unsigned long long evictedEntries = 0;
+    unsigned long long evictedBytes = 0;
+  };
+  virtual bool gpuCacheStats(GpuCacheStats& /*out*/, bool /*trim*/) { return false; }
+
   // Screen-aligned textured text quads (labels + measurement text). The
   // interleaved vertex data carries the attributes the GL label shader uses;
   // byte offsets are within `stride` (-1 = absent). The glyph atlas is an
