@@ -29,6 +29,10 @@ struct MorphSheet: View {
     /// `morph_bytes_per_frame`), or nil when the poll has not published it — the
     /// summary then omits the memory estimate and the tier is `.ok`.
     let bytesPerFrame: Int?
+    /// The panel payload's `morph_drawn_cap` (`morph_jobs.drawn_cap`): what the
+    /// estimate adds for the frames the renderer draws, at most (0 none, -1 no
+    /// limit). See `MorphSettings.drawnBytes`.
+    let drawnCap: Int
     /// Movie fps: the rate auto-play uses, so the summary's seconds are real.
     let fps: Double
     /// The settings that built the morph, when the sheet is opened on one.
@@ -48,7 +52,7 @@ struct MorphSheet: View {
     @State private var settings: MorphSettings
 
     init(source: String, target: String, models: Int, atoms: Int?, bytesPerFrame: Int?,
-         fps: Double, existingSettings: MorphSettings?, isMorphObject: Bool,
+         drawnCap: Int = 0, fps: Double, existingSettings: MorphSettings?, isMorphObject: Bool,
          targetExists: Bool = false,
          sourceShowsSurfaceOrMesh: Bool = false,
          onMorph: @escaping (MorphSettings) -> Void,
@@ -56,6 +60,7 @@ struct MorphSheet: View {
          onCancel: @escaping () -> Void) {
         self.source = source; self.target = target
         self.models = models; self.atoms = atoms; self.bytesPerFrame = bytesPerFrame
+        self.drawnCap = drawnCap
         self.fps = fps
         self.existingSettings = existingSettings
         self.isMorphObject = isMorphObject
@@ -110,7 +115,8 @@ struct MorphSheet: View {
 
     private var content: some View {
         let summary = settings.summary(models: models, atoms: atoms ?? 0,
-                                       bytesPerFrame: bytesPerFrame, fps: fps)
+                                       bytesPerFrame: bytesPerFrame, fps: fps,
+                                       drawnCap: drawnCap)
         let tier = Self.memoryTier(bytes: summary.bytes, thresholds: Self.currentThresholds())
         return VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -174,17 +180,21 @@ struct MorphSheet: View {
 
     enum MemoryTier { case ok, warn, refuse }
 
-    /// The thresholds `morph_jobs.thresholds()` uses, in bytes (spec §5.6, its
-    /// figures as floors): on iPhone and iPad 1/4 and 1/2 of what the app may
-    /// still allocate (`available`, at least 100 MB and 400 MB; the floors when
-    /// unknown), elsewhere 1/16 and 1/4 of the machine's memory (at least 200 MB
-    /// and 1 GB). The two sides read their figures independently, so they agree
-    /// up to what the app allocated in between.
+    /// The thresholds `morph_jobs.thresholds()` uses, in bytes (spec §5.6): on
+    /// iPhone and iPad 1/2 and 3/4 of what the app may still allocate
+    /// (`available`), with no floor, so neither exceeds it (100 MB and 400 MB
+    /// only when it is unknown); elsewhere 1/16 and 1/4 of the machine's memory
+    /// (at least 200 MB and 1 GB). The iOS estimate counts the frames the
+    /// renderer keeps once drawn (`MorphSettings.drawnBytes`), so the last
+    /// quarter is headroom for the rest of the session. The two sides read
+    /// their figures independently, so they agree up to what the app allocated
+    /// in between.
     static func memoryThresholds(physical: UInt64, available: UInt64?,
                                  iOS: Bool) -> (warn: Double, refuse: Double) {
         if iOS {
-            let left = Double(available ?? 0)
-            return (max(100e6, left / 4), max(400e6, left / 2))
+            guard let available, available > 0 else { return (100e6, 400e6) }
+            let left = Double(available)
+            return (left / 2, left * 3 / 4)
         }
         let total = Double(physical)
         return (max(200e6, total / 16), max(1e9, total / 4))

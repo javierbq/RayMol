@@ -4114,6 +4114,7 @@ private struct ObjectCard: View {
             // morph_estimate's figure is the SOURCE's (its reps), also from a
             // morph's own card; published for every multi-state molecule.
             bytesPerFrame: engine.morphBytesPerFrame[source],
+            drawnCap: engine.morphDrawnCap,
             fps: engine.playback.movieFPS,
             existingSettings: engine.morphSpecs[entry.name],
             isMorphObject: isMorph,
@@ -6128,6 +6129,13 @@ struct PanelPayload: Decodable {
     ///
     /// Optional for the same reason as every field above.
     let morph_atoms_per_frame: [String: Int]?
+    /// What `morph_estimate` adds for the frames the Metal renderer keeps once
+    /// drawn, at most (`morph_jobs.drawn_cap`): 0 when not counted (outside
+    /// iOS), -1 for no limit, else bytes. The Morph and Play-models sheets add
+    /// the same figure (`MorphSettings.drawnBytes`).
+    ///
+    /// Optional for the same reason as every field above (0 without it).
+    let morph_drawn_cap: Int?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -6286,6 +6294,8 @@ extension PyMOLEngine {
             if self.morphBytesPerFrame != bytesPerFrame { self.morphBytesPerFrame = bytesPerFrame }
             let atomsPerFrame = payload.morph_atoms_per_frame ?? [:]
             if self.morphAtomsPerFrame != atomsPerFrame { self.morphAtomsPerFrame = atomsPerFrame }
+            let drawnCap = payload.morph_drawn_cap ?? 0
+            if self.morphDrawnCap != drawnCap { self.morphDrawnCap = drawnCap }
             self.applyMorphPoll(jobs: morphJobList, running: nowRunningMorphs,
                                 sources: newMorphSources, specs: newMorphSpecs,
                                 builds: newMorphBuilds)

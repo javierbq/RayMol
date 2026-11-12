@@ -1171,6 +1171,15 @@ def poll_panel():
             costs = {}
         payload['morph_bytes_per_frame'] = {o: c[1] for o, c in costs.items()}
         payload['morph_atoms_per_frame'] = {o: c[0] for o, c in costs.items()}
+        # The bound on what morph_estimate adds for the states the Metal renderer
+        # has drawn (morph_jobs.drawn_cap: 0 not counted, i.e. outside iOS; -1 no
+        # limit; else bytes), so both sheets add morph_object's own figure.
+        # OPTIONAL on the Swift side (0 without it). One setting read.
+        try:
+            from pymol import morph_jobs as _mj_cap
+            payload['morph_drawn_cap'] = _mj_cap.drawn_cap()
+        except Exception:
+            payload['morph_drawn_cap'] = 0
         # Design-mode selection fingerprint. Computed inside raymol_design and
         # GATED there on Design mode being active, so this main-thread 500 ms poll
         # pays a single boolean check whenever Design mode is off (PR #270 made
