@@ -1,5 +1,25 @@
 [
   {
+    "version": "1.14.0",
+    "pages": [
+      {
+        "title": "Morphing",
+        "body": "NMR ensembles, trajectory snapshots and predicted models now glide from one model to the next instead of flipping. Your original models stay exactly as they are.",
+        "videoName": "whatsnew-1140-morph"
+      },
+      {
+        "title": "One button to morph",
+        "body": "Expand a multi-state object in the Objects tab and select Morph…. It builds in the background as a new object beside the original. Or type morph_object 2kpo.",
+        "imageName": "whatsnew-1140-morph-sheet"
+      },
+      {
+        "title": "Smooth movies",
+        "body": "A Play models clip in the Movie tab has a Smooth transitions toggle, and exported videos play the morph frame by frame. Timelines are now saved in your sessions too.",
+        "imageName": "whatsnew-1140-smooth-movies"
+      }
+    ]
+  },
+  {
     "version": "1.13.0",
     "pages": [
       {

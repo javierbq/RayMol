@@ -62,6 +62,7 @@
 		272C379DFEE54E979E9A15D2 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		2B6E59F50398ACB89A0BB029 /* DesignModeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */; };
 		2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
+		2CC5FF419A53BC9D166242B8 /* whatsnew-1140-morph.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 09637275EEEC3B04C1F6C9AE /* whatsnew-1140-morph.mp4 */; };
 		2D0EBBB9F215BBEDBEE17B50 /* LightsAtmosphereLiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 820DDE65C644725B4A6D48BE /* LightsAtmosphereLiveTests.swift */; };
 		2D3D69F7B73F3F499AD0894F /* PredictAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */; };
 		2D81E4A3FB5DCDD98FC189FB /* RFD3ResultWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FC150B0707033AB3B186189 /* RFD3ResultWriter.swift */; };
@@ -114,6 +115,7 @@
 		4C754E670F4EB9FDE0000E74 /* LightsEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C14BA8BC49311C1D073B8E10 /* LightsEditingTests.swift */; };
 		4D8DF048FC4285E17546DE34 /* whatsnew-1130-shadows.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */; };
 		4E1CFC49EFB50160C3D388B2 /* DesignAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4300265954DF2B8309EDAA6C /* DesignAvailability.swift */; };
+		4EAD5A8964DBB5D973663C98 /* whatsnew-1140-morph.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 09637275EEEC3B04C1F6C9AE /* whatsnew-1140-morph.mp4 */; };
 		4FF61FB384E2C1B9388BA273 /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		506C87D1E2B2026BFFC9C607 /* whatsnew-1110-boxselect.png in Resources */ = {isa = PBXBuildFile; fileRef = 6316D26C663083E0E595CE15 /* whatsnew-1110-boxselect.png */; };
 		5266FEFA719316DF9C6A65AA /* LightGizmoGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C6065F04ABD8B4DF7A370E9 /* LightGizmoGeometryTests.swift */; };
@@ -236,6 +238,7 @@
 		A874BBD4EC51E65F61ECD5D2 /* whatsnew-1120-sidechains.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 1926971439F96C03DB81AA8E /* whatsnew-1120-sidechains.jpg */; };
 		AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */; };
 		AA36D034CEC68207CFC82340 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
+		ABAFCB7E1C7032A48D8F3249 /* whatsnew-1140-smooth-movies.jpg in Resources */ = {isa = PBXBuildFile; fileRef = D903D69FFE1A96D6A9BD16F2 /* whatsnew-1140-smooth-movies.jpg */; };
 		AC2B01766D25FC00186F9D2E /* LightsFloatingTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */; };
 		AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71574A2074A14803B91ED695 /* InferenceRouter.swift */; };
 		ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
@@ -269,7 +272,9 @@
 		BDF58C2A00D4BFACD41D6462 /* ProgressTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4857D1284B60EB0C750C02F /* ProgressTray.swift */; };
 		BE397E89274A3180A2E649BF /* DesignColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */; };
 		BF09C330B7686E39A51C8626 /* BoltzRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */; };
+		BF3D796E39B90D0243162EE2 /* whatsnew-1140-smooth-movies.jpg in Resources */ = {isa = PBXBuildFile; fileRef = D903D69FFE1A96D6A9BD16F2 /* whatsnew-1140-smooth-movies.jpg */; };
 		BF97400ECA54F56EB9D96FC2 /* RFD3Trajectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F41684D508836307667157 /* RFD3Trajectory.swift */; };
+		C0A4EAF9BB2C6906F3077626 /* whatsnew-1140-morph-sheet.jpg in Resources */ = {isa = PBXBuildFile; fileRef = C74F15461D43C52986E0962C /* whatsnew-1140-morph-sheet.jpg */; };
 		C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
 		C0E5F9D9FA0CE3995618FC55 /* whatsnew-1130-lights.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */; };
 		C2FCBB63D8533AF61056C0C2 /* DesignCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */; };
@@ -313,6 +318,7 @@
 		E260BED24CBA34D49088686D /* whatsnew-1120-materials.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 8342C6A3FDF28A858D7E1AA4 /* whatsnew-1120-materials.mp4 */; };
 		E2F5A088F804B59B38054C81 /* LightsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40FC41A2798A30FE8E223CEC /* LightsController.swift */; };
 		E3E4D527F2D9B262BA530D00 /* LightRigBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */; };
+		E4046D2B448B5432CDC20284 /* whatsnew-1140-morph-sheet.jpg in Resources */ = {isa = PBXBuildFile; fileRef = C74F15461D43C52986E0962C /* whatsnew-1140-morph-sheet.jpg */; };
 		E4297BB35BAA562115F71EF2 /* LightsOrbitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142BDBF375FA246776AB2CD1 /* LightsOrbitView.swift */; };
 		E4312B988564A872D81EBBA0 /* MorphSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */; };
 		E51EFBE3A58396C4934721ED /* PredictScreenAwake.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */; };
@@ -383,6 +389,7 @@
 		05C388F2E8B5A99F3CBFFC7E /* PyMOLViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignEditingTests.swift; sourceTree = "<group>"; };
 		0825BFE369DAF40A6F3AA5D4 /* PredictAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictAvailabilityTests.swift; sourceTree = "<group>"; };
+		09637275EEEC3B04C1F6C9AE /* whatsnew-1140-morph.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1140-morph.mp4"; sourceTree = "<group>"; };
 		09B4DDACD356CAF3B07B2904 /* LightsOrbitLiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsOrbitLiveTests.swift; sourceTree = "<group>"; };
 		0A5D5BE41117078CE35E951B /* LightGizmoViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoViewTests.swift; sourceTree = "<group>"; };
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
@@ -552,6 +559,7 @@
 		C562306A5AD1EEDDBA931B98 /* TransportBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportBar.swift; sourceTree = "<group>"; };
 		C5D633C399E993EE52877C82 /* whatsnew-1100-predict-progress.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1100-predict-progress.mp4"; sourceTree = "<group>"; };
 		C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignColor.swift; sourceTree = "<group>"; };
+		C74F15461D43C52986E0962C /* whatsnew-1140-morph-sheet.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1140-morph-sheet.jpg"; sourceTree = "<group>"; };
 		C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-predict.png"; sourceTree = "<group>"; };
 		CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = "openssl-PrivacyInfo.xcprivacy"; sourceTree = "<group>"; };
@@ -568,6 +576,7 @@
 		D55EF2F596852510DDACA576 /* SelectionInputField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionInputField.swift; sourceTree = "<group>"; };
 		D60E5CB80464F5616064A91C /* PredictControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictControllerTests.swift; sourceTree = "<group>"; };
 		D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsFloatingTools.swift; sourceTree = "<group>"; };
+		D903D69FFE1A96D6A9BD16F2 /* whatsnew-1140-smooth-movies.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1140-smooth-movies.jpg"; sourceTree = "<group>"; };
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
 		DA4A62DDBB48F5166D118F32 /* PredictSizeGuardIOSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictSizeGuardIOSTests.swift; sourceTree = "<group>"; };
 		DB57918069BC56804621C327 /* MaterialDropdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaterialDropdownTests.swift; sourceTree = "<group>"; };
@@ -698,6 +707,9 @@
 				A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */,
 				A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */,
 				6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */,
+				C74F15461D43C52986E0962C /* whatsnew-1140-morph-sheet.jpg */,
+				09637275EEEC3B04C1F6C9AE /* whatsnew-1140-morph.mp4 */,
+				D903D69FFE1A96D6A9BD16F2 /* whatsnew-1140-smooth-movies.jpg */,
 				689CDE512811C244D4BA931B /* WhatsNew.json */,
 			);
 			path = Resources;
@@ -1131,6 +1143,9 @@
 				76B529726C7FCD5839431DB0 /* whatsnew-1130-movie-export.jpg in Resources */,
 				1E9B1EAEFBEB7C293331B026 /* whatsnew-1130-presets.mp4 in Resources */,
 				DAC47DC47A669C86E8232361 /* whatsnew-1130-shadows.jpg in Resources */,
+				E4046D2B448B5432CDC20284 /* whatsnew-1140-morph-sheet.jpg in Resources */,
+				4EAD5A8964DBB5D973663C98 /* whatsnew-1140-morph.mp4 in Resources */,
+				BF3D796E39B90D0243162EE2 /* whatsnew-1140-smooth-movies.jpg in Resources */,
 				EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */,
 				36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */,
@@ -1176,6 +1191,9 @@
 				6F52C05E18364C406E853BB0 /* whatsnew-1130-movie-export.jpg in Resources */,
 				0E50F595AA133DD1548EBC39 /* whatsnew-1130-presets.mp4 in Resources */,
 				4D8DF048FC4285E17546DE34 /* whatsnew-1130-shadows.jpg in Resources */,
+				C0A4EAF9BB2C6906F3077626 /* whatsnew-1140-morph-sheet.jpg in Resources */,
+				2CC5FF419A53BC9D166242B8 /* whatsnew-1140-morph.mp4 in Resources */,
+				ABAFCB7E1C7032A48D8F3249 /* whatsnew-1140-smooth-movies.jpg in Resources */,
 				F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */,
 				B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */,
@@ -2008,7 +2026,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 370;
+				CURRENT_PROJECT_VERSION = 377;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -2022,7 +2040,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.13.0;
+				MARKETING_VERSION = 1.14.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -2042,7 +2060,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 370;
+				CURRENT_PROJECT_VERSION = 377;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -2056,7 +2074,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.13.0;
+				MARKETING_VERSION = 1.14.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -2078,7 +2096,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 370;
+				CURRENT_PROJECT_VERSION = 377;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -2094,7 +2112,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.13.0;
+				MARKETING_VERSION = 1.14.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -2136,7 +2154,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 370;
+				CURRENT_PROJECT_VERSION = 377;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -2152,7 +2170,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.13.0;
+				MARKETING_VERSION = 1.14.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
