@@ -52,6 +52,41 @@ final class PyMOLGestureUITests: XCTestCase {
                       "one-finger drag did not rotate the molecule")
     }
 
+    /// #929: a one-finger VERTICAL drag turns the model the way the finger
+    /// moves. The scene is a white sphere at the rotation origin with a small
+    /// red marker in front of it (toward the viewer), so the marker sits at
+    /// the viewport centre and a rotation shows as the marker sliding over
+    /// the sphere: finger up -> marker up, finger down -> marker down.
+    func testOneFingerVerticalDragFollowsTheFinger() {
+        app.launchEnvironment["PYMOL_AUTOLOAD"] = nil
+        app.launchEnvironment["PYMOL_SKIP_WHATS_NEW"] = "1"
+        app.launchEnvironment["PYMOL_SKIP_GESTURE_HELP"] = "1"
+        launch(scene: "pseudoatom o, pos=[0,0,0]; pseudoatom m, pos=[0,0,12]; show spheres; "
+                    + "set sphere_scale, 3, o; set sphere_scale, 1.2, m; color white, o; color red, m; "
+                    + "bg_color black; origin o; zoom o, 25")
+        settle()
+        guard let rest = redMarkerCentre() else { return XCTFail("the red marker never rendered") }
+        attach("vertical-rest")
+
+        let scale = UIScreen.main.scale
+        func drag(dy: CGFloat) {
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let from = origin.withOffset(CGVector(dx: rest.x / scale, dy: rest.y / scale))
+            from.press(forDuration: 0.05, thenDragTo: from.withOffset(CGVector(dx: 0, dy: dy)))
+            settle()
+        }
+
+        drag(dy: -60)   // finger UP
+        guard let up = redMarkerCentre() else { return XCTFail("the marker left the view on the up drag") }
+        attach("vertical-after-up")
+        XCTAssertLessThan(up.y, rest.y - 4, "finger up must carry the front of the model UP the screen")
+
+        drag(dy: 120)   // finger DOWN, past the rest position
+        guard let down = redMarkerCentre() else { return XCTFail("the marker left the view on the down drag") }
+        attach("vertical-after-down")
+        XCTAssertGreaterThan(down.y, rest.y + 4, "finger down must carry the front of the model DOWN the screen")
+    }
+
     func testPinchZooms() {
         launch()
         let before = viewportSignature()
@@ -147,6 +182,28 @@ final class PyMOLGestureUITests: XCTestCase {
                                   bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return [] }
         ctx.draw(region, in: CGRect(x: 0, y: 0, width: sw, height: sh))
         return buf
+    }
+
+    /// The centre (screenshot pixels, top-left origin) of the saturated-red
+    /// pixels on screen, or nil when there are too few to be the marker.
+    private func redMarkerCentre() -> CGPoint? {
+        guard let cg = XCUIScreen.main.screenshot().image.cgImage else { return nil }
+        let w = cg.width, h = cg.height
+        var buf = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &buf, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var sx = 0, sy = 0, n = 0
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = (y * w + x) * 4
+                if buf[i] > 120, buf[i + 1] < 50, buf[i + 2] < 50 { sx += x; sy += y; n += 1 }
+            }
+        }
+        guard n > 50 else { return nil }
+        // Row 0 of the buffer is the top of the screenshot.
+        return CGPoint(x: CGFloat(sx) / CGFloat(n), y: CGFloat(sy) / CGFloat(n))
     }
 
     private func changed(_ a: [UInt8], _ b: [UInt8], threshold: Double = 0.06) -> Bool {
