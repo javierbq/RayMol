@@ -2271,6 +2271,18 @@ extension MetalViewport {
             }
         }
 
+        /// A touch location as the PyMOL window point of a camera drag
+        /// (rotate, translate): backing pixels with Y flipped to PyMOL's
+        /// bottom-up convention. UIKit is top-down and the iOS pymolPoint
+        /// does not flip, so raw coordinates run the vertical axis of both
+        /// cButModeRotXYZ and cButModeTransXY (SceneMouse.cpp) backwards
+        /// (#196, #929). macOS gets this for free: NSView is bottom-up.
+        /// handleTap flips Y the same way for picking. The three-finger clip
+        /// is not grab-and-move and stays on raw coordinates.
+        private func cameraDragPoint(in view: MTKView, at location: CGPoint) -> (Int32, Int32) {
+            pymolPoint(in: view, at: LightTouchGeometry.bottomUp(location, viewHeight: view.bounds.height))
+        }
+
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
             guard let view = mtkView else { return }
             let location = gesture.location(in: view)
@@ -2295,7 +2307,7 @@ extension MetalViewport {
                 return
             }
 
-            let pt = pymolPoint(in: view, at: location)
+            let pt = cameraDragPoint(in: view, at: location)
             switch gesture.state {
             case .began:
                 // Single-finger pan = left drag (rotation)
@@ -2335,7 +2347,7 @@ extension MetalViewport {
                 if let hnd = handle {
                     engine.gizmoBeginDrag(hnd, ndcX: px, ndcY: py, aspect: aspect)
                 } else {
-                    let pt = pymolPoint(in: view, at: location)
+                    let pt = cameraDragPoint(in: view, at: location)
                     engine.button(PYMOL_BUTTON_LEFT, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
                 }
             case .changed:
@@ -2345,7 +2357,7 @@ extension MetalViewport {
                     // Orbit: the 3D CGO gizmo tracks the camera on render, so skip the
                     // per-tick hit-test refresh (Python + file I/O) that made orbiting
                     // laggy; it's refreshed on .ended for the next tap/drag.
-                    let pt = pymolPoint(in: view, at: location)
+                    let pt = cameraDragPoint(in: view, at: location)
                     engine.drag(x: pt.0, y: pt.1, modifiers: 0)
                 }
             case .ended, .cancelled:
@@ -2353,7 +2365,7 @@ extension MetalViewport {
                     engine.gizmoEndDrag()
                     panMoveHandle = nil
                 } else {
-                    let pt = pymolPoint(in: view, at: location)
+                    let pt = cameraDragPoint(in: view, at: location)
                     engine.button(PYMOL_BUTTON_LEFT, state: PYMOL_BUTTON_UP, x: pt.0, y: pt.1, modifiers: 0)
                     engine.refreshGizmo(aspect: aspect)
                 }
@@ -2390,14 +2402,8 @@ extension MetalViewport {
         // Two-finger drag = TRANSLATE (middle-drag). The centroid is fed to
         // PyMOL as the drag cursor so the molecule follows the fingers.
         //
-        // Y MUST be flipped to PyMOL's bottom-up window convention. PyMOL's
-        // cButModeTransXY (SceneMouse.cpp) translates the scene by +(y-LastY):
-        // for grab-and-move (finger up -> molecule up) the window y has to
-        // INCREASE going up. UIKit is top-down (y increases going DOWN), and the
-        // iOS pymolPoint does not flip, so raw coords invert vertical translate.
-        // Flipping the location here (height - y) restores the correct sign.
-        // (handleTap already flips Y the same way for picking; macOS gets this
-        // for free because NSView is bottom-up.)
+        // Y goes through cameraDragPoint (bottom-up), so finger up -> molecule
+        // up: cButModeTransXY translates the scene by +(y-LastY).
         @objc func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
             guard let view = mtkView, !boxSelectActive else { return }   // camera frozen (#358)
             let loc = gesture.location(in: view)
@@ -2406,7 +2412,7 @@ extension MetalViewport {
             // The pan decides where its fingers came down.
             let press = LightTouchGeometry.pressPoint(location: loc, translation: gesture.translation(in: view))
             if lightGizmoTwoFinger(.pan, gesture, at: press, in: view) { return }
-            let pt = pymolPoint(in: view, at: CGPoint(x: loc.x, y: view.bounds.height - loc.y))
+            let pt = cameraDragPoint(in: view, at: loc)
             switch gesture.state {
             case .began:
                 lastDragPt = pt
