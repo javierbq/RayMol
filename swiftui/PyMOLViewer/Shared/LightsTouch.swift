@@ -126,6 +126,14 @@ enum LightTouchGeometry {
         CGPoint(x: location.x - translation.x, y: location.y - translation.y)
     }
 
+    /// A UIKit touch location (Y grows downward) in PyMOL's window
+    /// convention (Y grows upward), still in points. Every camera drag fed
+    /// to PyMOL_Button / PyMOL_Drag goes through this: the core's rotate and
+    /// translate both assume bottom-up Y, as macOS supplies it (#929).
+    static func bottomUp(_ location: CGPoint, viewHeight: CGFloat) -> CGPoint {
+        CGPoint(x: location.x, y: viewHeight - location.y)
+    }
+
     /// The distance between the first two touches, or infinity with fewer
     /// than two (such a sequence is never the gizmo's).
     static func span(_ touches: [CGPoint]) -> CGFloat {

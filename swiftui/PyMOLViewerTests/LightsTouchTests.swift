@@ -577,6 +577,18 @@ final class LightsTouchRoutingTests: XCTestCase {
 
     // MARK: geometry
 
+    func testACameraDragPointIsBottomUp() {
+        // #929: a finger moving UP the screen (UIKit y falling) must give
+        // PyMOL a RISING window y, as a macOS mouse drag does; x is untouched.
+        let h: CGFloat = 800
+        let low = LightTouchGeometry.bottomUp(CGPoint(x: 120, y: 600), viewHeight: h)
+        let high = LightTouchGeometry.bottomUp(CGPoint(x: 120, y: 200), viewHeight: h)
+        XCTAssertEqual(low, CGPoint(x: 120, y: 200))
+        XCTAssertEqual(high, CGPoint(x: 120, y: 600))
+        XCTAssertGreaterThan(high.y, low.y, "finger up -> window y up")
+        XCTAssertEqual(LightTouchGeometry.bottomUp(CGPoint(x: 5, y: 0), viewHeight: h).y, h, "the top edge")
+    }
+
     func testThePressPointAndTheSpan() {
         XCTAssertEqual(LightTouchGeometry.pressPoint(location: CGPoint(x: 100, y: 80),
                                                      translation: CGPoint(x: 12, y: -5)),
