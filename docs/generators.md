@@ -38,6 +38,7 @@ are new.
 | `modules/pymol/generators/registry.py` | `register` / `get` / `available` / `unregister` |
 | `modules/pymol/generators/metrics.py` | the shared geometry spec sets |
 | `modules/pymol/generators/rfd3.py` | the shipped method — copy this |
+| `modules/pymol/generators/rfd4.py` | the second one, and what a method that rebuilds its target has to declare differently |
 | `swiftui/PyMOLViewer/Shared/InferenceJob.swift` | the wire and the job shell, shared with every predictor |
 | `swiftui/PyMOLViewer/Shared/InferenceRouter.swift` | `InferenceRuntime`, and the one table of runtimes |
 | `swiftui/PyMOLViewer/Shared/RFD3JobManager.swift` | the Swift runtime that runs it |
@@ -56,8 +57,47 @@ the placeholder — `designing` rather than `predicting`, which the shell's help
 | id | runtime | weights | notes |
 |---|---|---|---|
 | `rfd3` | `rfd3` | fp32, 625 MB | RFdiffusion3 via [rfd3-mlx](https://github.com/javierbq/rfd3-mlx), macOS only |
+| `rfd4` | `rfd4` | fp16, 807 MB | RFD4-Proteina via [rfd4-proteina-mlx](https://github.com/javierbq/rfd4-proteina-mlx), macOS only |
 
-fp32 is the only precision offered because it is the only one the Swift engine has a matmul
+### rfd4 is a different model, not a newer rfd3
+
+Three differences decide how its output is read, and each one is somewhere the two must not
+be confused:
+
+* **It GENERATES its target.** rfd3 masks the target out of the noise and reproduces it
+  atom-for-atom, so `target_drift_max` is a contract check reading 0.000 Å on a correct run.
+  rfd4 enters the target centred and randomly rotated and must place it, so the complex
+  arrives in an arbitrary frame and a small rebuild error is CORRECT. The engine superposes
+  the rebuilt target back onto the supplied one and carries the design through the same
+  motion. It is reported under its own key, `target_rebuild_rmsd`; writing it under rfd3's
+  would brand every correct design a defect, in a field whose own description says it should
+  be zero.
+* **It handles gaps.** The contig splits the target wherever the backbone is not bonded —
+  decided from the C(i)–N(i+1) distance, not from residue numbering — and gives each stretch
+  its own chain id, so a target with an unmodelled loop is designed against correctly rather
+  than asked to bond across the gap. Nothing is required of the caller, which is why there
+  is no option for it. At most 25 stretches, because the contig parser refuses two runs
+  claiming the same chain id.
+* **It is sized in TOKENS, not atoms.** One residue is one token, target or designed. The
+  peak-memory curve is quadratic in that count, so feeding it an atom count — which is what
+  porting rfd3's policy across would do — would refuse essentially everything.
+
+It also exposes **no schedule knobs**: `seed` is the only option. The released schedule is 60
+flow steps and the `thinking` recycle bands are indexed against them, so a different count
+would be a misaligned run rather than a longer one, and there is no scalar that describes
+`thinking_medium`'s six bands of depth 6, 5, 4, 3, 2, 1. Declaring the knobs and ignoring
+them is deliberately not done — `validate_options` rejects the name, so a user is told
+rather than left watching a setting change nothing. There is **no live view** either: the
+engine's step hook reports `(step, trunk passes)` and no coordinates, so there is nothing to
+stream.
+
+Measured: a 100-design campaign against HSA 190–339, validated with Boltz-MLX as the oracle,
+gave 87/100 designable (median scRMSD 0.59 Å, with no ProteinMPNN redesign) and 35/100
+through all four gates.
+
+### Precision
+
+For `rfd3`, fp32 is the only precision offered because it is the only one the Swift engine has a matmul
 path for. int8 measures near-lossless on these weights (coordinate RMSD 0.06–0.09 Å, 97.5–100%
 sequence agreement, 9/9 designs docked) and is 3.5× smaller, but it needs `linear()` extended
 upstream first — and its large-system latency is bimodal, two of nine runs spiking to 2030 s
