@@ -97,6 +97,7 @@ enum InferenceRouter {
         #if os(macOS)
         table.append(ProtenixJobManager.shared)
         table.append(RFD3JobManager.shared)
+        table.append(RFD4JobManager.shared)
         #endif
         return table
     }()
