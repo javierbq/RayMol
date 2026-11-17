@@ -106,6 +106,29 @@ packages:
     # Package.resolved was regenerated. `FeatSet.origin`, which the live path also needs,
     # arrived in 0.1.2 and is still there.
     from: 0.1.3
+  # rfd4-proteina-mlx: the second backbone generator, RFD4-Proteina. A different model
+  # rather than a newer RFdiffusion3 -- flow matching over joint sequence and structure,
+  # and it GENERATES its target rather than holding it fixed, which is why RFD4JobManager
+  # does not reuse RFD3's drift check and why the two declare different metric keys.
+  #
+  # macOS only, for the same reason rfd3 is and a sharper one: peak memory is quadratic
+  # in TOKEN count and reaches 6.62 GB at 638 tokens even at fp16 (the precision that
+  # ships), and its out-of-memory failure is an uncatchable SIGABRT rather than a slow
+  # run. RFD4JobManager, RFD4Runtime and RFD4SizeGuard are all behind `#if os(macOS)`.
+  #
+  # Pins mlx-swift `exact: 0.31.6` -- the SAME exact pin MPNNKit, BoltzMLX and RFD3MLX
+  # carry, so resolution composes across all four. `exact:` has no consumer-side
+  # override, so if any one of them bumps independently, resolution fails outright and
+  # the app will not build at all. Bump them together and re-tag.
+  RFD4MLX:
+    url: https://github.com/javierbq/rfd4-proteina-mlx.git
+    # 0.1.0 is the first tag, and an EXACT pin rather than a `from:` floor while it is the
+    # only one: the host API this links (RFD4Design, RFD4Budget, the sampler's
+    # cancellation hook) landed in it, and a floor would silently pick up a later tag that
+    # could move those signatures before anything here was compiled against them.
+    #
+    # `exactVersion` is XcodeGen's spelling; `exact` is SPM's and XcodeGen rejects it.
+    exactVersion: 0.1.0
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
@@ -734,6 +757,21 @@ targets:
       - package: RFD3MLX
         product: RFD3Kit
         platforms: [macOS]
+      # rfd4-proteina-mlx: the second backbone generator. Same macOS-only filter and the
+      # same reasoning as RFD3MLX above, and likewise outside the Sparkle markers, or
+      # archive_appstore.sh's sed-strip would remove it from the MAS build.
+      #
+      # BOTH products, unlike the single-product packages above it: RFD4MLX holds the
+      # trunk, the sampler and the host-facing RFD4Design, while RFD4Core holds Vec3 and
+      # ReleasedRecycleStrategy, which RFD4JobManager names directly. The split is the
+      # port's own -- RFD4Core carries no MLX dependency so its tests run without a Metal
+      # device -- and a consumer that needs a type from each has to link each.
+      - package: RFD4MLX
+        product: RFD4Core
+        platforms: [macOS]
+      - package: RFD4MLX
+        product: RFD4MLX
+        platforms: [macOS]
 # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
       # out of the iOS build. All Swift usage is additionally guarded by
@@ -779,6 +817,14 @@ targets:
       # `@testable import RayMol` cannot compile a file that imports RFD3Kit.
       - package: RFD3MLX
         product: RFD3Kit
+      # RFD4Core + RFD4MLX: same, for RFD4JobManager.swift / RFD4SizeGuard.swift.
+      # Unfiltered, because the test target is macOS-only by its own `platform: macOS` --
+      # and without them `@testable import RayMol` cannot compile a file that imports
+      # either module.
+      - package: RFD4MLX
+        product: RFD4Core
+      - package: RFD4MLX
+        product: RFD4MLX
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.raymol.RayMol.tests
