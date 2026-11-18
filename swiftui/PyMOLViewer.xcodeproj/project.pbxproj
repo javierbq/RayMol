@@ -12,6 +12,7 @@
 		020822B7AD61092433C2F78E /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
 		0289EAA2F61546F2DD2430BA /* LightRigBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED82B93C6739F52D7124AE90 /* LightRigBridge.swift */; };
 		042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
+		04722E7E456D653B05B4676E /* RFD4JobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE80D648FB36C120F47F5D8 /* RFD4JobManager.swift */; };
 		04798DF552010A1889F8FFDD /* RFD3Runtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECB1F4D491FA24E65DD3B011 /* RFD3Runtime.swift */; };
 		047FD10B437F95938AB4B3B0 /* WeightsFetchStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */; };
 		057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE160C6EB58F631604002E6 /* AppBuildInfoTests.swift */; };
@@ -55,6 +56,7 @@
 		1E9B1EAEFBEB7C293331B026 /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */; };
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		2271B125CA7B637F85F2FA65 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
+		2308A18EEC68BD64673CDC53 /* RFD4Runtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43B08A39C2122015A5A8ED2A /* RFD4Runtime.swift */; };
 		238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */; };
 		23DD20D11994BE14AFAFEA75 /* LightsAtmosphereCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6743F01EAFCBFE01B6ADD02 /* LightsAtmosphereCard.swift */; };
 		24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
@@ -62,6 +64,7 @@
 		272C379DFEE54E979E9A15D2 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		2B6E59F50398ACB89A0BB029 /* DesignModeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */; };
 		2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
+		2CBF74AAD340C89F5AEB7CF0 /* RFD4Runtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43B08A39C2122015A5A8ED2A /* RFD4Runtime.swift */; };
 		2CC5FF419A53BC9D166242B8 /* whatsnew-1140-morph.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 09637275EEEC3B04C1F6C9AE /* whatsnew-1140-morph.mp4 */; };
 		2D0EBBB9F215BBEDBEE17B50 /* LightsAtmosphereLiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 820DDE65C644725B4A6D48BE /* LightsAtmosphereLiveTests.swift */; };
 		2D3D69F7B73F3F499AD0894F /* PredictAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */; };
@@ -154,6 +157,7 @@
 		6A1DB5F97E3738FD1819FF6E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		6A37175866051AC88BD25C1D /* RFD3RuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FB3DD619B055E99FD2F9C1E /* RFD3RuntimeTests.swift */; };
 		6A3892FDD5939A57DC9FFCCE /* CopyRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */; };
+		6A44EF1B7BAF647D0D7265C4 /* RFD4SizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63B07F25797FC0750DA585DA /* RFD4SizeGuard.swift */; };
 		6A492515B0CED4F1DA5FE472 /* LightGizmoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EB45A8394E0FB4ED7803CA9 /* LightGizmoTests.swift */; };
 		6C028EE83C8A29A4FDCF2222 /* BoltzJobManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */; };
 		6C43C62D56480ABE7BA72AFD /* TempChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B945DAC97919F57996278E1F /* TempChannelTests.swift */; };
@@ -166,7 +170,7 @@
 		6F45C01C9E3DE3CC89268445 /* MLXRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E93358875495F499780A00 /* MLXRuntime.swift */; };
 		6F52C05E18364C406E853BB0 /* whatsnew-1130-movie-export.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */; };
 		709CFA72F2FF7502C4043BB3 /* LightGizmoGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEE394EC8EC4DF566360104C /* LightGizmoGeometry.swift */; };
-		7125F9B9B28B6CF122F087E5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
+		7125F9B9B28B6CF122F087E5 /* RFD4Core in Frameworks */ = {isa = PBXBuildFile; productRef = 48B70BC097408CA51E60AD99 /* RFD4Core */; };
 		72C53CF3B3DE0AC1001A6981 /* CameraOverlayUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */; };
 		7406A4027A2BE46708BA6282 /* DesignIOSPortTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */; };
 		74E99B05BC014BA3D289E566 /* LightsInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 051212FB14CE38F9CAFC3546 /* LightsInspector.swift */; };
@@ -220,6 +224,7 @@
 		979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
 		983BCF8F1E0F251E82C1CF0E /* DesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4FB7F151982A2927D612F0 /* DesignController.swift */; };
+		98F468B0D5747700E5ECCD7D /* RFD4SizeGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 361BD796EC256F27D7D30A40 /* RFD4SizeGuardTests.swift */; };
 		996828523DD2656E579ACE55 /* RFD3JobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8746A760E75B98C92A547404 /* RFD3JobManager.swift */; };
 		9BD84B3C3B24F43CAEB5CB8E /* LightGizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 854A92930838D84391F46022 /* LightGizmoOverlay.swift */; };
 		9C6CB8E2C25DB4AE13D42756 /* BinderDesignBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4B03344972863CC1362ECB /* BinderDesignBar.swift */; };
@@ -292,6 +297,7 @@
 		CE1CC588AA02F7FE11A0048B /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		CE45D81735E70E8FFFD49875 /* ThemeStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */; };
 		CE6E10849036D7AF94038012 /* LightsSideColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 179EC622F2CD7579EBC857BB /* LightsSideColumn.swift */; };
+		CF11F7931332D2DD0ADC0F42 /* RFD4MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 26353E2101D27B85C67550D8 /* RFD4MLX */; };
 		CFBEE2172EC92121700639E7 /* PendingJobTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DEAB18A89F026148528C71E /* PendingJobTests.swift */; };
 		D00E3076FED2390242EFE8AA /* MSAServerControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5C2F6163EFEA36009B55A5 /* MSAServerControls.swift */; };
 		D0505F6B98C64B96BE87A753 /* DesignTargetSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */; };
@@ -299,6 +305,7 @@
 		D1810E28536159A86EF507F8 /* whatsnew-190-raymolrc.png in Resources */ = {isa = PBXBuildFile; fileRef = 7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */; };
 		D1A6B8D3D1B74B4D1142ADE5 /* PredictSizeGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D177C9A043AE57844A9AEB95 /* PredictSizeGuardTests.swift */; };
 		D31F1B51A22EDBE0B05005AE /* PredictBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14E7328C4421ADC9E81417D /* PredictBar.swift */; };
+		D338A0910F4F1A1FC5C416A8 /* RFD4Core in Frameworks */ = {isa = PBXBuildFile; productRef = A1F204E1E8D22E229FFEF4EA /* RFD4Core */; };
 		D35B766612AA47956AB18A75 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC5E722722DEF7FBB1D649F /* ThemeManager.swift */; };
 		D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
 		D3F658C89098D8D9A4022C9A /* DesignResidues.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFE9998F68625C92B8BCD710 /* DesignResidues.swift */; };
@@ -322,14 +329,17 @@
 		E4297BB35BAA562115F71EF2 /* LightsOrbitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142BDBF375FA246776AB2CD1 /* LightsOrbitView.swift */; };
 		E4312B988564A872D81EBBA0 /* MorphSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */; };
 		E51EFBE3A58396C4934721ED /* PredictScreenAwake.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */; };
+		E6802458BA9609C932808069 /* RFD4JobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE80D648FB36C120F47F5D8 /* RFD4JobManager.swift */; };
 		E6905FCF1AF24B2A2838E777 /* LightsTouch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1507FB2A1549FB5126C07E81 /* LightsTouch.swift */; };
 		E71A74DE36694D8CDEAA9AE0 /* LightsSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA477E87A3CFBE90788E6805 /* LightsSheetTests.swift */; };
+		E75A34AE77E276370267187F /* RFD4RuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 798D73F5B348B55D2BC0B2EA /* RFD4RuntimeTests.swift */; };
 		E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */; };
 		E7A7CA409C1DB4D1A78AD5B9 /* DesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4FB7F151982A2927D612F0 /* DesignController.swift */; };
 		E85017CFE7DE0AB9A3FF9062 /* LightsAtmosphereCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67DB9F0C201E1A872487F6D4 /* LightsAtmosphereCardTests.swift */; };
 		E8A73DC4C73D2E65901E1832 /* RFD3SizeGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC1923D25B33DEE015052221 /* RFD3SizeGuardTests.swift */; };
 		E9B0CF8BC5F291107F7C872B /* NotesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */; };
 		EA0FAFFFCE641B7D2FF718F5 /* LightsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C675D41EFF244D46FCD0F46 /* LightsSheet.swift */; };
+		EB09DF33038A57444BF38981 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
 		EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */; };
 		EC4EF850FC58B240AD02346F /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
 		EE156FFB12BEFB4FC132D610 /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
@@ -342,6 +352,7 @@
 		F3B52A9C7DBEB1F0D7D4BBDD /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */; };
 		F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
 		F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */; };
+		F585AB98EED968384D90F853 /* RFD4MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 00BE8672E33944D3CE05E954 /* RFD4MLX */; };
 		F58726A64F44A9435AD8517D /* MCPDesktopInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */; };
 		F5BEB7A4A5B270B0A64476D2 /* PredictSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */; };
 		F5F9A2124F71FDC7541A6BF8 /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
@@ -354,6 +365,7 @@
 		FA5250EB01CB7F86C4158D2C /* BinderDesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F340621635D0C4E9159141A /* BinderDesignController.swift */; };
 		FAB7D942A53C88BEA4D2FFE4 /* whatsnew-1100-predict-progress.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = C5D633C399E993EE52877C82 /* whatsnew-1100-predict-progress.mp4 */; };
 		FBBEFD0D559EF5CBFD898E40 /* whatsnew-1120-glass.jpg in Resources */ = {isa = PBXBuildFile; fileRef = CDB31EB1A97256BC7A5615E7 /* whatsnew-1120-glass.jpg */; };
+		FBF73C3E697234FEF32DD401 /* RFD4SizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63B07F25797FC0750DA585DA /* RFD4SizeGuard.swift */; };
 		FC4A54641D8CC5020B186234 /* MorphSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5BED19C590F00A894126D46 /* MorphSettings.swift */; };
 		FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */; };
@@ -438,8 +450,10 @@
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
 		3595D421CC5DB21F3162789F /* LightsOrbitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsOrbitTests.swift; sourceTree = "<group>"; };
 		35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesInspectorView.swift; sourceTree = "<group>"; };
+		361BD796EC256F27D7D30A40 /* RFD4SizeGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD4SizeGuardTests.swift; sourceTree = "<group>"; };
 		3697F74BD2283492B5A7790C /* KeyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRouting.swift; sourceTree = "<group>"; };
 		3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewLogic.swift; sourceTree = "<group>"; };
+		3BE80D648FB36C120F47F5D8 /* RFD4JobManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD4JobManager.swift; sourceTree = "<group>"; };
 		3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadoutTests.swift; sourceTree = "<group>"; };
 		3C138C4B214DC0D988D19B7C /* LightGizmoRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoRoutingTests.swift; sourceTree = "<group>"; };
 		3EB45A8394E0FB4ED7803CA9 /* LightGizmoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoTests.swift; sourceTree = "<group>"; };
@@ -450,6 +464,7 @@
 		42F41684D508836307667157 /* RFD3Trajectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3Trajectory.swift; sourceTree = "<group>"; };
 		4300265954DF2B8309EDAA6C /* DesignAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailability.swift; sourceTree = "<group>"; };
 		43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsControllerTests.swift; sourceTree = "<group>"; };
+		43B08A39C2122015A5A8ED2A /* RFD4Runtime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD4Runtime.swift; sourceTree = "<group>"; };
 		45BCB83A35EA5E97D5BBD172 /* ObjectActionMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectActionMenuUITests.swift; sourceTree = "<group>"; };
 		47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-glycans.jpg"; sourceTree = "<group>"; };
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
@@ -473,6 +488,7 @@
 		5C6065F04ABD8B4DF7A370E9 /* LightGizmoGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoGeometryTests.swift; sourceTree = "<group>"; };
 		5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewport.swift; sourceTree = "<group>"; };
 		6316D26C663083E0E595CE15 /* whatsnew-1110-boxselect.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1110-boxselect.png"; sourceTree = "<group>"; };
+		63B07F25797FC0750DA585DA /* RFD4SizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD4SizeGuard.swift; sourceTree = "<group>"; };
 		65C2D9BB6DF8C2F9E29AE8E8 /* RayMolMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolMac.entitlements; sourceTree = "<group>"; };
 		67DB9F0C201E1A872487F6D4 /* LightsAtmosphereCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsAtmosphereCardTests.swift; sourceTree = "<group>"; };
 		689CDE512811C244D4BA931B /* WhatsNew.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = WhatsNew.json; sourceTree = "<group>"; };
@@ -490,6 +506,7 @@
 		75F059BB95517CE91BD3E26E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		7845A3EB6A6BF8A14F090062 /* ProtenixRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtenixRuntime.swift; sourceTree = "<group>"; };
 		786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDesktopInstaller.swift; sourceTree = "<group>"; };
+		798D73F5B348B55D2BC0B2EA /* RFD4RuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD4RuntimeTests.swift; sourceTree = "<group>"; };
 		79E014A631DA05BA1F8C7E8A /* LightsEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsEditing.swift; sourceTree = "<group>"; };
 		7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRuntimeTests.swift; sourceTree = "<group>"; };
 		7BBDEC9D3E4B71F8249F6263 /* TimelineLaneLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineLaneLayoutTests.swift; sourceTree = "<group>"; };
@@ -617,6 +634,8 @@
 				A4E8C9619C9B7F0C169BFAFF /* BoltzMLX in Frameworks */,
 				25B6234DE09C8513458832EB /* ProtenixMLX in Frameworks */,
 				47B1F26F883A94F63F224ABF /* RFD3Kit in Frameworks */,
+				D338A0910F4F1A1FC5C416A8 /* RFD4Core in Frameworks */,
+				F585AB98EED968384D90F853 /* RFD4MLX in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -629,7 +648,9 @@
 				B6FBF55DD1FA97A86C678618 /* BoltzMLX in Frameworks */,
 				9E056CF2985B57F6BF968798 /* ProtenixMLX in Frameworks */,
 				154E7F765059977CA80711DA /* RFD3Kit in Frameworks */,
-				7125F9B9B28B6CF122F087E5 /* Sparkle in Frameworks */,
+				7125F9B9B28B6CF122F087E5 /* RFD4Core in Frameworks */,
+				CF11F7931332D2DD0ADC0F42 /* RFD4MLX in Frameworks */,
+				EB09DF33038A57444BF38981 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -833,6 +854,9 @@
 				ECB1F4D491FA24E65DD3B011 /* RFD3Runtime.swift */,
 				B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */,
 				42F41684D508836307667157 /* RFD3Trajectory.swift */,
+				3BE80D648FB36C120F47F5D8 /* RFD4JobManager.swift */,
+				43B08A39C2122015A5A8ED2A /* RFD4Runtime.swift */,
+				63B07F25797FC0750DA585DA /* RFD4SizeGuard.swift */,
 				D55EF2F596852510DDACA576 /* SelectionInputField.swift */,
 				E92551FEC4351D9D44AE620B /* TempChannel.swift */,
 				7D3E805AC2D63B01AB7EE29C /* Theme.swift */,
@@ -918,6 +942,8 @@
 				EC1923D25B33DEE015052221 /* RFD3SizeGuardTests.swift */,
 				A75B6DCB76EF7B2E69DA0BFE /* RFD3TrajectoryTests.swift */,
 				F3441C46AD1B569C623A36B7 /* RFD3TrayTests.swift */,
+				798D73F5B348B55D2BC0B2EA /* RFD4RuntimeTests.swift */,
+				361BD796EC256F27D7D30A40 /* RFD4SizeGuardTests.swift */,
 				55F4F52D951CF1F96606F41C /* SmokeTests.swift */,
 				82497826B2E619BC2235983B /* SurfacePickTests.swift */,
 				B945DAC97919F57996278E1F /* TempChannelTests.swift */,
@@ -983,6 +1009,8 @@
 				8426817F16C801044FDCCB94 /* BoltzMLX */,
 				90EE4E4414E8FBDC2271BEA2 /* ProtenixMLX */,
 				C723443B5003DD836EF6A008 /* RFD3Kit */,
+				48B70BC097408CA51E60AD99 /* RFD4Core */,
+				26353E2101D27B85C67550D8 /* RFD4MLX */,
 				98AC6A7391B7E7A564A30A61 /* Sparkle */,
 			);
 			productName = PyMOLViewer_macOS;
@@ -1060,6 +1088,8 @@
 				B20D95BF3CA7BA300F0AF09F /* BoltzMLX */,
 				6A6ADC55CC1EDE5686605DCB /* ProtenixMLX */,
 				ECF57E98CF8A1CF759ED2219 /* RFD3Kit */,
+				A1F204E1E8D22E229FFEF4EA /* RFD4Core */,
+				00BE8672E33944D3CE05E954 /* RFD4MLX */,
 			);
 			productName = PyMOLViewerTests;
 			productReference = E9D0FEF5D42BDC6E514B7BB9 /* PyMOLViewerTests.xctest */;
@@ -1092,6 +1122,7 @@
 				C2A63CE2513FB93FA639FB61 /* XCRemoteSwiftPackageReference "boltz-mlx" */,
 				E6B120B2ECAC9D805AC713E0 /* XCRemoteSwiftPackageReference "protenix-mlx" */,
 				532EAFC193795C8EF64F5649 /* XCRemoteSwiftPackageReference "rfd3-mlx" */,
+				C6C1F9A5C3F2419F5DC3D54E /* XCRemoteSwiftPackageReference "rfd4-proteina-mlx" */,
 				58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				59736E03D73BFCCFF74027FA /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */,
@@ -1101,10 +1132,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
-				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
 				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
+				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
+				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -1805,6 +1836,8 @@
 				E8A73DC4C73D2E65901E1832 /* RFD3SizeGuardTests.swift in Sources */,
 				65873C0416944D5EF92140C6 /* RFD3TrajectoryTests.swift in Sources */,
 				7CE181E4C54482BD67384013 /* RFD3TrayTests.swift in Sources */,
+				E75A34AE77E276370267187F /* RFD4RuntimeTests.swift in Sources */,
+				98F468B0D5747700E5ECCD7D /* RFD4SizeGuardTests.swift in Sources */,
 				A06FDF7F7F66614128096DDF /* RenderGateTests.swift in Sources */,
 				5CAB662574D238626A8F4D68 /* SmokeTests.swift in Sources */,
 				3FD53A37F2DD94FC1C411A4C /* SurfacePickTests.swift in Sources */,
@@ -1893,6 +1926,9 @@
 				04798DF552010A1889F8FFDD /* RFD3Runtime.swift in Sources */,
 				08A70D51DF9F99AD0951EB6D /* RFD3SizeGuard.swift in Sources */,
 				953186F444ED70F3F5F33746 /* RFD3Trajectory.swift in Sources */,
+				E6802458BA9609C932808069 /* RFD4JobManager.swift in Sources */,
+				2CBF74AAD340C89F5AEB7CF0 /* RFD4Runtime.swift in Sources */,
+				FBF73C3E697234FEF32DD401 /* RFD4SizeGuard.swift in Sources */,
 				EC4EF850FC58B240AD02346F /* RayMolMain.swift in Sources */,
 				3E6C34959A3934D2DE3E080F /* RayMolUpdater.swift in Sources */,
 				FF325D5404E69D05274EEB81 /* SelectionInputField.swift in Sources */,
@@ -1988,6 +2024,9 @@
 				D0BB5840BDEAA557F5B8F387 /* RFD3Runtime.swift in Sources */,
 				694C69FD489B930231565753 /* RFD3SizeGuard.swift in Sources */,
 				BF97400ECA54F56EB9D96FC2 /* RFD3Trajectory.swift in Sources */,
+				04722E7E456D653B05B4676E /* RFD4JobManager.swift in Sources */,
+				2308A18EEC68BD64673CDC53 /* RFD4Runtime.swift in Sources */,
+				6A44EF1B7BAF647D0D7265C4 /* RFD4SizeGuard.swift in Sources */,
 				BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */,
 				F1D17CB3886E8DED5B79A28B /* RayMolUpdater.swift in Sources */,
 				900E0E51AA354246F795CA84 /* SelectionInputField.swift in Sources */,
@@ -2462,6 +2501,14 @@
 				minimumVersion = 0.2.1;
 			};
 		};
+		C6C1F9A5C3F2419F5DC3D54E /* XCRemoteSwiftPackageReference "rfd4-proteina-mlx" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/javierbq/rfd4-proteina-mlx.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.1.0;
+			};
+		};
 		E6B120B2ECAC9D805AC713E0 /* XCRemoteSwiftPackageReference "protenix-mlx" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/javierbq/protenix-mlx.git";
@@ -2473,10 +2520,25 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		00BE8672E33944D3CE05E954 /* RFD4MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C6C1F9A5C3F2419F5DC3D54E /* XCRemoteSwiftPackageReference "rfd4-proteina-mlx" */;
+			productName = RFD4MLX;
+		};
 		0BD76B8E1C781556992E4D28 /* BoltzMLX */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = C2A63CE2513FB93FA639FB61 /* XCRemoteSwiftPackageReference "boltz-mlx" */;
 			productName = BoltzMLX;
+		};
+		26353E2101D27B85C67550D8 /* RFD4MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C6C1F9A5C3F2419F5DC3D54E /* XCRemoteSwiftPackageReference "rfd4-proteina-mlx" */;
+			productName = RFD4MLX;
+		};
+		48B70BC097408CA51E60AD99 /* RFD4Core */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C6C1F9A5C3F2419F5DC3D54E /* XCRemoteSwiftPackageReference "rfd4-proteina-mlx" */;
+			productName = RFD4Core;
 		};
 		69935BE3EFD2F08B88D4AEE9 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -2517,6 +2579,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		A1F204E1E8D22E229FFEF4EA /* RFD4Core */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C6C1F9A5C3F2419F5DC3D54E /* XCRemoteSwiftPackageReference "rfd4-proteina-mlx" */;
+			productName = RFD4Core;
 		};
 		B20D95BF3CA7BA300F0AF09F /* BoltzMLX */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -24,7 +24,10 @@ class RuntimeSeamTest(GeneratorTestCase):
 
     def setUp(self):
         GeneratorTestCase.setUp(self)
-        self.declareHost('boltz,protenix,rfd3')
+        # The same list PyMOLBridge.mm advertises on macOS. `rfd4` is here because tests
+        # below walk every REGISTERED generator, and one whose runtime the host does not
+        # declare would be refused by check_available before reaching what they assert.
+        self.declareHost('boltz,protenix,rfd3,rfd4')
 
     def submitted(self, generator_id, length=20, live_view=False):
         """The request dict a generator actually writes, read back off disk."""

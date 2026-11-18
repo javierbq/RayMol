@@ -121,3 +121,40 @@ STATS_FIELDS = (
     ('hotspot_min_distance', 'binderToHotspotMinA'),
     ('target_drift_max', 'targetDriftMaxA'),
 )
+
+
+#: RFD4's geometry set. Identical to `GEOMETRY_SPECS` except that `target_drift_max` is
+#: REPLACED rather than reused, and that replacement is the whole reason this tuple
+#: exists.
+#:
+#: The two numbers look alike and are not interchangeable. In RFdiffusion3 the target is
+#: masked out of the noise and reproduced atom-for-atom, so it is held FIXED by contract
+#: and any movement at all is a defect -- which is why `target_drift_max` declares
+#: `lo=0`, reads 0.000 A across every benchmarked run, and is documented as "a bug, not a
+#: quality signal" on any other value. RFD4-Proteina does not hold the target fixed: it
+#: GENERATES the target too, conditioned on the supplied coordinates and placed in a
+#: frame it chose for itself, so there is nothing to drift from and a small non-zero
+#: value is the CORRECT result.
+#:
+#: Writing RFD4's number under RFD3's key would therefore put a permanent apparent defect
+#: on every correct RFD4 design, in a field whose own description tells the reader it
+#: should be zero. The key is separate so the two can sit in one panel without either
+#: being misread as the other.
+RFD4_GEOMETRY_SPECS = tuple(
+    spec for spec in GEOMETRY_SPECS if spec.key != 'target_drift_max'
+) + (
+    MetricSpec('target_rebuild_rmsd', STATE, units='A', label='Target rebuild RMSD',
+               lo=0, higher_is_better=False,
+               description='RMSD between the target as the model rebuilt it and the'
+                           ' target it was given, after superposition. NOT the same as'
+                           ' target drift: this model generates the target rather than'
+                           ' holding it fixed, so a small non-zero value is expected and'
+                           ' the number measures how faithfully the conditioning was'
+                           ' honoured. A large one means the design was placed against a'
+                           ' structure that is not the one selected.'),
+)
+
+#: The set an RFD4-style generator declares: one that rebuilds its target rather than
+#: holding it fixed.
+RFD4_DESIGN_SPECS = (SHARED_INPUT_SPECS + DESIGN_INPUT_SPECS + RUNTIME_SPECS
+                     + RFD4_GEOMETRY_SPECS)

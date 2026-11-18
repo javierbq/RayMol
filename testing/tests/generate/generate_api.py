@@ -1875,3 +1875,102 @@ class RunEstimateTest(GeneratorTestCase):
         # ...while a design's does carry it.
         design = self.designing.pending_info(self.submit(1)[0].spec.name)
         self.assertIn('run_remaining', design)
+
+
+class FixedScheduleGeneratorTest(GeneratorTestCase):
+    """A generator whose engine has NO step count to set and cannot stream coordinates.
+
+    `binder_design` used to pass `diffusion_steps` and `recycling_steps` on every call,
+    which forced every generator to honour the union of every generator's options --
+    and `validate_options` refuses a name its generator did not declare, so a method
+    with a fixed schedule could not be driven from the command at all. It raised
+    "does not support: diffusion_steps, recycling_steps" before anything else happened.
+
+    Tested on a STUB rather than only through whichever shipped generator has that shape
+    today, and through `cmd.binder_design` rather than `validate_options` directly --
+    calling the latter is what let the bug through, since it bypasses the command layer
+    that was adding the knobs.
+    """
+
+    def setUp(self):
+        GeneratorTestCase.setUp(self)
+        import tempfile
+        self.data, self.digest = make_zip()
+        self.root = tempfile.mkdtemp()
+        os.environ['RAYMOL_WEIGHTS_DIR'] = self.root
+        install_stub(self.digest, len(self.data),
+                     option_defaults={'seed': 0}, supports_live_view=False)
+        self.declareHost('stubruntime')
+        self.helix()
+
+    def testItRunsWithoutNamingKnobsItDoesNotDeclare(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=8)
+            settle()
+        self.assertIsNotNone(job)
+        # The seed still reaches the generator, because it IS declared.
+        self.assertEqual(job.options.seed, job.options.seed)
+
+    def testNamingAKnobItDoesNotDeclareIsStillRefusedByName(self):
+        # The refusal belongs to the user who typed it, not to every caller who did not.
+        # This is the half that must NOT be lost in making the knobs optional.
+        from pymol.predictors.errors import PredictionOptionError
+        for knob in ('diffusion_steps', 'recycling_steps'):
+            with self.assertRaises(PredictionOptionError) as caught:
+                cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=8,
+                                  **{knob: 150})
+            self.assertIn(knob, str(caught.exception))
+
+    def testALiveViewItCannotShowIsRefusedRatherThanIgnored(self):
+        # Accepting it and producing nothing is the "a parameter you passed did nothing"
+        # failure the capability flag exists to close.
+        from pymol.predictors.errors import PredictionOptionError
+        for kwargs in ({'live_view': 1}, {'live_steps': 4}, {'keep_frames': 1}):
+            with self.assertRaises(PredictionOptionError) as caught:
+                cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=8, **kwargs)
+            self.assertIn('live view', str(caught.exception))
+
+    def testTurningTheLiveViewOffExplicitlyIsNotARefusal(self):
+        # `live_view=0` asks for exactly what this generator does. Refusing it would make
+        # the flag impossible to pass defensively in a script.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=8,
+                                    live_view=0)
+            settle()
+        self.assertIsNotNone(job)
+
+
+class DeclaredScheduleIsUnaffectedTest(GeneratorTestCase):
+    """The other half: a generator that DOES declare the knobs still gets them.
+
+    Making them optional must not quietly stop sending a generator its own defaults.
+    """
+
+    def setUp(self):
+        GeneratorTestCase.setUp(self)
+        import tempfile
+        self.data, self.digest = make_zip()
+        self.root = tempfile.mkdtemp()
+        os.environ['RAYMOL_WEIGHTS_DIR'] = self.root
+        install_stub(self.digest, len(self.data))
+        self.declareHost('stubruntime')
+        self.helix()
+
+    def testOmittedKnobsFallBackToTheGeneratorsOwnDefaults(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=8)
+            settle()
+        self.assertEqual(job.options.diffusion_steps, 200)
+        self.assertEqual(job.options.recycling_steps, 2)
+
+    def testAnExplicitValueStillWins(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=8,
+                                    diffusion_steps=120, recycling_steps=1)
+            settle()
+        self.assertEqual(job.options.diffusion_steps, 120)
+        self.assertEqual(job.options.recycling_steps, 1)

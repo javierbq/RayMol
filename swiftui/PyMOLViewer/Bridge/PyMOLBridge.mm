@@ -150,7 +150,12 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     // RFD3JobManager, RFD3Runtime and RFD3SizeGuard are all behind `#if os(macOS)`, and
     // one design against a full-length target peaks near half a 36 GiB Mac.
 #if TARGET_OS_OSX
-    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz,protenix,rfd3", 1);
+    // "rfd4" joins it on the same terms: a second backbone GENERATOR, macOS only, with
+    // RFD4JobManager, RFD4Runtime and RFD4SizeGuard all behind `#if os(macOS)`. Its
+    // memory profile is the reason it stays off iOS rather than merely following rfd3 —
+    // peak is quadratic in token count and reaches 6.62 GB at 638 tokens even at fp16,
+    // which is past an iPhone's jetsam ceiling by a wide margin.
+    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz,protenix,rfd3,rfd4", 1);
 #else
     setenv("RAYMOL_PREDICT_RUNTIMES", "boltz", 1);
 #endif

@@ -62,7 +62,7 @@ final class InferenceRouterTests: XCTestCase {
     /// not to the table — the state in which it is neither routable nor cancellable.
     func testTheTableCarriesEveryRuntimeThisBuildLinks() {
         XCTAssertEqual(Set(InferenceRouter.runtimes.map(name(of:))),
-                       ["boltz", "protenix", "rfd3"])
+                       ["boltz", "protenix", "rfd3", "rfd4"])
     }
 
     // MARK: Cancel reaches the whole table
@@ -70,19 +70,23 @@ final class InferenceRouterTests: XCTestCase {
     /// A cancel marker carries only a job id, so there is nothing in it to route on: it
     /// must reach EVERY runtime, not just the first or the default.
     ///
-    /// Asserted through `protenix` AND `rfd3`, neither of which is the first entry or the
-    /// default — so a broadcast that stopped early would fail here. `rfd3` is the one that
-    /// matters most: a design the user cannot cancel is seventeen minutes of it.
+    /// Asserted through `protenix`, `rfd3` AND `rfd4`, none of which is the first entry or
+    /// the default — so a broadcast that stopped early would fail here. The two generators
+    /// matter most: a design the user cannot cancel is minutes of it, and `rfd4` is the
+    /// LAST entry in the table, so it is the one a loop that exits early misses first.
     func testACancelMarkerReachesEveryRuntimeNotJustTheDefault() {
         let jobID = "router-cancel-\(UUID().uuidString.prefix(8))"
         XCTAssertFalse(ProtenixJobManager.shared.cancelRequestedForTesting.contains(jobID))
         XCTAssertFalse(RFD3JobManager.shared.cancelRequestedForTesting.contains(jobID))
+        XCTAssertFalse(RFD4JobManager.shared.cancelRequestedForTesting.contains(jobID))
 
         InferenceRouter.handle(marker: "PREDICT:cancel:\(jobID)")
 
         XCTAssertTrue(ProtenixJobManager.shared.cancelRequestedForTesting.contains(jobID),
                       "the cancel broadcast stopped before reaching every runtime")
         XCTAssertTrue(RFD3JobManager.shared.cancelRequestedForTesting.contains(jobID),
+                      "the cancel broadcast stopped before reaching every runtime")
+        XCTAssertTrue(RFD4JobManager.shared.cancelRequestedForTesting.contains(jobID),
                       "the cancel broadcast stopped before reaching every runtime")
         // ...and the default saw it too, from the same one loop.
         XCTAssertTrue(BoltzJobManager.shared.cancelRequestedForTesting.contains(jobID))

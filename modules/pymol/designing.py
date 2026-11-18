@@ -2555,8 +2555,9 @@ def deliver_result(path, name, seed=None, _self=cmd):
 
 
 def binder_design(generator, target, hotspots='', length=60, name='', n_designs=1,
-                    diffusion_steps=200, recycling_steps=2, seed=None, live_view=None,
-                    live_steps=None, keep_frames=0, quiet=1, _self=cmd):
+                    diffusion_steps=None, recycling_steps=None, seed=None,
+                    live_view=None, live_steps=None, keep_frames=0, quiet=1,
+                    _self=cmd):
     """
 DESCRIPTION
 
@@ -2614,9 +2615,14 @@ ARGUMENTS
     and a session saved mid-run carries neither the group nor its placeholders. A batch of
     one is not a batch -- n_designs=1 makes no group and changes nothing. {default: 1}
 
-    diffusion_steps = int: reverse-diffusion steps {default: 200}
+    diffusion_steps = int: reverse-diffusion steps. OPTIONAL, and omitted means the
+    generator's own default rather than a number chosen here -- a generator whose
+    schedule is fixed does not declare this knob at all and REFUSES it if you name it,
+    rather than accepting a value that would change nothing.
+    {default: None, meaning the generator's own}
 
-    recycling_steps = int: recycling iterations {default: 2}
+    recycling_steps = int: recycling iterations. Optional for the same reason.
+    {default: None, meaning the generator's own}
 
     seed = int: random seed. Drawn FRESH PER DESIGN when omitted, so two designs are
     genuinely different rather than identical duplicates. The value used is printed,
@@ -2747,10 +2753,42 @@ SEE ALSO
         import random
         seed = random.randrange(RANDOM_SEED_BOUND)
 
-    requested = dict(recycling_steps=int(recycling_steps),
-                     diffusion_steps=int(diffusion_steps),
-                     seed=int(seed))
+    # ONLY the knobs the caller actually named, plus the seed.
+    #
+    # Sent unconditionally, these two forced every generator to honour the union of every
+    # generator's options. `validate_options` refuses a name its generator did not
+    # declare -- which is the behaviour that makes "you passed something that did
+    # nothing" impossible -- so a method with a fixed schedule could not be driven from
+    # this command at all: `binder_design rfd4, ...` raised "rfd4 does not support:
+    # diffusion_steps, recycling_steps" before anything else happened.
+    #
+    # Omitting them leaves `validate_options` to merge the generator's OWN defaults, so a
+    # generator that declares them is unaffected -- rfd3 still gets 200 and 2. Naming one
+    # a generator does not declare still raises, by name, which is the point: the refusal
+    # belongs to the user who typed it, not to every caller who did not.
+    requested = dict(seed=int(seed))
+    if diffusion_steps is not None:
+        requested['diffusion_steps'] = int(diffusion_steps)
+    if recycling_steps is not None:
+        requested['recycling_steps'] = int(recycling_steps)
     options = generator_obj.validate_options(requested)
+
+    # A generator whose engine cannot stream coordinates refuses a live-view request
+    # instead of accepting it and producing nothing. Checked only against what the
+    # caller EXPLICITLY asked for: the defaults mean "no opinion", and refusing those
+    # would make the command unusable for such a method.
+    if not getattr(generator_obj, 'supports_live_view', True):
+        asked = [name for name, value in (('live_view', live_view),
+                                          ('live_steps', live_steps))
+                 if value is not None and int(value)]
+        if int(keep_frames):
+            asked.append('keep_frames')
+        if asked:
+            raise PredictionOptionError(
+                '%s cannot show a live view, so %s would do nothing. Its sampler reports'
+                ' progress but no coordinates, so there is nothing to draw -- this is a'
+                ' limit of the engine rather than of the command.'
+                % (generator_obj.id, ' and '.join(asked)))
 
     # Presentation parameters, resolved together because they interact.
     #

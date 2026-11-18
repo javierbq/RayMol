@@ -11,6 +11,8 @@ def _register_builtins():
     """Register the generators that ship with RayMol. Idempotent."""
     from .rfd3 import RFD3Generator
     registry.register(RFD3Generator(), replace=True)
+    from .rfd4 import RFD4Generator
+    registry.register(RFD4Generator(), replace=True)
 
 
 _register_builtins()
