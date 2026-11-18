@@ -163,7 +163,8 @@ class ProgressDesignJob(StubDesignJob):
 
 
 def install_stub(digest, size, runtime='stubruntime', job_class=StubDesignJob,
-                 phases=(('featurize', 0.0, 0.1), ('diffusion', 0.1, 1.0))):
+                 phases=(('featurize', 0.0, 0.1), ('diffusion', 0.1, 1.0)),
+                 option_defaults=None, supports_live_view=True):
     """Register a stub generator and return its class.
 
     Its `runtime` is NOT 'rfd3' by default: a stub that claimed the real runtime would
@@ -172,6 +173,11 @@ def install_stub(digest, size, runtime='stubruntime', job_class=StubDesignJob,
     `job_class` and `phases` are for the progress suite: a design that is RUNNING needs
     `ProgressDesignJob`, and a generator with no dominant band is what proves
     `designing._dominant_phase` reads the bands rather than assuming 'diffusion'.
+
+    `option_defaults` and `supports_live_view` are for a FIXED-SCHEDULE method -- one
+    whose engine has no step count to set and cannot stream coordinates. They exist so
+    the command layer's handling of that shape is tested on a stub rather than only
+    through whichever shipped generator happens to have it today.
     """
     from pymol.generators import registry
     from pymol.generators.base import DesignSpec, Generator, require_single_chain
@@ -179,15 +185,23 @@ def install_stub(digest, size, runtime='stubruntime', job_class=StubDesignJob,
     from pymol.predictors.weights import WeightBundle
     from pymol.generators.metrics import DESIGN_SPECS
 
+    # Bound under different names before the class body: a class body is not a
+    # closure, so `option_defaults = option_defaults` resolves to the attribute
+    # being defined rather than to the parameter, and raises NameError.
+    _live_view = supports_live_view
+    _defaults = (dict(option_defaults) if option_defaults is not None
+                 else {'recycling_steps': 2, 'diffusion_steps': 200, 'seed': 0})
+
     class Stub(Generator):
         id = 'stubgen'
         name = 'Stub generator'
         weight_bundle = WeightBundle(
             id='stubgen', version='v1', url='https://example.invalid/g.zip',
             sha256=digest, size=size, members=('config.json', 'model.bin'))
-        option_defaults = {'recycling_steps': 2, 'diffusion_steps': 200, 'seed': 0}
+        option_defaults = _defaults
         metric_specs = DESIGN_SPECS
         progress_phases = phases
+        supports_live_view = bool(_live_view)
 
         def check_available(self):
             _host.require_available(self.id)

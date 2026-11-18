@@ -210,6 +210,13 @@ class RFD4Generator(Generator):
 
     metric_specs = RFD4_DESIGN_SPECS
 
+    #: No live view. This engine's step hook reports `(step, trunk passes)` and no
+    #: coordinates, so there is nothing to stream. Declared rather than left to the
+    #: submit path quietly omitting the key, so a user who asks for one is TOLD -- a
+    #: parameter that is accepted and does nothing is the failure this declaration
+    #: exists to prevent.
+    supports_live_view = False
+
     #: `sample` owns almost the whole bar because it genuinely does: featurization is
     #: CPU array assembly and the pack load is a one-time safetensors read, while the
     #: rollout is 60 flow steps carrying 180 trunk passes. The runtime reports a step

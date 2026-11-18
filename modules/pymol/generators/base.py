@@ -344,6 +344,13 @@ class Generator(abc.ABC):
     #: overall 0..1 scale. Empty means an indeterminate card with a live clock, which
     #: is the correct rendering of no information.
     progress_phases = ()
+    #: Whether this method's engine can stream a rollout's COORDINATES, so the run can be
+    #: watched. Declared for the reason `Predictor.supports_msa` is: a caller that finds
+    #: the parameter accepted is entitled to conclude the feature works, and a generator
+    #: whose sampler reports progress but no coordinates has nothing to draw. False makes
+    #: `binder_design` refuse an explicit `live_view`/`live_steps`/`keep_frames` rather
+    #: than accept it and produce nothing.
+    supports_live_view = True
 
     @abc.abstractmethod
     def check_available(self):
