@@ -959,11 +959,13 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         # waited for the next leg until its deadline, then landed and built the
         # whole 40-frame leg, ran ~0.18 s on a 0.1 s budget.  (The bare
         # peptides of the other budget tests build in ~0 ms, so they cannot
-        # see this.)  Margin 2x: a pump reserves every cost from measurements
+        # see this.)  Margin 3x: a pump reserves every cost from measurements
         # taken on the same machine in the same run, so a slow or loaded
         # machine scales the estimate and the work alike; what remains is one
-        # frame landed and built plus the estimate's error, a few ms here (up
-        # to 2-3x that on a shared CI runner), against the 100 ms margin.
+        # frame landed and built plus the estimate's error, a few ms here.
+        # A shared CI runner can also stall one pump outright: at 2x this
+        # failed twice on GitHub's macOS runners with a single pump at 0.219
+        # and 0.230 s and every other pump under 0.18 s.
         cmd.fab('A' * 150, 'src', ss=1)
         for k in (2, 3):
             cmd.create('src', 'src', 1, k)
@@ -978,7 +980,7 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
             pumps.append(time.monotonic() - t)
             time.sleep(0.05)
         self.assertEqual(job.state, 'done')
-        self.assertLess(max(pumps), 0.200, ['%.3f' % p for p in pumps])
+        self.assertLess(max(pumps), 0.300, ['%.3f' % p for p in pumps])
         n = cmd.count_states(name)
         self.assertEqual(n, 120)
         self.assertEqual(set(range(1, n + 1)) - set(self.built_states(name)), set())
